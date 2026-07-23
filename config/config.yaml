@@ -18,12 +18,12 @@ models:
     supports_vision: true
 
   # —— DeepSeek(OpenAI 兼容,性价比高)——
-  - name: deepseek-chat
+  - name: deepseek-v4-pro
     display_name: DeepSeek Chat
     use: langchain_openai:ChatOpenAI
-    model: deepseek-chat
+    model: deepseek-v4-pro
     api_key: $DEEPSEEK_API_KEY
-    base_url: https://api.deepseek.com/v1
+    base_url: https://api.deepseek.com
     max_tokens: 8192
     temperature: 0.2
 
@@ -48,16 +48,16 @@ models:
   #   supports_thinking: true
 
 # 角色 → 模型 路由。
-# 当前所有角色统一走 deepseek-chat(可用 key);后续接入更强模型(Claude / GPT 等)后,
+# 当前所有角色统一走 deepseek-v4-pro(可用 key);后续接入更强模型(Claude / GPT 等)后,
 # 再按"便宜模型做摘要、强模型做定位/写作"分层——届时只改这里,零代码。
 model_roles:
-  default: deepseek-chat
-  planner: deepseek-chat
-  locator: deepseek-chat
-  summarizer: deepseek-chat
-  verifier: deepseek-chat
-  memory_extractor: deepseek-chat
-  title: deepseek-chat
+  default: deepseek-v4-pro
+  planner: deepseek-v4-pro
+  locator: deepseek-v4-pro
+  summarizer: deepseek-v4-pro
+  verifier: deepseek-v4-pro
+  memory_extractor: deepseek-v4-pro
+  title: deepseek-v4-pro
 
 # 工具分组(声明式;工作流按组挂载工具)。
 tool_groups:
