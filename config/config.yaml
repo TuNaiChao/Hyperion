@@ -1,0 +1,74 @@
+# Hyperion 主配置
+# - 模型用 `use: <module>:<ClassName>` 声明,工厂用反射加载(加 provider 零代码)。
+# - 任何以 $ 开头的值会被解析为环境变量(见 .env)。
+# 详见 docs/architecture.md §4.1 / §4.2。
+
+models:
+  # —— OpenAI ——
+  - name: gpt-4.1
+    display_name: GPT-4.1
+    use: langchain_openai:ChatOpenAI
+    model: gpt-4.1
+    api_key: $OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+    request_timeout: 600.0
+    max_retries: 2
+    max_tokens: 8192
+    temperature: 0.2
+    supports_vision: true
+
+  # —— DeepSeek(OpenAI 兼容,性价比高)——
+  - name: deepseek-chat
+    display_name: DeepSeek Chat
+    use: langchain_openai:ChatOpenAI
+    model: deepseek-chat
+    api_key: $DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com/v1
+    max_tokens: 8192
+    temperature: 0.2
+
+  # —— Anthropic(需 uv sync --extra providers)——
+  # - name: claude-sonnet
+  #   display_name: Claude Sonnet
+  #   use: langchain_anthropic:ChatAnthropic
+  #   model: claude-sonnet-4-5
+  #   api_key: $ANTHROPIC_API_KEY
+  #   max_tokens: 8192
+  #   supports_thinking: true
+  #   supports_vision: true
+  #   when_thinking_enabled: { thinking: { type: enabled, budget_tokens: 8000 } }
+  #   when_thinking_disabled: { thinking: { type: disabled } }
+
+  # —— 本地 Ollama(零成本;用原生 provider 保留 reasoning)——
+  # - name: qwen3-local
+  #   use: langchain_ollama:ChatOllama
+  #   model: qwen3:32b
+  #   base_url: http://localhost:11434
+  #   num_predict: 8192
+  #   supports_thinking: true
+
+# 角色 → 模型 路由(分层:便宜模型做摘要,强模型做定位/写作)
+model_roles:
+  default: gpt-4.1
+  planner: gpt-4.1
+  locator: gpt-4.1
+  summarizer: deepseek-chat
+  verifier: gpt-4.1
+  memory_extractor: deepseek-chat
+  title: deepseek-chat
+
+# 工具(声明式 + 反射加载)。domain 工具走 plugins/,按需启用。
+tools:
+  # P1 起逐步填充实现:
+  # - name: bash
+  #   group: sandbox
+  #   use: hyprion.tools.sandbox:bash_tool
+  # - name: grep_symbol
+  #   group: code
+  #   use: hyprion.tools.code_nav:grep_symbol_tool
+  # - name: search_code
+  #   group: code
+  #   use: hyprion.tools.code_nav:search_code_tool
+  # - name: log_extract_patterns
+  #   group: log
+  #   use: hyprion.tools.log:log_extract_patterns_tool

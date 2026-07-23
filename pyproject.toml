@@ -1,0 +1,48 @@
+[project]
+name = "hyperion"
+version = "0.1.0"
+description = "Hyperion — code & log analysis agent with continuous learning (bug RCA, deep research, PR tracking)"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "TuNaiChao" }]
+dependencies = [
+    # orchestration
+    "langgraph>=1.2",
+    "langchain>=1.3",
+    "langchain-openai>=1.0",
+    # config / utils
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "markdownify>=0.13",
+    "rich>=13.7",
+    # code understanding (coding-agent core)
+    "tree-sitter>=0.25",
+    "tree-sitter-language-pack>=0.4",
+    "lancedb>=0.20",
+    "rank-bm25>=0.2.2",
+]
+
+[project.optional-dependencies]
+providers = ["langchain-anthropic>=1.0", "langchain-ollama>=1.0"]
+memory = ["mem0ai>=0.1"]
+graph = ["graphiti-core>=0.10"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+hyperion = "hyprion.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hyprion"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
