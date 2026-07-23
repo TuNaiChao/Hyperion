@@ -47,13 +47,15 @@ models:
   #   num_predict: 8192
   #   supports_thinking: true
 
-# 角色 → 模型 路由(分层:便宜模型做摘要,强模型做定位/写作)
+# 角色 → 模型 路由。
+# 当前所有角色统一走 deepseek-chat(可用 key);后续接入更强模型(Claude / GPT 等)后,
+# 再按"便宜模型做摘要、强模型做定位/写作"分层——届时只改这里,零代码。
 model_roles:
-  default: gpt-4.1
-  planner: gpt-4.1
-  locator: gpt-4.1
+  default: deepseek-chat
+  planner: deepseek-chat
+  locator: deepseek-chat
   summarizer: deepseek-chat
-  verifier: gpt-4.1
+  verifier: deepseek-chat
   memory_extractor: deepseek-chat
   title: deepseek-chat
 
