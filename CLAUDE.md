@@ -23,11 +23,13 @@
 
 综合两者再给方案、再写代码。不要凭空造轮子。
 
+**实现时对齐 deer-flow,目标生产级(不是 demo):** 各功能优先照齐 deer-flow 对应代码的质量与边界处理;起步可做最小实现,但**必须排期迭代到生产级**。**本项目是生产级项目,不是 demo**——"最小实现"是阶段性手段,不是终点。每处简化都记入 `.claude/memory/backlog-production-grade.md`,后续补齐。
+
 ## 仓库地图
 
 ```
 Hyperion/
-├── src/hyprion/
+├── src/hyperion/
 │   ├── platform/     # Harness:模型工厂 / 配置 / 反射 / 网关 / 沙箱 / 可观测
 │   ├── workflows/    # 三条工作流:bug_rca / deep_research / pr_tracker
 │   ├── services/     # 共享服务:code_index / memory / log_symbolizer / static_analysis
@@ -42,7 +44,7 @@ Hyperion/
 
 ## 模型:多 provider 自适应
 
-不硬编码任何厂家。在 `config/config.yaml` 的 `models:` 每项声明 `use: <module>:<ClassName>`,工厂 `hyprion.platform.models.create_chat_model` 用反射加载任意 LangChain chat model 类。**加新 provider 通常零代码,只改配置。** 详见 architecture.md §4.1。
+不硬编码任何厂家。在 `config/config.yaml` 的 `models:` 每项声明 `use: <module>:<ClassName>`,工厂 `hyperion.platform.models.create_chat_model` 用反射加载任意 LangChain chat model 类。**加新 provider 通常零代码,只改配置。** 详见 architecture.md §4.1。
 
 ## 命令
 
@@ -63,7 +65,7 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 ## 扩展性
 
-工具是**声明式 + 反射 + 插件**:`config.yaml` 的 `tools:` 声明工具的 `use: <module>:func`,按需加载。domain 工具(bluez/wpa 解析等)放 `src/hyprion/tools/plugins/<name>/`,在配置里开关,不改核心。
+工具是**声明式 + 反射 + 插件**:`config.yaml` 的 `tools:` 声明工具的 `use: <module>:func`,按需加载。domain 工具(bluez/wpa 解析等)放 `src/hyperion/tools/plugins/<name>/`,在配置里开关,不改核心。
 
 ## 路线
 

@@ -13,7 +13,7 @@ metadata:
 
 核心约束(易忘、非代码可见):
 - `deer-flow/` 子目录是 ByteDance 的**参考实现,只读,当零件目录**(`.gitignore` 掉,各自 clone),不整体 fork。可移植:模型工厂、deep-research 方法论、记忆中间件、沙箱、社区检索工具。
-- 模型工厂用**反射 + 配置声明**(`use: module:ClassName`)实现多 provider 自适应,加新厂家通常零代码只改 config(`src/hyprion/platform/models.py`)——用户明确强调过这点。
+- 模型工厂用**反射 + 配置声明**(`use: module:ClassName`)实现多 provider 自适应,加新厂家通常零代码只改 config(`src/hyperion/platform/models.py`)——用户明确强调过这点。
 - 当前范围:MVP 先做 **coding-agent 式代码+日志分析工具**(领域无关),bluez/wpa 等做成 `tools/plugins/` 后挂。工具是声明式+反射+插件,可扩展。
 - 分阶段路线 P0–P6(见文档 §11):P0 地基(含模型工厂,已完成脚手架)→ P1 代码理解(tree-sitter/ctags/LanceDB)→ P2 Bug-RCA → P3 记忆闭环 → P4 PR-Tracker → P5 Deep-Research → P6 生产化。
 

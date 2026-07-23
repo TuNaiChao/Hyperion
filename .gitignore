@@ -13,6 +13,9 @@ build/
 .claude/settings.local.json
 .claude/memory/**/*.bak
 
+# Runtime / sandbox data(agent 工作区、输出等运行时产物)
+data/
+
 # Reference implementation — clone separately on each machine
 #   git clone https://github.com/bytedance/deer-flow
 deer-flow/

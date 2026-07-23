@@ -14,6 +14,7 @@ dependencies = [
     # config / utils
     "pydantic>=2.7",
     "pyyaml>=6.0",
+    "python-dotenv>=1.0",
     "httpx>=0.27",
     "markdownify>=0.13",
     "rich>=13.7",
@@ -28,21 +29,33 @@ dependencies = [
 providers = ["langchain-anthropic>=1.0", "langchain-ollama>=1.0"]
 memory = ["mem0ai>=0.1"]
 graph = ["graphiti-core>=0.10"]
+
+# Dev tools live in a dependency group (PEP 735): `uv sync` installs the `dev`
+# group by default, so the bare `uv run pytest` / `uv run ruff` documented in
+# CLAUDE.md work without `--extra dev`.
+[dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
-hyperion = "hyprion.cli:main"
+hyperion = "hyperion.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hyprion"]
+packages = ["src/hyperion"]
 
 [tool.ruff]
-line-length = 100
+# 240 对齐 deer-flow(其 backend/AGENTS.md 明定 line-length 240),容纳详尽中文 docstring。
+line-length = 240
 target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+# Only collect the project's own tests; the read-only `deer-flow/` reference
+# checkout must never be imported by the test runner.
+[tool.pytest.ini_options]
+testpaths = ["tests", "src"]
+addopts = "--ignore=deer-flow"

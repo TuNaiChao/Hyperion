@@ -15,8 +15,8 @@ import logging
 from langchain.chat_models import BaseChatModel
 from langchain_openai.chat_models.base import BaseChatOpenAI
 
-from hyprion.platform.config import AppConfig, get_app_config
-from hyprion.platform.reflection import resolve_class
+from hyperion.platform.config import AppConfig, get_app_config
+from hyperion.platform.reflection import resolve_class
 
 logger = logging.getLogger(__name__)
 

@@ -315,6 +315,7 @@ class PatchedChatDeepSeek(ChatOpenAI):
 ### 4.5 可观测性
 
 - **Langfuse**(自托管友好):trace / session / user / token / cost 全链路。callback 挂在图调用根(单 run 单 trace,所有 node/LLM/tool 是子 span)。
+- **P0 可选启用指南**:[docs/langfuse.md](langfuse.md)(是什么 / 怎么用 / 本地 docker compose 起服务 / 项目接线)。
 - 可同时开 LangSmith / Monocle(OTel)。
 - 关键约定:`langfuse_session_id = thread_id`,`langfuse_user_id = user_id`,`langfuse_tags = [env, model]`。
 
@@ -344,6 +345,8 @@ class PatchedChatDeepSeek(ChatOpenAI):
 - embedding 模型:`voyage-code-3` 或 `bge-large-en-v1.5`(选定后不能换,换需全量重嵌)。
 - **混合检索**:BM25(符号/函数名/错误码精确) + 向量(语义) + **RRF 融合**(`score=Σ 1/(60+rank)`) + **`bge-reranker-v2-m3` 重排**(只对 top-50,取 top-5)。对 C 代码尤其重要——函数名/宏名是强信号。
 
+> **LanceDB 与 pgvector 各管一摊,不互相取代**:这里的 LanceDB 是**代码索引**的检索库——选它是因为① 嵌入式,本地零运维(dev 期无需起 Postgres);② 原生 dense+sparse(BM25)+RRF 混合检索,正是本节所需,几乎零胶水。而 §5.2 记忆层的 pgvector 是**另一条线**(随 LangGraph Store + PostgresSaver 在生产跑),dev 期用 InMemoryStore、不起 Postgres。生产期若想"代码索引也并入 Postgres 省一个组件",代价是自搓 BM25+RRF 或装 `pgvector sparsevec`/`pg_bm25`——届时再权衡,不在 P1。
+
 **导航工具集**(给定位 agent 的 ACI,借鉴 SWE-agent/OrcaLoca):
 `grep_symbol`、`read_function(sym)`、`get_callers(sym)`、`get_callees(sym)`、`search_code(query)`(混合检索)。
 
@@ -357,6 +360,8 @@ class PatchedChatDeepSeek(ChatOpenAI):
 | 抽取/合并 | mem0 OSS(Apache-2.0) | 报告→原子事实;ADD/UPDATE/DELETE 判定 | Phase 3 |
 | 时序领域 KG | Graphiti + FalkorDB(Apache-2.0) | `valid_at/expired_at/invalid_at`;同一 bug 认知随版本演变 | Phase 3 进阶 |
 | 静态领域 KG | LightRAG | bluez/wpa 官方文档/源码注释建成静态知识库 | Phase 5 |
+
+> **别把这张表当成"同时起 4 个存储"**。基座 Store 是唯一必起的持久层;mem0 是它之上的"抽取/合并"逻辑层(产物写回 Store/Graphiti,不开第 4 个库);Graphiti 与 LightRAG 虽都含图引擎,但职责正交(时序演变 vs 静态领域知识),按 Phase 3/5 分阶段引入,届时再评估是否共用一个图引擎以降运维成本。多库写入延迟用"只写必要库 + Recall 按角色只查必要库"控制(见 §7)。
 
 **两个横切组件**(挂在每条工作流上,详见 §7):
 
@@ -564,23 +569,29 @@ class StateTransitionEdge(Edge):
 
 ## 9. 技术栈
 
-| 层 | 选型 | 包 |
-|---|---|---|
-| 编排 | LangGraph + langgraph-supervisor + deepagents | `langgraph>=1.2`, `langgraph-supervisor`, `deepagents` |
-| 模型 | 任选(OpenAI/Anthropic/DeepSeek/Ollama/vLLM),分层路由 | `langchain_openai` / `langchain_anthropic` / `langchain_ollama` |
-| 代码解析 | tree-sitter + tree-sitter-c + universal-ctags | `tree-sitter`, `tree-sitter-language-pack` |
-| 向量库 | LanceDB(本地)/ Qdrant(生产) | `lancedb` |
-| 静态分析 | sparse / smatch / coccinelle / scan-build | 内核工具链 |
-| 符号化 | addr2line / objdump / kallsyms | binutils |
-| 记忆-基座 | LangGraph Store + PostgresSaver | `langgraph` + PG + pgvector |
-| 记忆-抽取 | mem0 OSS(Apache-2.0) | `mem0ai` |
-| 记忆-时序KG | Graphiti + FalkorDB(Apache-2.0) | `graphiti-core` |
-| 记忆-领域KG | LightRAG | `lightrag-hku` |
-| 检索增强 | BM25 + RRF + `bge-reranker-v2-m3` | — |
-| web 检索 | Tavily / DDG + httpx+markdownify | deer-flow `community/` |
-| 沙箱 | Docker(自建)/ OpenHands runtime | — |
-| 可观测 | Langfuse(自托管) | — |
-| 部署 | LangGraph Self-Hosted Lite(免费至 1M 节点)→ 或 FastAPI+PG+Docker | — |
+| 层 | 选型 | 包 | 阶段 |
+|---|---|---|---|
+| 编排(核心) | LangGraph 显式 StateGraph + Send/Command | `langgraph>=1.2` | P0 |
+| 编排(多代理) | langgraph-supervisor + deepagents(`task()` 子代理) | `langgraph-supervisor`, `deepagents` | P5 |
+| 模型 | 任选(OpenAI/Anthropic/DeepSeek/Ollama/vLLM),分层路由 | `langchain_openai` / `langchain_anthropic` / `langchain_ollama` | P0 |
+| 代码解析 | tree-sitter + tree-sitter-c + universal-ctags | `tree-sitter`, `tree-sitter-language-pack` | P1 |
+| 向量库 | LanceDB(本地)/ Qdrant(生产) | `lancedb` | P1 / P6 |
+| 静态分析 | sparse / smatch / coccinelle / scan-build(可选) | 内核工具链 | P2 |
+| 符号化 | addr2line / objdump / kallsyms | binutils | P2 |
+| 记忆-基座 | LangGraph Store + PostgresSaver(checkpointer) | `langgraph` + PG + pgvector | P1 |
+| 记忆-抽取/合并 | mem0 OSS(Apache-2.0)— Store 之上的合并层,产物写回 Store/Graphiti | `mem0ai` | P3 |
+| 记忆-时序KG | Graphiti + FalkorDB(Apache-2.0) | `graphiti-core` | P3 进阶 |
+| 记忆-领域KG | LightRAG | `lightrag-hku` | P5 |
+| 检索增强 | BM25 + RRF + `bge-reranker-v2-m3` | — | P1 |
+| web 检索 | Tavily / DDG + httpx+markdownify | deer-flow `community/` | P5 |
+| 沙箱 | 本地沙箱(P0)/ Docker 自建 / OpenHands runtime | — | P0 / P6 |
+| 可观测 | Langfuse(自托管) | — | P0(可选) |
+| 部署 | LangGraph Self-Hosted Lite(免费至 1M 节点)→ 或 FastAPI+PG+Docker | — | P6 |
+
+> **MVP 最小栈(P0-P2 只起这些)**:LangGraph + 本地沙箱 + tree-sitter/ctags + LanceDB + BM25/RRF/rerank + PostgresSaver/SqliteSaver(checkpointer)+ Langfuse(可选)。
+> mem0 / Graphiti / LightRAG / Qdrant / 内核静态分析 / supervisor / deepagents **全部按 §11 阶段叠加,切勿 day-1 全上**——否则会陷在 6 个存储的状态同步里。混合检索(BM25+RRF+rerank)看似重,但对 C 的函数名/宏名/错误码是**最小可行**而非奢侈品,务必在 P1 就上。
+
+> **编排成熟度备注(2026 核实)**:`langgraph-supervisor` 已是生产成熟、多代理编排的事实默认,可放心用;`deepagents` 较新(托管版仍 private beta,开源 harness 快速迭代)。关键坑:`task()` 子代理的 state 交接是**按顶层 key 过滤**的,层级多代理有 [state 丢失风险](https://forum.langchain.com/t/state-loss-in-hierarchical-multi-agent-system-with-deep-agents-and-custom-agentstate/2592)。P5 做 deep_research 时二选一:① 把子代理需回传的字段建模为顶层 key;② 用 `Send`/`Command` 手写 supervisor 拿回全控制权(workflow ① 已是手写 StateGraph,可复用)。
 
 ---
 

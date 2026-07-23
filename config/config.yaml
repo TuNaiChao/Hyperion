@@ -57,18 +57,36 @@ model_roles:
   memory_extractor: deepseek-chat
   title: deepseek-chat
 
-# 工具(声明式 + 反射加载)。domain 工具走 plugins/,按需启用。
+# 工具分组(声明式;工作流按组挂载工具)。
+tool_groups:
+  - name: sandbox       # 命令执行
+  - name: file:read     # 只读:读文件 / 列目录
+  - name: file:write    # 写入:写文件 / 改文件
+
+# 工具(声明式 + 反射加载):每条声明 use: 'module:variable',registry 用反射加载。
+# domain 工具(bluez/wpa 解析等)走 tools/plugins/<name>/,按需启用,不改核心。
 tools:
-  # P1 起逐步填充实现:
-  # - name: bash
-  #   group: sandbox
-  #   use: hyprion.tools.sandbox:bash_tool
-  # - name: grep_symbol
-  #   group: code
-  #   use: hyprion.tools.code_nav:grep_symbol_tool
-  # - name: search_code
-  #   group: code
-  #   use: hyprion.tools.code_nav:search_code_tool
-  # - name: log_extract_patterns
-  #   group: log
-  #   use: hyprion.tools.log:log_extract_patterns_tool
+  - name: bash
+    group: sandbox
+    use: hyperion.tools.sandbox:bash_tool
+  - name: read_file
+    group: file:read
+    use: hyperion.tools.sandbox:read_file_tool
+  - name: write_file
+    group: file:write
+    use: hyperion.tools.sandbox:write_file_tool
+  - name: str_replace
+    group: file:write
+    use: hyperion.tools.sandbox:str_replace_tool
+  - name: ls
+    group: file:read
+    use: hyperion.tools.sandbox:ls_tool
+
+# 沙箱 provider + 参数(P0 本地沙箱;P6 换 Docker 时只改 use 即可)。
+sandbox:
+  use: hyperion.platform.sandbox.provider:LocalSandboxProvider
+  workspace: data/sandbox/workspace
+  bash_command_timeout: 600
+  bash_output_max_chars: 20000
+  read_file_output_max_chars: 50000
+  ls_output_max_chars: 20000

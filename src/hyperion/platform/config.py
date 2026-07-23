@@ -9,9 +9,10 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _ENV_PATTERN = re.compile(r"^\$(\w+)$")
 
@@ -34,12 +35,56 @@ class ModelConfig(BaseModel):
     pricing: dict | None = None
 
 
+class ToolConfig(BaseModel):
+    """config.yaml 里一条工具的声明。
+
+    设计:声明式 + 反射 —— 这里只声明"去哪里加载"(use 字段),真正的工具实现
+    在 registry 用 resolve_variable 按 'module:variable' 动态导入。extra='allow'
+    让 yaml 里的额外键(如 max_results)原样保留,供工具按需读取。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str    # 工具唯一名,也是 agent 看到的工具名
+    group: str   # 分组(sandbox / file:read / file:write ...),工作流按组挂载
+    use: str     # 'module.path:variable' 反射目标,如 hyperion.tools.sandbox:bash_tool
+
+
+class SandboxConfig(BaseModel):
+    """沙箱 provider 与可调参数。extra='allow' 给未来 provider 的特有键留口子。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    use: str = "hyperion.platform.sandbox.provider:LocalSandboxProvider"  # provider 反射目标
+    workspace: str = "data/sandbox/workspace"   # bash 默认 cwd、输出落点
+    bash_command_timeout: float = 600.0         # 单条命令超时(秒),超时杀整组进程
+    bash_output_max_chars: int = 20000          # bash 输出截断阈值
+    read_file_output_max_chars: int = 50000     # read_file 输出截断阈值
+    ls_output_max_chars: int = 20000            # ls 输出截断阈值
+
+
 class AppConfig(BaseModel):
+    """顶层配置(models / model_roles / tools / sandbox)。"""
+
     model_config = ConfigDict(extra="allow")
 
     models: list[ModelConfig] = Field(default_factory=list)
     model_roles: dict[str, str] = Field(default_factory=dict)
-    tools: list[dict] = Field(default_factory=list)
+    tools: list[ToolConfig] = Field(default_factory=list)            # 声明式工具列表
+    sandbox: SandboxConfig = Field(default_factory=SandboxConfig)    # 沙箱 provider + 参数
+
+    # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
+    # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。
+    # 这里在赋值前把 None 强转成空集合,让空段也能正常解析。
+    @field_validator("models", "tools", mode="before")
+    @classmethod
+    def _coerce_none_to_list(cls, v: Any) -> Any:
+        return v if v is not None else []
+
+    @field_validator("model_roles", mode="before")
+    @classmethod
+    def _coerce_none_to_dict(cls, v: Any) -> Any:
+        return v if v is not None else {}
 
     def get_model(self, name: str) -> ModelConfig | None:
         for m in self.models:
