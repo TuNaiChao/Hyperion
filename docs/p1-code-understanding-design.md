@@ -61,13 +61,13 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 
 ## 2. 解析层(`parser.py`) [P1.0]
 
-**多语言**:`tree-sitter-language-pack` 天然支持多语言。P1 以 **Python(deer-flow)** 起步(无宏/头文件,先把切块→嵌入→检索管线跑通),C 的符号查询与难点(宏/static)在 bluez 场景落地时再加(§3)。`parser.py` 接 `language` 参数,按语言切换 tree-sitter 查询——加新语言 = 加一份查询,核心不变。
+**多语言**:用**「每门语言一个独立 grammar 包」**(`tree-sitter-python` / 后续 `tree-sitter-c`),grammar 编译进 wheel、**零联网、可 pin 版本**。**不用 `tree-sitter-language-pack` 1.x** —— 它运行时按需从 GitHub releases 下载语法,**国内网络被墙(已实测 timeout,不可用)**。P1 以 **Python(deer-flow)** 起步(无宏/头文件,先把切块→嵌入→检索管线跑通),C 的符号查询与难点(宏/static)在 bluez 场景落地时再加(§3)。`parser.py` 的 `GRAMMARS` 注册表数据驱动:加新语言 = 加一个 `tree-sitter-<lang>` 依赖 + 注册一条 `LanguageGrammar`(节点类型/字段名),核心抽取逻辑不变。**取 parser 的 API**(0.26 离线版,已实测):`Language(tree_sitter_python.language())` → `Parser(lang)` → `parser.parse(bytes).root_node`,字段取值用 `node.child_by_field_name("name"/"parameters")`,限定名/方法归属沿 `node.parent` 链求。
 
 **双工具互补**(架构 D5):
 
 | 工具 | 职责 | 实现 |
 |---|---|---|
-| **tree-sitter**(主力) | 容错解析 C,提取 `function_definition` / `struct_specifier` / `enum_specifier` / `preproc_def` / `call_expression` 等 AST 节点 + 行范围 | `tree-sitter-language-pack`(已含 tree-sitter-c),`pyproject.toml` 已声明。**注意**:取 C parser 的 API 在新版包是 `get_language("c")`(P1.0 落地时验) |
+| **tree-sitter**(主力) | 容错解析 C,提取 `function_definition` / `struct_specifier` / `enum_specifier` / `preproc_def` / `call_expression` 等 AST 节点 + 行范围 | 独立 grammar 包(`tree-sitter-c`,落地时 `uv add tree-sitter-c`)。API:`Language(tree_sitter_c.language())`(已验 Python 同款写法) |
 | **universal-ctags**(补充) | 符号表(函数 / 宏 / typedef / struct + 位置),补 tree-sitter 不擅长的**宏定义/条件编译** | `ctags -R --output-format=json --fields=+neKz`(`scripts/setup.sh` 装) |
 | clangd / LSP(按需,P1 不做) | 精确 caller/callee,需 `compile_commands.json`(`bear -- make` 生成);万文件级慢 | P1.5 若 C 解析不够准再上(见 §3) |
 
@@ -75,15 +75,18 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 ```python
 @dataclass
 class Symbol:
-    name: str
-    kind: str            # function / struct / macro / typedef / enum
+    name: str                 # 简单名,如 __init__
+    qualified_name: str       # 带归属,如 MyClass.__init__(消歧/code_graph 用)
+    kind: str                 # function / method / class(C 再加 struct/macro/typedef/enum)
+    language: str             # python / c ...
     file: str
-    start_line: int
+    start_line: int           # 1-indexed,整块定义起止行
     end_line: int
-    signature: str | None    # 函数签名(tree-sitter 提取)
+    signature: str | None     # 形参文本,如 (self, name);class 为 None
 
-def parse_repo(root: Path) -> list[Symbol]: ...
-def parse_file(path: Path) -> list[Symbol]: ...
+def parse_repo(root: Path, languages: list[str] | None = None) -> list[Symbol]: ...
+def parse_file(path: Path, language: str | None = None) -> list[Symbol]: ...
+    # language=None 时按后缀推断;.py→python;未知后缀返回 []
 ```
 
 **同时解析 `.h` 头文件**:C 的结构(typedef/struct/宏)大量在头文件,必须一并索引,否则检索覆盖不全。
@@ -99,7 +102,7 @@ def parse_file(path: Path) -> list[Symbol]: ...
 **构造**:
 - tree-sitter 找到所有 `call_expression` 节点 → 提取被调函数名 → 解析到同仓的 `function_definition`。
 - 节点 = 函数;有向边 = A 调用 B。
-- 存储:先 `networkx` 内存图 + 序列化到 `data/code_index/graph.pkl`(P1);规模大时迁 SQLite/Graphiti(P3)。
+- 存储(P1.5 定):**SQLite 关系表做持久化真源**——`calls(caller_id, callee_id, file, line)` 建索引,支持 `get_callers/callees` 快查、可增量改边、跨机可读;**`networkx` 内存图按需从 SQLite 重建**(跑 PageRank / 多跳遍历)。不用 `.pkl`(不可查、版本锁、难增量)。规模大时再评估 Graphiti(P3)。
 
 **对齐 RepoGraph**:行级粒度(函数内调用点的具体行),供后续 Bug-RCA 精确定位。
 
@@ -107,7 +110,7 @@ def parse_file(path: Path) -> list[Symbol]: ...
 - `static` 同名函数跨文件共存 → 名字解析必须带**文件作用域**,不能纯按名字;
 - 大量调用被**宏包装**(如 `DBG(...)`、`bt_log(...)`),tree-sitter 看到的 `call_expression` 名是宏名,不是真函数;
 - 函数指针 / 回调注册(`register_cb(handler)`)根本解析不到被调用者。
-- 可能的出路:ctags 补宏表 + 做宏展开启发式;若仍不准,上 clangd / `compile_commands.json`。**P1.5 起步前先把这条研究透**。
+- 可能的出路:ctags 补宏表 + **宏→被调函数映射启发式**(解析宏体里的 `call_expression`,建 `macro_name → [real_callee]` 字典,图构建时命中即展开边——**抓不住 `##` token 拼接 / 函数指针宏**,只是其一);若仍不准,上 clangd / `compile_commands.json`。**P1.5 起步前先把这条研究透**。
 
 ---
 
@@ -134,6 +137,10 @@ class CodeChunk:
     fts_text: str         # 给 BM25 用的文本(symbol + 标识符 + 注释加权)
 ```
 **`fts_text` 标识符分词**(C 召回关键技巧):同时处理 `snake_case`、`camelCase`、`SCREAMING_SNAKE`(宏)——用正则把标识符拆成词干再拼接,例如 `wpa_supplicant_assoc_req_ie_cb` → `wpa supplicant assoc req ie cb`,`hci_le_CisEstablished` → `hci le cis established`。光按 `_` 拆会漏掉 camelCase/宏。
+
+**`fts_text` 纳入注释 / docstring**(BM25 高信号,低成本):用 tree-sitter 抽函数定义节点**紧邻的前导 `comment` 节点**(C 的 doxygen `/** */` / 行注释)与**函数体首条 docstring**(Python),并入 `fts_text`,可加权重复一次。自然语言描述是纯标识符检索补不上的语义缺口。
+
+**重复 chunk 去重**:多文件相同的 `static inline` / 头文件重复定义会产生内容一致的 chunk。**不在存储层把 `file` 改成列表**(会拖累 schema 和 `read_function` 的单文件语义),而是**检索后按 `content_hash` 合并**同义结果、保留所有 `file:line` 位置;存储层去重留作 P6 优化。
 
 ---
 
@@ -165,11 +172,14 @@ class CodeChunk:
 ```python
 # 伪代码 —— LanceDB 原生 hybrid
 tbl.create_fts_index("fts_text")           # 显式建 FTS 索引(Tantivy BM25)
-(tbl
- .search(query_text, query_type="hybrid")  # 同时跑 FTS(BM25) + 向量
- .where("kind = 'function'", prefilter=True)
- .rerank(RRFReranker(k=60))                 # 倒排融合,模型无关
- .limit(50))
+q = (tbl
+     .search(query_text, query_type="hybrid")  # 同时跑 FTS(BM25) + 向量
+     .rerank(RRFReranker(k=60))                 # 倒排融合,模型无关
+     .limit(50))
+# ⚠️ 默认【不】按 kind 预过滤——struct/宏定义常是关键上下文(如"设备状态结构体"),
+#    一刀切 kind='function' 会丢掉它们。仅当查询显式带 type:function/struct 时才:
+#       q = q.where("kind = 'function'", prefilter=True)
+# reranker 的 metadata 里带 kind,由 cross-encoder 自己判断重要性。
 # 再用 bge-reranker-v2-m3 把 top-50 重排到 top-5
 ```
 
@@ -190,6 +200,7 @@ tbl.create_fts_index("fts_text")           # 显式建 FTS 索引(Tantivy BM25)
 1. tree-sitter tags:每个文件抽出"定义的符号 + 引用的符号"。
 2. 构图:文件为节点,定义-引用关系为边。
 3. **图排名**(PageRank 式):被引用最多的符号 = 最重要。
+   ⚠️ **PageRank 盲点**:同仓内零入边的符号会被低估——而 `main`、信号处理函数、`GSource`/事件循环回调注册处(`g_source_attach(...)`、`register_cb(handler)` 的函数实参)恰恰零入边却最关键(由框架调用,不在同仓调用图里)。**对策**:① 识别「注册型调用」的函数实参,给被注册符号额外权重;② 配 `repo_map.focus_entry_points`(符号名列表,如 `main`、`adapter_ops`)手工兜底。
 4. **token 预算裁剪**(默认 `map_tokens=2048`):只保留排名最高、能塞进预算的定义(签名 + 关键行)。
 
 **输出**:`str`(树形 + 签名,直接喂 LLM)。按 chat 状态动态调大小(无上下文时放大)。延后到 P1.5,等 Bug-RCA 真跑起来再加。
@@ -276,17 +287,35 @@ tools:                                 # 追加 5 条导航工具
 ### 索引运维:首次成本 / 增量更新 / 模型变更
 
 - **首次建索引耗时**:bluez 几十万行 × bge-m3(CPU ~15-20s/批)→ 首次 `index build` 预计**几十分钟级**。对策:分批 embed + 进度打印 + 可选 GPU;别让人误以为卡死。
-- **增量更新(生产必需)**:文件 mtime/git diff 触发重解析 → 按 `CodeChunk.content_hash` 判哪些 chunk 变了 → **只对变化的 chunk 重新 embed + upsert**,删除/重命名走 diff。日常只增量,不全量。
+- **增量更新(生产必需)**:用 **`file_manifest`(见下)做文件级对账**(非只看 mtime)——消失路径 → 删其 chunk;新增 → 嵌入;`content_hash` 变 → 重嵌。日常只增量,不全量。
 - **embedding 模型变更**:检测模型指纹变化 → 触发全量重建(一次性,接受成本)。
+- **批编码(CPU 提速关键)**:bge-m3 CPU 慢,**批量编码**(一次传 chunk 列表),sentence-transformers **动态 pad 到批内最长**(非填到 8K)——小函数批 padding 开销很小。**不要逐条 encode**,按内存调 `batch_size`。
+
+### 索引构建的原子性与状态清单
+
+LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被杀)会留半截脏表,检索直接不可用。生产级必须解决:
+
+- **temp 表 + 原子 rename**:`index build` 先写影子表 `lancedb_tmp`,**全部成功**后原子 rename 成正式表,失败即丢弃 tmp——库里要么是上一份完整旧索引、要么是新索引,无半成品。
+- **`index_manifest.json`**(建库成功后落盘,检索前校验):
+  - `repo_commit`:建库时仓库锁定的 commit(评测基线 / staleness 判定)。
+  - `model_fingerprint`:`embedding.model + 维度`(变 → 全量重建)。
+  - `schema_version`:chunk schema 版本(改 → 全量重建)。
+  - `file_manifest`:`{相对路径: content_hash}` —— 增量更新的对账依据。
+- **重命名 / 移动**:chunk id 含 `file`,改名让旧 id 孤儿。对账时:消失路径删、新增嵌、hash 变重嵌;或用 `git diff --name-status` 的 `R`(rename)状态显式搬运。
 
 ---
 
 ## 11. 评测(`eval/`,P1.3 起)
 
 - **Ground truth**:从 bluez git 历史用 `git log --grep="Fixes:"` + CVE 批量提取 fix commit。
-- **fix → 符号级映射(关键)**:对每个 fix commit,分别对父提交和该提交跑 `parser.py`,diff 出**真正改动的符号**(函数/struct),而不是只记文件——否则评测粒度太粗、判不准命中。这本身是个小工程,P1.3 一并搭。
-- **指标**:Top-1/3/5 Accuracy、MFR(首正确排名)、MAR(平均排名);**P1.3 退出量化标准:top-5 recall ≥ 0.6**。
-- **做法**:给 agent 某 bug 的症状/日志 → 收集 `search_code` 返回的 top-N → 算是否命中 fix 改动的符号。
+- **fix → 符号映射(关键,行级而非符号列表 diff)**:⚠️ **不要**对父/子提交各跑一次 parser 再 diff 符号列表——若某 fix 只改了函数体内几行,父子提交的**符号集合完全相同**,symbol-diff 抓不到被修的函数。正确做法是**行级映射**:① `git diff <parent> <fix>` 拿到改动文件 + 行范围(hunks);② 对**子提交**跑一次 parser;③ 把改动行映射到**包住它的最内层符号**(函数/struct/全局变量/宏)。这组符号 = ground truth。
+- **难度分层 + 负例**(让 0.6 recall 有说服力):查询分三档分别报 recall——
+  - **L1**:查询含正确函数名(精确,基线)。
+  - **L2**:只描述行为 / 日志 / 错误现象(语义检索真正考的档)。
+  - **L3**:跨模块 / 多跳调用链影响(需 code_graph,P1.5 后评)。
+  另配**负例查询**(与 bug 无关的提问),报 precision,防过拟合"修复型语义"。
+- **指标**:Top-1/3/5 Accuracy、MFR(首正确排名)、MAR(平均排名);**P1.3 退出量化标准:L2 档 top-5 recall ≥ 0.6**(L1 应更高,L3 待 P1.5)。
+- **做法**:给 agent 某 bug 的症状/日志 → 收集 `search_code` 返回的 top-N → 算是否命中 fix 改动行的所属符号。
 
 ---
 
@@ -301,6 +330,8 @@ tools:                                 # 追加 5 条导航工具
 | 全量索引慢 / 日常 stale | 增量更新:按 `content_hash` 只重嵌变化 chunk(§10) |
 | LanceDB FTS 对 C 标识符召回弱 | `fts_text` 子串拆词(snake/camel/SCREAMING);不足则启用 bge-m3 sparse 或 rank_bm25 |
 | 调用图同名函数冲突 | 文件作用域消歧 + static/extern 标注;P1 先粗后细 |
+| LanceDB 运行时兼容(ABI / glibc / tantivy) | wheel 已覆盖 cp39-abi3(含 3.12)+ macOS arm64,无需编译;`scripts/setup.sh` 加 `import lancedb` 冒烟测早暴露运行时问题 |
+| tree-sitter 并发解析 | parser 单实例非线程安全;并发建索引走 `multiprocessing`(非 threading),每 worker 各持一个 Parser。P1 单进程顺序建索引即可 |
 
 ---
 
@@ -308,6 +339,8 @@ tools:                                 # 追加 5 条导航工具
 
 1. **embedding 默认模型 → `BAAI/bge-m3`**(本地/免费/8K 上下文,解决 C 长函数截断)。选定锁定,换则全量重建。
 2. **P1.5(repo map + 代码图谱)延后**——P1 主范围先做扎实 P1.0-P1.4(检索 top-5 召回);repo map/调用图等 Bug-RCA 真跑起来再加。届时先按 §3 做 C 解析子调研。
+3. **(v2.2)grammar 包换路**:弃 `tree-sitter-language-pack` 1.x(运行时按需从 GitHub releases 下载语法,国内网络 timeout 不可用)→ 改用**每语言独立 grammar 包**(`tree-sitter-python` / 后续 `tree-sitter-c`),wheel 内置、零联网、可 pin。并发建索引用 `multiprocessing`(parser 单实例非线程安全),P1 单进程顺序建索引即可。
+4. **(v2.2)评审吸收**:采纳——索引原子性 + 状态清单(§10)、评测**行级映射** + 难度分层 + 负例(§11)、fts_text 加注释/docstring(§4)、检索**取消默认 type 预过滤**(§6)、repo map 入口点加权(§7)、图持久化 SQLite+networkx(§3)。纠正——LanceDB wheel 已覆盖 3.12/macOS arm64,无需编译(§12)。
 
 ---
 

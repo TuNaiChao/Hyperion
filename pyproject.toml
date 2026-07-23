@@ -19,8 +19,11 @@ dependencies = [
     "markdownify>=0.13",
     "rich>=13.7",
     # code understanding (coding-agent core)
+    # 语法解析:每门语言用「独立 grammar 包」(把编译好的 .so 打进 wheel),零联网、可 pin 版本。
+    # 不用 tree-sitter-language-pack 1.x —— 它运行时按需从 GitHub releases 下载语法,国内网络被墙(已实测 timeout)。
+    # 加新语言 = 加一个 tree-sitter-<lang> 依赖 + 在 parser.py 的 GRAMMARS 注册一条。
     "tree-sitter>=0.25",
-    "tree-sitter-language-pack>=0.4",
+    "tree-sitter-python>=0.25",  # P1.0 先 Python(deer-flow 首测);C(bluez)落地时加 tree-sitter-c
     "lancedb>=0.20",
     "rank-bm25>=0.2.2",
 ]
