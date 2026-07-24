@@ -24,7 +24,7 @@ dependencies = [
     # 加新语言 = 加一个 tree-sitter-<lang> 依赖 + 在 parser.py 的 GRAMMARS 注册一条。
     "tree-sitter>=0.25",
     "tree-sitter-python>=0.25",  # P1.0 先 Python(deer-flow 首测);C(bluez)落地时加 tree-sitter-c
-    "lancedb>=0.20",
+    "lancedb>=0.34,<0.36",  # P1.3:hybrid/Reranker API 已对照 0.34 核实;锁上限避破坏性变更(见设计文档 §6 决策 #8)
     "rank-bm25>=0.2.2",
 ]
 

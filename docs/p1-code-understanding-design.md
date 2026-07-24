@@ -124,7 +124,7 @@ def parse_file(path: Path, language: str | None = None) -> list[Symbol]: ...
 ```python
 @dataclass
 class CodeChunk:
-    id: str               # 稳定主键 f"{file}:{qualified_name}:{start_line}"(分段加 ":p{N}")
+    id: str               # 稳定主键 f"{file}:{qualified_name}"(分段加 ":p{N}");不含 start_line——含行号对重构太敏感(重排函数顺序→全部 id 变→全量重嵌),行号作普通列。决策 #8
     symbol: str           # 限定名;module chunk 用文件路径
     kind: str             # function | method | class | module
     file: str
@@ -201,28 +201,50 @@ class CodeChunk:
 
 ## 6. 向量库与混合检索(`store.py` + `retrieval.py`) [P1.2-P1.3]
 
-**选 LanceDB,且用其原生混合检索**(避免自搓 BM25+RRF 胶水):
+**选 LanceDB,且用其原生混合检索**(避免自搓 BM25+RRF 胶水)。下述 API 已对照 LanceDB 0.34 官方文档核实(P1.3 调研,见决策 #8)。
+
+### 6.1 store.py:LanceDB 嵌入式表(table-per-repo)
+
+- **schema(pyarrow,生产优于 pydantic LanceModel)**:id / symbol / kind / file / language / start_line / end_line / text / content_hash / fts_text(string)/ vector(`pa.list_(pa.float32(), dim)`,**维度建表时定死**,改维度=新建表迁移)。
+- **embedded 连接**:`lancedb.connect("data/code_index/<repo>/lancedb")`,每仓库一张表(§14.2)。
+- **建表后立即建两个索引**:
+  - `create_scalar_index("id", replace=True)` —— **merge_insert 必须**,否则撞 "unindexed rows > 10000" 报错。
+  - `create_fts_index("fts_text", stem=False, remove_stop_words=False, with_position=True, ascii_folding=True, replace=True)` —— **代码场景关键参数**:`stem=False`(否则 malloc 被 stem 乱变)、**`remove_stop_words=False`**(否则 `int`/`void`/`public`/`return` 被当英文停用词删掉!)、`with_position=True`。§4 的 `fts_text` 预拆词(snake/camel/SCREAMING)是因为 LanceDB 默认 `simple` tokenizer **不拆下划线**(`hci_inquiry_complete` 是一整个 token)——预拆验证必要。
+- **metric**:向量已 L2 归一化 → 用 `dot`(最快);若建 IVF 向量索引,metric 必须**建索引时定**(`create_index("vector", config=IvfFlat(metric="dot", ...))`)。
+- **upsert**:`merge_insert("id").when_matched_update_all("target.content_hash <> source.content_hash").when_not_matched_insert_all().execute(...)` —— 条件更新,只重写 content_hash 变了的行(增量利器);可选 `.when_not_matched_by_source_delete()` 清孤儿。
+- **写后 `tbl.optimize()`**:把新行折叠进 FTS/向量索引,否则新行走 flat scan 慢路径。经验:每 ~10 万行或一批写后一次。
+
+### 6.2 retrieval.py:原生 hybrid + RRF + 远端 reranker
 
 ```python
-# 伪代码 —— LanceDB 原生 hybrid
-tbl.create_fts_index("fts_text")           # 显式建 FTS 索引(Tantivy BM25)
-q = (tbl
-     .search(query_text, query_type="hybrid")  # 同时跑 FTS(BM25) + 向量
-     .rerank(RRFReranker(k=60))                 # 倒排融合,模型无关
-     .limit(50))
-# ⚠️ 默认【不】按 kind 预过滤——struct/宏定义常是关键上下文(如"设备状态结构体"),
-#    一刀切 kind='function' 会丢掉它们。仅当查询显式带 type:function/struct 时才:
-#       q = q.where("kind = 'function'", prefilter=True)
-# reranker 的 metadata 里带 kind,由 cross-encoder 自己判断重要性。
-# 再用 bge-reranker-v2-m3 把 top-50 重排到 top-5
+# 真实 LanceDB 0.34 API(无 hybrid_search()/match_text(),均已弃用)
+from lancedb.rerankers import RRFReranker
+res = (tbl.search(query_type="hybrid",
+                  vector_column_name="vector", fts_columns="fts_text")
+         .vector(qvec)            # 已算好的稠密向量(L2 归一化)
+         .text(query)             # FTS 查询串
+         .limit(candidate_top_n)  # 候选池,默认 50
+         .rerank(reranker)        # RRF(k=60)融合;或自定义 Reranker 子类调远端 reranker
+         .limit(final_top_k)      # 最终,默认 5
+         .to_list())
 ```
 
-- **BM25(FTS)**:对 C 的函数名/宏名/错误码(强词法信号)召回好——这是"必须混合"的根因。靠 §4 的 `fts_text` 预拆词绕过 Tantivy 默认 tokenizer 对 `snake_case` 的不友好。
-- **向量**:语义相似(如"断连处理" ↔ `disconnect_cb`)。
-- **RRF**:`score = Σ 1/(k + rank)`,`k=60`(架构 §5.1,业界默认)。
-- **reranker**:`BAAI/bge-reranker-v2-m3` cross-encoder,只对 top-50,取 top-5。
+- **BM25(FTS)**:对 C 的函数名/宏名/错误码(强词法信号)召回好——"必须混合"的根因(dense 和 sparse 失败模式正交:改名 dense 强、错误串 BM25 强)。
+- **RRF**:`RRFReranker(K=60)` 是 hybrid 默认,**客户端算**(Python SDK 拉回 vector/fts 两个 Table 后融合)。k=60 是 Cormack 2009 原始论文标准,跨 80+ 实验近最优。
+- **reranker(provider 抽象,镜像 embed.py)**:默认**远端** `qwen3-rerank`(DashScope,同 `DASHSCOPE_API_KEY`、¥0.0005/千token≈8万查询=¥1、OpenAI 兼容 `/reranks`),SiliconFlow `BAAI/bge-reranker-v2-m3` **免费** fallback(Cohere 形态),本地仅 GPU 可选(CPU 257s/100doc 不可交互)。用 LanceDB `Reranker` 子类(重写 `rerank_hybrid`)把远端 API 包进 `.rerank()` 接口。reranker 对 **fts_text**(短,标识符+docstring)打分,不对全长代码体(bge-reranker-v2-m3 推荐 1024 token、DashScope 4000 token/doc,fts_text 都装得下)。
+- **默认不按 kind 预过滤**:struct/宏定义常是关键上下文;仅查询显式带 type 时才 `.where("kind='function'", prefilter=True)`。
 
-> 备用:若 LanceDB FTS 对 C 标识符召回仍不足,再引入 `rank_bm25`(已在依赖)做二级精排,或启用 bge-m3 的 sparse 输出。P1 先用原生,简化到单库。
+### 6.3 retrieval 补强(借鉴 CRG search.py)
+
+- **`_out_mode` 可观测**:每查询记录实际走了 hybrid / fts-only / vector-only / keyword / none(fallback),写进结果元数据。
+- **查询类型 boosting**(规则判别,§14.5):PascalCase 查询→Class ×1.5、snake_case→Function ×1.5、含 `.` dotted→qualified_name ×2.0、抽出的标识符命中 ×2.0。C 场景 `wpa_supplicant_add_iface`、`DBus.Message` 直接受益。
+- **三级降级**:hybrid(FTS+向量)→ 仅 FTS → 仅向量 → keyword LIKE,`_out_mode` 记录走了哪条。
+- **context-file boosting**(Bug-RCA 可选):当前打开文件的符号 ×1.5(workflow 传入)。
+
+### 6.4 weakest-link 警示 + 备用
+
+- ⚠️ **RRF 不是越多路越好**([Balancing the Blend, arXiv 2508.01405, 2025-08](https://arxiv.org/html/2508.01405v2)):弱路径会污染融合,实测有 case 比 FTS 单路还差。**加 BGE-M3 sparse/SPLADE 第 3 路前必须单路 eval 消融,弱路径砍掉**。
+- 备用:若 LanceDB FTS 对 C 标识符召回仍不足,引入 `rank_bm25`(已在依赖)做二级精排。bge-m3 sparse 输出仅作消融验证后的可选第三路(默认 Qwen3 无 sparse)。
 
 ---
 
@@ -280,22 +302,31 @@ code_index:
   enabled: true
   repo:
     bluez: data/repos/bluez            # clone 到此(gitignore 已含 data/);锁定某 commit 作评测基线
-  embedding:
-    provider: sentence_transformers    # 或 voyageai
-    model: Qwen/Qwen3-Embedding-0.6B   # 选定不换;换则触发全量重建(GPU 档可切 BAAI/bge-code-v1;CPU 回退 BAAI/bge-m3)
-    max_seq_length: 8192               # 显式设!sentence-transformers 默认 512 会静默截断(Qwen3 可到 32768,按内存调)
-    normalize: true                    # cosine 相似度
-    query_instruction: query           # Qwen3 用 prompt_name="query";bge-m3 留空字符串
-    batch_size: 16                     # CPU 按内存调
-    device: cpu                        # 可选 cuda / mps
-    hf_endpoint: https://hf-mirror.com # 国内下载排雷;海外可删
+  embedding:                           # 实际配置见 config.yaml(P1.2 已落地:远端 OpenAI 兼容默认)
+    provider: openai_compatible        # 远端默认(免下载/免 torch);本地可选 sentence_transformers
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: $DASHSCOPE_API_KEY
+    model: text-embedding-v4           # = Qwen3-Embedding 全血版;换则触发全量重建
+    dimensions: 1024
+    batch_limit: 10                    # DashScope v4 每请求 10 条(CRG 注释点名此限制)
+    normalize: true
+    # 本地模式(provider: sentence_transformers)才用:max_seq_length / device / batch_size / hf_endpoint / query_instruction
   vector_store:
-    path: data/code_index/lancedb
+    path: data/code_index              # table-per-repo:<path>/<repo>/lancedb(§14.2)
   retrieval:
-    rrf_k: 60
-    rerank_top_n: 50
+    rrf_k: 60                          # Cormack 2009 标准
+    candidate_top_n: 50                # 喂 reranker 的候选池
     final_top_k: 5
-    reranker: BAAI/bge-reranker-v2-m3
+    fts_stem: false                    # 代码场景必须关(见 §6.1)
+    fts_remove_stop_words: false       # 代码场景必须关(否则 int/void/public/return 被删)
+    query_boost: true                  # 查询类型 boosting(PascalCase/snake/dotted,§6.3)
+  reranker:                            # provider 抽象,镜像 embedding(§6.2)
+    provider: openai_compatible        # 默认远端;fallback=siliconflow(免费);local=sentence_transformers(GPU)
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1   # ⚠️ rerank 的 /reranks 端点 host 可能异于 embedding,落地时 live 测确认
+    api_key: $DASHSCOPE_API_KEY        # 与 embedding 同一个 key
+    model: qwen3-rerank                # 100+ 语言;¥0.0005/千token
+    fallback: siliconflow              # SiliconFlow BAAI/bge-reranker-v2-m3 免费
+    rerank_top_n: 5
   repo_map:
     map_tokens: 2048                   # P1.5
 
@@ -333,28 +364,54 @@ tools:                                 # 追加 5 条导航工具
 
 ### 索引构建的原子性与状态清单
 
-LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被杀)会留半截脏表,检索直接不可用。生产级必须解决:
+P1.3 调研 + CRG 借鉴后,**原子性按存储引擎分两条路**(决策 #8):
 
-- **temp 表 + 原子 rename**:`index build` 先写影子表 `lancedb_tmp`,**全部成功**后原子 rename 成正式表,失败即丢弃 tmp——库里要么是上一份完整旧索引、要么是新索引,无半成品。
-- **`index_manifest.json`**(建库成功后落盘,检索前校验):
-  - `repo_commit`:建库时仓库锁定的 commit(评测基线 / staleness 判定)。
-  - `model_fingerprint`:`embedding.model + 维度`(变 → 全量重建)。
-  - `schema_version`:chunk schema 版本(改 → 全量重建)。
-  - `file_manifest`:`{相对路径: content_hash}` —— 增量更新的对账依据。
-- **重命名 / 移动**:chunk id 含 `file`,改名让旧 id 孤儿。对账时:消失路径删、新增嵌、hash 变重嵌;或用 `git diff --name-status` 的 `R`(rename)状态显式搬运。
+**① LanceDB 向量库(无事务)**:
+- **全量重建**:`index build` 先写 temp 目录 `data/code_index/<repo>/lancedb_tmp`,全部成功后 `os.rename` 原子切成 `lancedb`(同文件系统 rename 是原子 syscall),失败丢弃 tmp——要么旧索引、要么新索引,无半成品。
+- **增量**:`merge_insert` 条件 upsert(content_hash 不变跳过)本身是批级原子,不需 temp。消失路径用 `when_not_matched_by_source_delete` 清孤儿。
+
+**② SQLite code_graph(P1.5,有事务)** —— 借鉴 CRG `graph.py`:
+- 连接三件套:`isolation_level=None`(禁 Python 隐式事务)+ `journal_mode=WAL`(读写并发)+ `busy_timeout=5000`。
+- 每文件/每批一个 `BEGIN IMMEDIATE` 事务(删旧+插新原子化),`_begin_immediate` 嵌套防御(先 rollback 脏事务再 BEGIN)。**抛弃图层面的 temp+rename**——CRG 经 9 个 schema 版本 + `test_transactions.py` 验证此方案更简更稳、增量友好、长重建期间可读(WAL 快照)。
+
+**`index_manifest.json`**(LanceDB sidecar,建库成功后落盘,检索前校验):
+- `repo_commit`:建库时仓库锁定的 commit(评测基线 / staleness 判定)。
+- `model_fingerprint`:`embedding.model + dim + normalize`(变 → 全量重建)。
+- `schema_version`:chunk schema 版本(改 → 全量重建)。
+- `file_manifest`:`{相对路径: content_hash}` —— 增量对账依据。
+
+**增量加速(借鉴 CRG incremental.py)**:
+- `git diff --name-only -z`(不 walk 文件系统)定位变化文件 + content_hash 短路跳过未变;非 git 仓库回退到 walk + file_manifest 对账。
+- code_graph 增量加 **N 跳依赖追踪**(BFS,max 2 跳 / max 500 文件 / `truncated` 标志防 hub 爆炸),把变化文件的 caller 也拉进重解析集。
+- **并行 parse 串行写**:ProcessPoolExecutor(min(cpu,8),tree-sitter 释放 GIL),LanceDB/SQLite 单写者;MCP stdio 下切 ThreadPoolExecutor(避免子进程继承 stdio 管道死锁)。多进程必须 `spawn` 非 `fork`。
+
+**重命名 / 移动**:chunk id 含 `file`,改名让旧 id 孤儿。对账时:消失路径删、新增嵌、hash 变重嵌;或用 `git diff --name-status` 的 `R`(rename)状态显式搬运。
 
 ---
 
 ## 11. 评测(`eval/`,P1.3 起)
 
-- **Ground truth**:从 bluez git 历史用 `git log --grep="Fixes:"` + CVE 批量提取 fix commit。
-- **fix → 符号映射(关键,行级而非符号列表 diff)**:⚠️ **不要**对父/子提交各跑一次 parser 再 diff 符号列表——若某 fix 只改了函数体内几行,父子提交的**符号集合完全相同**,symbol-diff 抓不到被修的函数。正确做法是**行级映射**:① `git diff <parent> <fix>` 拿到改动文件 + 行范围(hunks);② 对**子提交**跑一次 parser;③ 把改动行映射到**包住它的最内层符号**(函数/struct/全局变量/宏)。这组符号 = ground truth。
-- **难度分层 + 负例**(让 0.6 recall 有说服力):查询分三档分别报 recall——
-  - **L1**:查询含正确函数名(精确,基线)。
-  - **L2**:只描述行为 / 日志 / 错误现象(语义检索真正考的档)。
-  - **L3**:跨模块 / 多跳调用链影响(需 code_graph,P1.5 后评)。
-  另配**负例查询**(与 bug 无关的提问),报 precision,防过拟合"修复型语义"。
-- **指标**:Top-1/3/5 Accuracy、MFR(首正确排名)、MAR(平均排名);**P1.3 退出量化标准:L2 档 top-5 recall ≥ 0.6**(L1 应更高,L3 待 P1.5)。
+P1.3 调研(前沿评测方法论 + CRG eval 框架借鉴)后强化。退出标准从单指标 0.6 改为**多指标 + 置信区间**(决策 #8)。
+
+- **Ground truth(独立于检索系统)**:从 bluez git 历史用 `git log --grep="Fixes:"` + CVE 批量提取 fix commit。
+- **fix → 符号映射(关键,行级)**:⚠️ 不要对父/子提交各跑 parser 再 diff 符号列表(函数体内几行改动时父子符号集合相同,symbol-diff 抓不到)。正确:**行级映射** ① `git diff <parent> <fix>` 拿改动文件 + 行范围(hunks);② 对子提交跑一次 parser;③ 改动行映射到**包住它的最内层符号**(函数/struct/全局/宏)。这组符号 = ground truth。此法**独立于检索系统**(SWE-bench/SweLoc/Defects4J 标准做法)。
+- **⚠️ 循环论证警示(借鉴 CRG impact_accuracy)**:**禁止**用"图里的 caller"当金标去评"检索能否找到 caller"——那是循环上界(预测器和金标走同一张图)。金标必须来自 git diff(独立证据)。若同时报图派生金标,CSV 加 `ground_truth_mode` 列并标注 "upper bound"。
+- **⚠️ 数据污染警示(SWE-Bench Illusion, NeurIPS 2025)**:公开 issue 评测集会被 LLM 记忆(凭 issue 文本猜文件路径 76%)。**评测集必须用时间 cutoff 后的新 issue + 跨 repo 验证(holdout)**,否则 recall 虚高。
+- **难度分层(量化)**:
+  - **L1 词汇**:query 含 gold 符号名/文件名(Rouge-1 ≥ 0.3 或符号 token 命中)。
+  - **L2 语义**:query 描述行为/日志/错误现象,同模块内(Rouge-1 ∈ [0.1, 0.3])——**退出标准瞄准这档**。
+  - **L3 推理**:跨模块/多跳调用链(Rouge-1 < 0.1 或 gold 跨 ≥2 文件,需 code_graph,P1.5 后评)。
+- **负例 / precision**:配 confuser 负例(同子系统、函数名相近、无关),报 precision@5,防"全塞进去"刷分。
+- **指标(自己实现,CRG scorer 不够——它无 Recall@k/nDCG/多标签 MRR)**:Recall@k、Precision@k、多标签 MRR、nDCG@k,走 BEIR 标准;BEIR 兼容 JSONL(corpus/queries/qrels)。
+- **harness(借鉴 CRG eval/runner.py)**:注册表 + 统一 `run(query_set, retriever, config) -> list[dict]` 签名 + try/except 异常隔离(一个 benchmark 挂不影响其他)+ **失败语义**(`status="error"` 列,绝不默认 recall=0/1,回归测试钉死)+ 可复现性校验(全量 clone 禁 `--depth` + returncode 检查 + pin 校验)。runner 写 JSONL,reporter 后处理成对比表。
+- **P1.3 退出量化标准(评测集 ≥150 条,L1/L2/L3 各 ≥50,95% bootstrap CI)**:
+  1. L2 recall@5 ≥ **0.55**(CI 下界 ≥ 0.45)
+  2. L2 precision@5 ≥ **0.40**
+  3. L2 MRR ≥ **0.45**
+  4. L1 recall@5 ≥ **0.85**(sanity)
+  5. BM25 baseline L2 recall@5 ≤ **0.40**(证明语义检索真有增益)
+  6. holdout repo(训练未见)衰减 ≤ 15pp(防过拟合)
+  > 公开数据点:BM25 SWE-bench-Lite function Acc@5=0.32、CodeRankEmbed=0.59、SweRankEmbed-Large=0.72。0.55 对"通用 embedding 起步、未领域微调"是诚实目标;v1 数据出来后再决定是否收紧到 0.6。
 - **做法**:给 agent 某 bug 的症状/日志 → 收集 `search_code` 返回的 top-N → 算是否命中 fix 改动行的所属符号。
 
 ---
@@ -384,12 +441,21 @@ LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被
 5. **(2026-07-24)P1.1 切块落地**:对照 [cAST](https://arxiv.org/html/2506.15655v1)(EMNLP 2025)调研后——符号边界切块取 cAST 的 split、不取跨符号 merge;新增模块级 chunk 兜底(import/常量)保覆盖率 100%;docstring 抽取归 parser(parse-once);超大符号 AST 切分 + 前导注释抽取延后到 C 场景(bluez);chunk_expansion 元数据头留 P1.2 embed;chunk 大小用非空白字符数。详见 §4「P1.1 落地决策」。
 6. **(2026-07-24)P1.2 选型复核**:前沿调研(Qwen3-Embedding 2025-06、bge-code-v1 2025-05、CoIR/MTEB 榜)后改默认模型(见决策 #1)。审核 §5 发现 6 处实现改进——① `max_seq_length` 须显式设(sentence-transformers 默认 512 静默截断,会抽空"8K/32K 装下长函数"卖点)且进指纹;② 指纹扩成 `model_name+dim+max_seq_length+normalize`;③ chunk_expansion 用注释行非管道串(§4);④ HF 国内下载走 `hf-mirror.com`;⑤ 批编码用 sentence-transformers 原生动态 padding;⑥ 维度动态取。完整三态加载冷却 + ONNX int8 提速记 backlog(#8/#9)。
 7. **(2026-07-24)向量库设计决策**:评审 [向量数据库设计分析报告.md](向量数据库设计分析报告.md) + 2026 最佳实践后——坚持 LanceDB 嵌入式,拒绝 Qdrant 收敛(本地优先 / 规模未到 / 两台机一致);多仓库(systemd / pipewire 等)走 table-per-repo;`store.py` 抽象 `VectorStore` 接口留 Qdrant 扩展性(**P1 不实现 QdrantStore**,只留接口口子);升级触发器 = 常驻服务 / 千万级向量 / 多用户在线;吸收报告合理内核(规则意图 RRF、payload callers/callees、Recall 评测),拒绝过度(多租户 shard、蓝绿、BQ、在线监控)。详见 §14。
+8. **(2026-07-24)P1.3 调研吸收 + code-review-graph 借鉴**:前沿调研 5 路(LanceDB 0.34 真实 API / bge-reranker 远端 vs 本地 / 混合检索前沿 RRF+TRF+weakest-link / 代码评测 CoIR+SWE-bench)+ 参考项目 [code-review-graph](https://github.com/tirth8205/code-review-graph)(本地 `code-review-graph/`,3 簇深读:检索·store·embedding / graph·增量·原子性 / eval)后定:
+   - **LanceDB 真实 API**(§6):无 `hybrid_search()`/`.match_text()`(弃用),hybrid 走 `.search(query_type="hybrid").vector().text().rerank().limit()`;FTS 代码场景 `stem=False`/`remove_stop_words=False`/`with_position=True`;upsert 用 `merge_insert`+id scalar index;写后 `optimize()`;锁 `lancedb>=0.34,<0.36`。
+   - **reranker provider 抽象**(§6.2):默认远端 DashScope `qwen3-rerank`(同 key/同价/OpenAI 兼容),SiliconFlow `BAAI/bge-reranker-v2-m3` 免费 fallback,本地仅 GPU(CPU 257s/100doc 不可交互);LanceDB `Reranker` 子类包远端 API。
+   - **原子性分两条路**(§10):SQLite code_graph 走 `BEGIN IMMEDIATE`+WAL(弃 temp+rename,借鉴 CRG graph.py 9 版本验证);LanceDB 全量重建走目录 swap,增量走 merge_insert。
+   - **retrieval 补强**(§6.3,借鉴 CRG search.py):`_out_mode` 可观测 + 查询类型 boosting + 三级降级。
+   - **退出标准改多指标**(§11):L2 recall@5 0.55(CI 0.45)+ precision@5 0.40 + MRR 0.45 + L1 0.85 + BM25 baseline 0.40 + holdout 衰减 15pp。弃单指标 0.6(偏进取)。
+   - **chunk id 去 start_line**(§4):改 `{file}:{qualified_name}`(+`:p{N}`),行号作普通列(重构稳健性,借鉴 CRG)。
+   - **eval harness**(§11,借鉴 CRG eval/runner.py):注册表+统一签名+异常隔离+失败语义+循环论证警示+SWE-Bench Illusion 污染警示。
+   - backlog +TRF(#10)/CoSQA+ 自动金标(#11)/embedding provider 硬化(#12)。
 
 ---
 
 ## 14. 向量库设计决策
 
-**背景**:本节回应 [向量数据库设计分析报告.md](向量数据库设计分析报告.md)(V1.0)提出的 7 大优化建议,结合 2026 年向量库最佳实践调研,给出 Hyperion 的最终取向,白纸黑字固化,避免被同类"上 Qdrant"建议反复带偏。
+**背景**:向量库选型与设计的完整分析见 [向量数据库设计分析报告.md](向量数据库设计分析报告.md)(v2.0,P1.3 落地版,反映 LanceDB 0.34 + CRG 借鉴后的最新进展)。本节固化核心决策,白纸黑字,避免被同类"上 Qdrant"建议反复带偏。
 
 ### 14.1 引擎:坚持 LanceDB 嵌入式,拒绝 Qdrant 收敛
 
@@ -442,16 +508,16 @@ class VectorStore(Protocol):
 | **多用户并发在线查询**(SaaS) | Qdrant client-server |
 | 仓库数到**几百 + 亿级向量** | Milvus |
 
-### 14.5 对报告其余建议的取舍
+### 14.5 对外部常见建议的取舍
 
-| 报告建议 | 取舍 |
+| 外部常见建议 | 取舍 |
 |---|---|
-| 意图感知自适应 RRF(2.3) | 🟡 内核采纳,分阶段:P1 固定 k=60;P1.3 评测不达标则加**规则判别**(0x/ERR_/大写宏→强 BM25),**不引 Qwen3 分类器**;BM25 高置信捷径留 P1.3 |
-| 拓扑两阶段检索(2.4) | 🔁 已规划 = §7 repo_map + P1.5 code_graph;吸收"payload 存 callers/callees 供图扩散"(CodeChunk 已预留字段) |
-| 嵌入模型版本管理(2.5) | 🟡 版本元数据已由 `model_fingerprint` 覆盖(§5 / embed.py);**拒绝蓝绿零停机**(本地工具非 7×24) |
-| HNSW 调参 + BQ(2.6) | 🟡 调参评测驱动(先默认);**拒绝 BQ**(几十万 chunk 内存非瓶颈,<5% 召回损失不划算) |
-| 可观测看板(2.7) | 🟡 Recall@k 评测 = §11;**拒绝在线延迟 / 过滤选择性监控**(本地非在线服务) |
-| 多租户 shard(2.2) | ❌ 拒绝(非多租户,table-per-repo 足够) |
+| 意图感知自适应 RRF | 🟡 内核采纳,分阶段:P1 固定 k=60;P1.3 评测不达标则加**规则判别**(0x/ERR_/大写宏→强 BM25),**不引 Qwen3 分类器**;BM25 高置信捷径留 P1.3 |
+| 拓扑两阶段检索 | 🔁 已规划 = §7 repo_map + P1.5 code_graph;吸收"payload 存 callers/callees 供图扩散"(CodeChunk 已预留字段) |
+| 嵌入模型版本管理 | 🟡 版本元数据已由 `model_fingerprint` 覆盖(§5 / embed.py);**拒绝蓝绿零停机**(本地工具非 7×24) |
+| HNSW 调参 + BQ | 🟡 调参评测驱动(先默认);**拒绝 BQ**(几十万 chunk 内存非瓶颈,<5% 召回损失不划算) |
+| 可观测看板 | 🟡 Recall@k 评测 = §11;**拒绝在线延迟 / 过滤选择性监控**(本地非在线服务) |
+| 多租户 shard | ❌ 拒绝(非多租户,table-per-repo 足够) |
 
 ---
 
@@ -465,3 +531,5 @@ class VectorStore(Protocol):
 - 重排:[bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3)
 - 向量库:[LanceDB Hybrid Search](https://docs.lancedb.com/search/hybrid-search) · [RRF Reranker](https://docs.lancedb.com/reranking/rrf)
 - SWE 基准:[SWE-bench](https://www.swebench.com/)
+- 混合检索前沿:[Balancing the Blend (arXiv 2508.01405, 2025-08)](https://arxiv.org/html/2508.01405v2)(weakest-link + TRF)· [SWE-Bench Illusion (NeurIPS 2025)](https://arxiv.org/abs/2506.12286)(评测污染)
+- 参考实现:[code-review-graph](https://github.com/tirth8205/code-review-graph)(本地 `code-review-graph/`,P1.3 借鉴其 SQLite 图 / 增量 / 原子性 / hybrid / eval 框架)——完整调研与借鉴清单见 [code-review-graph-调研与借鉴.md](code-review-graph-调研与借鉴.md)

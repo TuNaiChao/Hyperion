@@ -16,9 +16,11 @@ build/
 # Runtime / sandbox data(agent 工作区、输出等运行时产物)
 data/
 
-# Reference implementation — clone separately on each machine
+# Reference implementations — clone separately on each machine(只读参考,各自 clone)
 #   git clone https://github.com/bytedance/deer-flow
 deer-flow/
+#   git clone https://github.com/tirth8205/code-review-graph  (P1.3 借鉴:SQLite 图/增量/原子性/hybrid/eval)
+code-review-graph/
 
 # OS / editor
 .DS_Store

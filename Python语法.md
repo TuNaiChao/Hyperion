@@ -121,19 +121,124 @@ def bash_tool(description: str, command: str) -> str:
 
 
 
+## src/hyperion/services/code_index/parser.py
+
+*  `@dataclass(frozen=True)` 核心作用（三句笔记）
+  1. **自动省力气**：不用手写 `__init__`、`__repr__` 和 `__eq__`，Python 自动帮你把这些基础代码全生成好。
+  2. **绝对只读**：对象一旦创建（比如 `s = Symbol(name="run", ...)`），**它的所有属性终生无法修改**。强行赋值 `s.name = "new"` 会直接报错。
+  3. **支持哈希（最核心）**：因为属性不可变，这个对象天然成为“可哈希（Hashable）”的，**可以放心拿去当字典（dict）的 Key**，或者塞进集合（set）里面去重。
+
+* `@dataclass` 的核心作用（三句大白话）
+  1. **省去写 `__init__` 的体力活**：以前你定义一个包含 `name` 和 `age` 的类，必须手写 `def __init__(self, name, age): self.name = name; self.age = age`。用了 `@dataclass`，**你只需声明 `name: str; age: int`，Python 就自动帮你把构造函数写好了**。
+  2. **打印时自动生成“漂亮格式”**：如果你直接 `print(对象)`，以前会打印出 `<__main__.Symbol object at 0x...>`（机器码，人类看不懂）。用了 `@dataclass`，打印时会自动变成 `Symbol(name='run', file='a.py')`，**非常方便你边调试边看数据**。
+  3. **自动帮你实现“相等比较”**：以前你要比较两个对象是否内容一模一样，必须手写 `__eq__` 方法。用了 `@dataclass`，直接写 `symbol1 == symbol2` 就能自动按字段内容比对，不用再操心底层内存地址。
 
 
 
+## src/hyperion/services/code_index/chunker.py
+
+* BM25算法
+
+BM25 是一种基于概率模型的**字面关键词匹配排序算法**，专为高效检索而设计。它的打分逻辑包含三个核心要素：词在文档中**出现次数越多分越高**、词在所有文档中**越罕见权重越高**、以及**文档越长会对得分进行惩罚**（防止长文靠字数作弊）。
+
+它最大的优点是**速度极快、完全离线且无需 GPU**，但在语义理解上存在硬伤——**只懂字面匹配，不懂同义语义**（例如搜“苹果”绝不会命中“iPhone”）。
+
+因此在现代 Agent 检索链路中，BM25 只负责**“极速一级海选（粗筛）”**，必须与**向量检索（语义召回）**以及**重排序模型（精排）**结合使用。在工程落地时，代码标识符（如 `wpa_supplicant`）必须**提前拆分成词干**喂给它；为了提升召回精度，通常会对**符号名和文档注释进行词频加权**，同时务必剔除 `def`、`self` 这类高频无义的停用词。
 
 
 
+## src/hyperion/services/code_index/embed.py
+
+`@property` 的核心作用用三句话就能概括：
+
+1. **优雅伪装**：把“方法”变成“属性”来调用，省去加括号 `()` 的麻烦，代码更直观。
+2. **保护配置**：强制字段“只读”（如 `dim` 和 `fingerprint`），防止外部意外篡改导致表结构错乱。
+3. **动态计算**：支持在内部写逻辑（如根据远端 API 动态获取向量维度），同时配合 `Protocol` 能强制子类必须实现此属性。
 
 
 
+## src/hyperion/services/code_index/store.py
+
+* @staticmethod：**"放在类里面、但不碰实例(self)的工具函数"**。
+
+Python 类里三种方法:
+
+| 写法            | 第一个参数   | 能用啥                              |
+| --------------- | ------------ | ----------------------------------- |
+| 普通方法        | `self`(实例) | 能读写实例的数据(self._tables 等)   |
+| `@classmethod`  | `cls`(类)    | 能访问类本身(做工厂方法)            |
+| `@staticmethod` | **啥都不要** | 就是个普通函数,只是逻辑上挂在类名下 |
+
+```python
+@staticmethod
+def _create_indexes(tbl: Any) -> None:
+    from lancedb.index import BTree, FTS
+    tbl.create_index("id", config=BTree())
+    ...
+```
+
+它只需要 `tbl` 这个参数干活,**不需要 `self`**(不碰实例的 `_tables` 缓存等)。为什么还放类里?因为它逻辑上只服务 `LanceDBStore`(只有它建索引),放类下命名清晰(`LanceDBStore._create_indexes`)。用 `@staticmethod` 就是明确告诉读代码的人:"这方法不依赖实例状态,给个 tbl 就能跑"。
+
+- **类比**:类是个工具箱。普通方法是用工具箱里**材料**干活(要 `self`);`@staticmethod` 是工具箱里一个**独立工具**,你递东西给它它就干活,不碰工具箱里的东西。
+- 不加 `@staticmethod` 会怎样?那它第一个参数就得是 `self`,调用时 Python 会自动把实例塞进去,但你函数体根本不用 `self`——浪费且误导。加 `@staticmethod` 就免了 `self`,调用 `LanceDBStore._create_indexes(tbl)` 或 `self._create_indexes(tbl)` 都行,都只传 `tbl`。
+
+> 一句话:**`@staticmethod` = "这个方法不需要 self,是个挂在类名下的纯函数"**。
 
 
 
+# 项目框架
 
+### **src/hyperion/services/code_index/parser.py**：拿着代码文件，用 Tree-sitter 解析出**符号卡片（Symbol）**。
 
+`Symbol` 是一个不可变的数据类（`frozen=True`）。它**不包含**整个函数的代码正文，只包含**“定位元数据”**，相当于一张只写了坐标和姓名的卡片：
 
+- **身份ID**：`name`（函数名）、`qualified_name`（带类的全名，如 `Agent.run`）。
+- **地址**：`file`（在哪个文件）、`start_line` 和 `end_line`（起止行号）。
+- **特征**：`kind`（是函数还是类）、`signature`（参数长什么样，如 `(self, question)`）、`docstring`（功能描述）。
+- **作用**：卡片虽小，但包含了该符号在物理世界的**绝对坐标**。
+
+### **src/hyperion/services/code_index/chunker.py**：
+
+拿到 `Symbol` 列表，做两件事：
+
+- **去代码正文**：根据 `Symbol` 里的 `start_line` 和 `end_line`，去源码里把整段**代码正文**切下来。
+- **做检索预处理**：根据 `Symbol` 里的 `docstring` 和函数体内标识符，生成给 BM25 用的**词袋（fts_text）**。
+
+最后把“代码正文”和“词袋”打包成最终的业务单元——**CodeChunk**，下一步存入向量数据库。
+
+### **src/hyperion/services/code_index/embed.py**:
+
+`embedder.embed_chunks(chunks)` 接收上述 Chunk，拼接元数据注释头，调用远端 API（如阿里 DashScope）或本地模型（sentence-transformers）→ 产出 **`np.ndarray`（(N, dim) 的向量矩阵）**。
+
+1. **`fingerprint`（模型指纹）联动“全量重索引”**：
+   你看到 P1.2 里每个 Embedder 都有 `fingerprint` 属性。`index.py`（索引构建器）在启动时，会读取这个指纹，并写入索引元数据文件。**如果明天你换了模型（比如从阿里云切到本地 Qwen3），`fingerprint` 变了，`index.py` 就会自动清空 LanceDB 表，强制重新执行 P1.0 -> P1.1 -> P1.2**，防止向量空间不一致导致检索出垃圾。
+2. **`expand_chunk_text` 打破了“AI 不懂代码出处”的瓶颈**：
+   普通 RAG 只是把代码正文投进模型，模型不知道这行代码属于哪个文件。P1.2 这一步拿着 P1.0 和 P1.1 给的元数据，用代码注释的形式“喂”进嵌入模型，让模型在生成向量时，把“文件的命名空间”和“代码的功能类型”一起考虑进去。
+
+### **src/hyperion/services/code_index/store.py**：
+
+1. FTS = Full-Text Search(全文检索)
+
+**就是"按词搜全文"**。你数据库里存了一堆文本(我们存的是 `fts_text` 词袋),想搜 "disconnect",FTS 引擎能快速找出所有含这个词的文本,并按相关度排序。
+
+- 我们用的是 LanceDB 内嵌的 **Tantivy**(Rust 写的全文检索引擎)+ **BM25** 排序算法(BM25 = "Best Matching 25",工业标准的"这个词在这篇文档里有多重要"打分公式,词频越高、越罕见,分越高)。
+- **类比**:Ctrl+F 是找精确子串;FTS 是"聪明的 Ctrl+F"——按词索引、按相关度排序、能处理大小写/词形。像图书馆目录,把每本书的每个词都建了索引,你查词它秒给最相关的几本。
+- **我们为什么需要它**:hybrid 检索有两条路——FTS(BM25)负责**词法命中**(函数名、宏名、错误码这类精确 token,如搜 `disconnect_cb` 直接命中),向量负责**语义命中**(搜"断连处理"也能命中 `disconnect_cb`)。两条路互补(见下面 RRF)。
+
+2. RRF = Reciprocal Rank Fusion(倒数排名融合)
+
+**把两条检索路的排名"融合"成一个综合排名的办法**。
+
+问题:FTS 给一个排名(按 BM25 分),向量给另一个排名(按 cosine 相似度),怎么合并?**不能直接比分数**——BM25 分可能是 0~20,cosine 分是 0~1,量纲完全不同,直接加或平均是错的。RRF 的妙招:**只看第几名(排名),不看原始分数**:
+
+```
+综合分 = Σ 1/(k + 排名)        # k=60 是经验常数
+```
+
+排第 1 名 → 1/61,排第 50 名 → 1/110。两条路都把某个 chunk 排前面 → 它的综合分就高。
+
+- **类比**:两个评委各给选手**排名**(不评分,只说第几)。RRF 就是把两位评委的排名综合——两位都把你排前面的选手,最终就靠前。k=60 是平滑常数,让第 1 名不至于独大。
+- **我们代码里在哪**:`store.py` 的 `hybrid_search` 里 `.rerank(RRFReranker(K=60, ...))`——就是 LanceDB 把 BM25 和向量两路结果用 RRF 融合,返回带 `_relevance_score` 的候选。后面 `retrieval.py` 再用 cross-encoder 把这批候选精排到 top-5。
+
+> 一句话:**FTS 和向量各搜一路,RRF 把两路排名合一路**。
 

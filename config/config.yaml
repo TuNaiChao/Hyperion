@@ -115,3 +115,21 @@ code_index:
     # device: cpu                     # cuda / mps
     # hf_endpoint: https://hf-mirror.com
     # query_instruction: query        # Qwen3 用 prompt_name="query";bge-m3 留空
+
+  # 检索(P1.3 retrieval.py):LanceDB 原生 hybrid(BM25 FTS + 稠密向量)+ RRF 融合 + reranker 重排。
+  retrieval:
+    rrf_k: 60                          # Cormack 2009 标准,跨 80+ 实验近最优,几乎不用调
+    candidate_top_n: 50                # 喂 reranker 的候选池(hybrid 取 top-50)
+    final_top_k: 5                     # reranker 后最终返回
+    fts_stem: false                    # 代码场景必须关(否则 malloc 等 token 被 stem 乱变)
+    fts_remove_stop_words: false       # 代码场景必须关(否则 int/void/public/return 被当英文停用词删掉)
+    query_boost: true                  # 查询类型 boosting(PascalCase→Class / snake→Function / dotted→qualified)
+
+  # 重排(P1.3 retrieval.py):provider 抽象,镜像 embedding。默认远端(CPU 本地 257s/100doc 不可交互)。
+  reranker:
+    provider: openai_compatible        # 默认远端;sentence_transformers=本地(仅 GPU);off=关
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1   # ⚠️ rerank 的 /reranks 端点 host 可能异于 embedding,落地时 live 测确认
+    api_key: $DASHSCOPE_API_KEY        # 与 embedding 同一个 key
+    model: qwen3-rerank                # 100+ 语言;¥0.0005/千token(同 embedding 价,≈8 万次查询=¥1)
+    fallback: siliconflow              # SiliconFlow BAAI/bge-reranker-v2-m3 免费(Cohere 形态);off=关
+    rerank_top_n: 5

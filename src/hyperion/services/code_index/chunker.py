@@ -70,7 +70,7 @@ class CodeChunk:
     frozen=True 让它可哈希、可作 set / dict key(后续去重、比对方便)。
     """
 
-    id: str  # 稳定主键:f"{file}:{qualified_name}:{start_line}"(超长分段再加 ":p{N}")
+    id: str  # 稳定主键:f"{file}:{qualified_name}"(超长分段再加 ":p{N}");不含 start_line——含行号对重构太敏感(重排函数顺序→全部 id 变→全量重嵌),行号作普通列。决策 #8
     symbol: str  # 限定名,如 "Agent.run";module chunk 用文件相对路径
     kind: str  # function | method | class | module
     file: str  # 相对仓根路径(与 Symbol.file 一致)
@@ -241,16 +241,21 @@ def _module_fts_text(text: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _chunk_id(file: str, symbol: str, start_line: int, part: int) -> str:
-    """生成稳定的 chunk 主键(超长分段时尾部加 :p{N})。"""
-    base = f"{file}:{symbol}:{start_line}"
-    return base if part == 1 else f"{base}:p{part}"
+def _chunk_id(file: str, symbol: str, part: int = 1) -> str:
+    """生成稳定的 chunk 主键(超长分段时尾部加 :p{N})。
+
+    不含 start_line:含行号对重构太敏感(重排函数顺序→全部 id 变→触发全量重嵌)。
+    qualified_name 在同文件内唯一(含 parent.method 消歧)。C 的 struct/函数同名边缘情况
+    留 P1.5 C 子调研用 kind 区分。决策 #8。
+    """
+    base = f"{file}:{symbol}"
+    return base if part <= 1 else f"{base}:p{part}"
 
 
 def _symbol_to_chunk(sym: Symbol, text: str, part: int = 1, total: int = 1) -> CodeChunk:
     """把一个 Symbol(及其切出的代码文本)包成一个 CodeChunk。"""
     return CodeChunk(
-        id=_chunk_id(sym.file, sym.qualified_name, sym.start_line, part),
+        id=_chunk_id(sym.file, sym.qualified_name, part),
         symbol=sym.qualified_name,
         kind=sym.kind,
         file=sym.file,
@@ -291,7 +296,7 @@ def _module_chunk(file: str, language: str, lines: list[str], spans: list[tuple[
     module_name = Path(file).as_posix()  # 用相对路径当模块名,够唯一
 
     return CodeChunk(
-        id=_chunk_id(file, "<module>", start_line, 1),
+        id=_chunk_id(file, "<module>"),
         symbol=module_name,
         kind="module",
         file=file,
