@@ -32,6 +32,13 @@ dependencies = [
 providers = ["langchain-anthropic>=1.0", "langchain-ollama>=1.0"]
 memory = ["mem0ai>=0.1"]
 graph = ["graphiti-core>=0.10"]
+# 本地 embedding(P1.2 embed.py 的 LocalEmbedder):默认走远端 OpenAI 兼容 API
+# (DashScope / SiliconFlow,复用 langchain-openai,零新依赖、不装 torch);只有要离线 /
+# 数据不出本地时才装这套(会拉 torch ~800MB+)。`uv sync --extra embedding-local`。
+embedding-local = [
+    "sentence-transformers>=2.7",
+    "transformers>=4.51.0",  # Qwen3-Embedding 要求 >=4.51,否则 KeyError: 'qwen3'
+]
 
 # Dev tools live in a dependency group (PEP 735): `uv sync` installs the `dev`
 # group by default, so the bare `uv run pytest` / `uv run ruff` documented in

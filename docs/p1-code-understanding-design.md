@@ -150,29 +150,52 @@ class CodeChunk:
 - **新增「模块级 chunk」**(kind=`module`):把每个文件里不属于任何函数/类的代码(import / 全局常量 / `if __name__`)聚成一个 chunk,保证覆盖率 100%(cAST 的 plug-and-play)。靠 parser 新增的 `iter_source_files` 全文件遍历实现(只按符号分组会漏无符号文件,如纯 import 的 `__init__.py`)。
 - **docstring 抽取归 parser**:`Symbol` 加 `docstring` 字段,parser 同一遍 DFS 抽好(parse-once、AST 精确),chunker 不碰 AST。**前导 comment / doxygen 抽取延后**到 C 场景([backlog #7](../.claude/memory/backlog-production-grade.md))——Python 靠 docstring 已够。
 - **chunk 大小用非空白字符数**(学 cAST,`MAX_CHUNK_CHARS=20000`),不用 token(省掉 tokenizer 依赖)。
-- **chunk_expansion(嵌入元数据头)**留到 P1.2 `embed.py`:嵌入时拼 `file|symbol|kind` 头 + 代码,让向量带上下文。
+- **chunk_expansion(嵌入元数据头)**留到 P1.2 `embed.py`:嵌入时在代码前拼**语言对应的注释行**(Python `#` / C `//`)再嵌——如 `# file: src/adapter.c · function: disconnect_cb · lang: c\n<原始代码>`。用注释而非 `file|symbol|kind` 管道串:注释是代码的一部分(模型训练分布内),缓解 document(带头)/ query(自然语言、不加)的不对称;靠 BM25 兜词法、reranker 兜语义。query 端不加(无元数据可加,加了反成噪声)。
 - **id 用 `qualified_name`** 消歧同类同名;**callers/callees** 留 P1.5 code_graph 回填。
 
 ---
 
 ## 5. Embedding(`embed.py`) [P1.2]
 
-**决策:默认 `BAAI/bge-m3`(本地/免费,8K 上下文)**;`voyage-code-3` 作为付费可选(代码专用、更强)。
+**决策(2026-07-24 选型复核后改):默认 `Qwen/Qwen3-Embedding-0.6B`** —— 本地/免费/0.6B/32K 上下文/代码为核心能力/CPU fast。`bge-code-v1`(~7B,CoIR 开源 SOTA)作 **GPU 可选档**;`BAAI/bge-m3` 留 **CPU 回退**;`voyage-code-3` 作 API 付费可选。Embedder 模型无关,config 一行切换。
 
-| 维度 | **bge-m3(默认)** | bge-large-en-v1.5(已否决) | voyage-code-3(可选) |
-|---|---|---|---|
-| 部署 | 本地(sentence-transformers) | 本地 | API(付费,需 voyage key) |
-| 上下文 | **8192 token(整函数内)** | 512(长函数截断) | 32K |
-| 检索模式 | dense + sparse + 多向量(P1 只用 dense;sparse 留作后续替/补 BM25) | dense only | dense only |
-| query 前缀 | 不需要 | 需要 "Represent this..." 前缀 | 不需要 |
-| 代码专用 | 否(通用多语,但 8K + 多功能) | 否 | 是(代码基准 +14~17%) |
-| 代价 | 0 费用,但模型 ~2.3GB、**CPU 推理较慢**(批 15~20s,首建见 §10) | ~1.3GB、较快 | 按 token 付费 |
+| 维度 | **Qwen3-Embedding-0.6B(默认)** | bge-code-v1(GPU 可选) | bge-m3(CPU 回退) | voyage-code-3(API 可选) |
+|---|---|---|---|---|
+| 部署 | 本地(sentence-transformers) | 本地(**需 GPU**) | 本地 | API(付费) |
+| 参数/大小 | 0.6B / ~1.2GB | ~7B / ~14GB | 0.6B / ~2.3GB | — |
+| 上下文 | **32K** | 4K(模型卡示例) | 8K | 32K |
+| 代码能力 | **核心能力**(支持编程语言) | **开源 SOTA**(CoIR 81.77;SWE-bench-Lite 67.4) | 通用模型,代码非强项 | 代码专用 |
+| MTEB 多语(模型卡同表) | **64.33** | — | 59.56 | — |
+| MTEB 英文 | **70.70**(0.6B 超 NV-Embed 7.8B) | — | — | — |
+| CPU 推理 | ✅ fast(Reddit + 官方 TEI CPU 部署实测) | ❌ 7B 本地首建不现实 | ✅ 慢(批 15~20s) | — |
+| query instruction | 需要(`prompt_name="query"`) | 需要(`trust_remote_code`) | 不需要 | 不需要 |
+| 多功能 | dense(MRL 32-1024 维) | dense | dense+sparse+colbert | dense |
 
-**选 bge-m3 的关键理由**:C 长函数(状态机、init 函数动辄 200+ 行)在 512 token 下会被截断、向量失准;bge-m3 的 **8K 上下文一次装下整函数**——这是 C 场景的硬需求,也是审查中否决 bge-large-en-v1.5 的主因。
+**选 Qwen3-0.6B 为默认的决定性理由**:
+1. **Hyperion 核心是代码检索** —— Qwen3 把代码检索列为系列核心能力;bge-m3 是通用模型、代码非强项。
+2. **同台碾压**:同为 0.6B,MTEB 多语 64.33 vs bge-m3 59.56(+4.8,模型卡同表);英文 70.70 超 7.8B 的 NV-Embed。
+3. **更适合本地 CPU**:更小(1.2GB vs 2.3GB)、更长上下文(32K vs 8K,C 长函数更宽裕)、CPU 实测 fast。
+4. **bge-m3 的独占优势对 P1 无价值**:其 dense+sparse+colbert 多功能 P1 只用 dense;sparse/BM25 那一路用 LanceDB 原生 FTS(不依赖 embedding 的 sparse)。
+5. **代价极小**:仅 query 端加 instruction(document 端不变)。
+6. **bge-code-v1 不作默认**:`~7B 参数,本地 CPU 首建几十万行不现实`;但 CoIR 81.77(开源 SOTA)+ SWE-bench-Lite 67.4(bug 修复检索,贴 Bug-RCA)极诱人 → 有 GPU 时作可选档。
 
-**铁律:embedding 模型选定后不能换——换要全量重嵌**。`index.py` 存模型指纹(`model_name + 维度`),与 LanceDB 表的元数据比对,变更时触发重建。
+> **诚实保留点**:Qwen3 模型卡未单列 0.6B 的 MTEB Code 精确分(只列 8B)。推断 0.6B 代码强于 bge-m3(系列以代码为核心 + 多语/英文全面超越),**最终以 P1.3 评测 top-5 recall 实测为准**;不达标 config 切回 bge-m3 重测,成本可控。
 
-依赖:新增 `sentence-transformers>=2.7`(bge-m3 + bge-reranker 都走它;`pyproject.toml` 里 tree-sitter / lancedb / rank-bm25 已声明)。
+**铁律:embedding 模型选定后不能换——换要全量重嵌**。`index.py` 存模型指纹(`model_name + dim + max_seq_length + normalize`,见下"实现陷阱"),与 LanceDB 表元数据比对,变更触发重建。
+
+### ⚠️ 实现陷阱(P1.2 必须处理)
+
+1. **`max_seq_length` 默认静默截断**:sentence-transformers 加载很多模型默认 `max_seq_length=512`,超长**静默截断**。
+   - **bge-m3:必须显式 `model.max_seq_length = 8192`**(否则"8K 装下 C 长函数"卖点落空)。
+   - **Qwen3-0.6B**:模型卡标 32K,加载后也应显式设到目标值(按内存,如 8192 / 32768)。
+   - `max_seq_length` **必须进指纹**(改它=改向量=需全量重嵌)。
+2. **query instruction(Qwen3 / bge-code-v1 需要)**:`embed_query` 用 `model.encode([q], prompt_name="query")`(Qwen3)或拼 instruction 串(bge-code-v1);`embed_chunks`(document 端)**不加**。`query_instruction` 作 config 项,模型无关。
+3. **`normalize_embeddings=True`**:cosine 相似度官方推荐;进指纹。
+4. **维度动态取**:`model.get_sentence_embedding_dimension()`,不硬编码(将来换模型 / 用 MRL 截断不破)。
+5. **批编码**:sentence-transformers `model.encode(list, batch_size=N)` 内部按**批内最长动态 padding**(不填 max_seq_length),直接用。
+6. **HF 国内下载**:模型 ~1.2GB+,直连易超时。config `embedding.hf_endpoint`(默认 `https://hf-mirror.com`),加载前注入 `os.environ["HF_ENDPOINT"]`;下载失败给清晰指引。
+
+依赖:新增 **`sentence-transformers>=2.7`** + **`transformers>=4.51.0`**(Qwen3 要求,低于此报 `KeyError: 'qwen3'`)。bge-reranker 也走 sentence-transformers。`pyproject.toml` 里 tree-sitter / lancedb / rank-bm25 已声明。
 
 ---
 
@@ -259,7 +282,13 @@ code_index:
     bluez: data/repos/bluez            # clone 到此(gitignore 已含 data/);锁定某 commit 作评测基线
   embedding:
     provider: sentence_transformers    # 或 voyageai
-    model: BAAI/bge-m3                 # 选定不换;换则触发全量重建
+    model: Qwen/Qwen3-Embedding-0.6B   # 选定不换;换则触发全量重建(GPU 档可切 BAAI/bge-code-v1;CPU 回退 BAAI/bge-m3)
+    max_seq_length: 8192               # 显式设!sentence-transformers 默认 512 会静默截断(Qwen3 可到 32768,按内存调)
+    normalize: true                    # cosine 相似度
+    query_instruction: query           # Qwen3 用 prompt_name="query";bge-m3 留空字符串
+    batch_size: 16                     # CPU 按内存调
+    device: cpu                        # 可选 cuda / mps
+    hf_endpoint: https://hf-mirror.com # 国内下载排雷;海外可删
   vector_store:
     path: data/code_index/lancedb
   retrieval:
@@ -337,9 +366,9 @@ LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被
 | C 宏/条件编译/头文件解析不全 | tree-sitter 容错 + 一并索引 .h + ctags 补宏;必要时 clangd |
 | **C 调用/符号解析不准(P1.5)** | static 同名带文件作用域;宏包装/函数指针可能要 clangd;**P1.5 前出子调研**(见 §3) |
 | embedding 模型锁定后想换 | config 锁定 + 模型指纹检测 → 变更触发全量重建 |
-| **bge-m3 CPU 推理慢(首建几十分钟)** | 分批 embed + 进度 + 可选 GPU;日常只增量更新(§10) |
+| **embedding CPU 推理慢(首建几十分钟)** | 默认 Qwen3-0.6B(CPU fast、~1.2GB);分批 embed + 进度 + 可选 GPU;日常只增量更新(§10);极端慢可上 backlog 的 ONNX int8 提速 |
 | 全量索引慢 / 日常 stale | 增量更新:按 `content_hash` 只重嵌变化 chunk(§10) |
-| LanceDB FTS 对 C 标识符召回弱 | `fts_text` 子串拆词(snake/camel/SCREAMING);不足则启用 bge-m3 sparse 或 rank_bm25 |
+| LanceDB FTS 对 C 标识符召回弱 | `fts_text` 子串拆词(snake/camel/SCREAMING);不足则引入 rank_bm25 二级精排(bge-m3 的 sparse 输出仅作"回退档"可用,默认 Qwen3 无 sparse) |
 | 调用图同名函数冲突 | 文件作用域消歧 + static/extern 标注;P1 先粗后细 |
 | LanceDB 运行时兼容(ABI / glibc / tantivy) | wheel 已覆盖 cp39-abi3(含 3.12)+ macOS arm64,无需编译;`scripts/setup.sh` 加 `import lancedb` 冒烟测早暴露运行时问题 |
 | tree-sitter 并发解析 | parser 单实例非线程安全;并发建索引走 `multiprocessing`(非 threading),每 worker 各持一个 Parser。P1 单进程顺序建索引即可 |
@@ -348,21 +377,91 @@ LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被
 
 ## 13. 决策记录
 
-1. **embedding 默认模型 → `BAAI/bge-m3`**(本地/免费/8K 上下文,解决 C 长函数截断)。选定锁定,换则全量重建。
+1. **(2026-07-24 改)embedding 默认模型 → `Qwen/Qwen3-Embedding-0.6B`**(本地/免费/0.6B/32K/CPU fast/代码为核心能力;同 0.6B 同表 MTEB 多语 64.33 超 bge-m3 59.56)。`bge-code-v1`(~7B,CoIR 81.77 SOTA、SWE-bench-Lite 67.4)作 GPU 可选档;`bge-m3` 留 CPU 回退。选定锁定,换则全量重建。详见 §5。
 2. **P1.5(repo map + 代码图谱)延后**——P1 主范围先做扎实 P1.0-P1.4(检索 top-5 召回);repo map/调用图等 Bug-RCA 真跑起来再加。届时先按 §3 做 C 解析子调研。
 3. **(v2.2)grammar 包换路**:弃 `tree-sitter-language-pack` 1.x(运行时按需从 GitHub releases 下载语法,国内网络 timeout 不可用)→ 改用**每语言独立 grammar 包**(`tree-sitter-python` / 后续 `tree-sitter-c`),wheel 内置、零联网、可 pin。并发建索引用 `multiprocessing`(parser 单实例非线程安全),P1 单进程顺序建索引即可。
 4. **(v2.2)评审吸收**:采纳——索引原子性 + 状态清单(§10)、评测**行级映射** + 难度分层 + 负例(§11)、fts_text 加注释/docstring(§4)、检索**取消默认 type 预过滤**(§6)、repo map 入口点加权(§7)、图持久化 SQLite+networkx(§3)。纠正——LanceDB wheel 已覆盖 3.12/macOS arm64,无需编译(§12)。
 5. **(2026-07-24)P1.1 切块落地**:对照 [cAST](https://arxiv.org/html/2506.15655v1)(EMNLP 2025)调研后——符号边界切块取 cAST 的 split、不取跨符号 merge;新增模块级 chunk 兜底(import/常量)保覆盖率 100%;docstring 抽取归 parser(parse-once);超大符号 AST 切分 + 前导注释抽取延后到 C 场景(bluez);chunk_expansion 元数据头留 P1.2 embed;chunk 大小用非空白字符数。详见 §4「P1.1 落地决策」。
+6. **(2026-07-24)P1.2 选型复核**:前沿调研(Qwen3-Embedding 2025-06、bge-code-v1 2025-05、CoIR/MTEB 榜)后改默认模型(见决策 #1)。审核 §5 发现 6 处实现改进——① `max_seq_length` 须显式设(sentence-transformers 默认 512 静默截断,会抽空"8K/32K 装下长函数"卖点)且进指纹;② 指纹扩成 `model_name+dim+max_seq_length+normalize`;③ chunk_expansion 用注释行非管道串(§4);④ HF 国内下载走 `hf-mirror.com`;⑤ 批编码用 sentence-transformers 原生动态 padding;⑥ 维度动态取。完整三态加载冷却 + ONNX int8 提速记 backlog(#8/#9)。
+7. **(2026-07-24)向量库设计决策**:评审 [向量数据库设计分析报告.md](向量数据库设计分析报告.md) + 2026 最佳实践后——坚持 LanceDB 嵌入式,拒绝 Qdrant 收敛(本地优先 / 规模未到 / 两台机一致);多仓库(systemd / pipewire 等)走 table-per-repo;`store.py` 抽象 `VectorStore` 接口留 Qdrant 扩展性(**P1 不实现 QdrantStore**,只留接口口子);升级触发器 = 常驻服务 / 千万级向量 / 多用户在线;吸收报告合理内核(规则意图 RRF、payload callers/callees、Recall 评测),拒绝过度(多租户 shard、蓝绿、BQ、在线监控)。详见 §14。
 
 ---
 
-## 14. 参考
+## 14. 向量库设计决策
+
+**背景**:本节回应 [向量数据库设计分析报告.md](向量数据库设计分析报告.md)(V1.0)提出的 7 大优化建议,结合 2026 年向量库最佳实践调研,给出 Hyperion 的最终取向,白纸黑字固化,避免被同类"上 Qdrant"建议反复带偏。
+
+### 14.1 引擎:坚持 LanceDB 嵌入式,拒绝 Qdrant 收敛
+
+报告 2.1 建议"统一 Qdrant 为唯一生产向量引擎"。**驳回**,理由:
+
+1. **本地优先 vs server**:Qdrant 要常驻 docker server,违背 Hyperion「uv + .venv + 两台机零运维」理念。LanceDB 嵌入式(进程内、零 server)是 local-first 首选(2026 多份对比一致)。
+2. **偷换概念**:报告引 Qdrant 团队对 **pgvector** 的批评论证换 Qdrant,但 Hyperion 选的是 **LanceDB**(非 pgvector)。LanceDB 原生支持 BM25 混合检索(Tantivy)+ 磁盘原生 + 设计十亿级,pgvector 的缺点不适用。
+3. **规模**:百万级 chunk 是 LanceDB 舒适区(生产实证 7 亿–10 亿向量),Qdrant 在此量级优势不显。
+4. **两台机协作**:LanceDB 表 = 文件(`data/code_index/`),随数据 rsync;Qdrant 要两台机各起 server,违背一致性。
+5. **Qdrant 优势对 Hyperion 无价值**:富 payload 过滤(单机可忽略)、多租户 shard(非多租户)、client-server 高并发(单用户)。
+
+### 14.2 多仓库:table-per-repo(教科书最优)
+
+未来扩展到 systemd / pipewire 等多仓库,**不上 Qdrant/Milvus**,走 LanceDB table-per-repo(LanceDB 多租户最佳实践:每表 = 独立 Lance 文件目录,物理隔离天然免费):
+
+```
+data/code_index/
+├── bluez/lancedb/          # 每仓库一张表:独立 index / manifest / 增量 / IVF-PQ
+├── systemd/lancedb/
+├── pipewire/lancedb/
+└── wpa_supplicant/lancedb/
+```
+
+- 单库搜:选表查;跨库搜:并行查多表 → 应用层 RRF 合并。
+- 文件级独立:某仓库索引可单独 rsync / 删除 / 重建。
+- 10 个系统仓库 ≈ 100 万 chunk(100 万向量),LanceDB 舒适区(实证 700M–1B),远未到瓶颈。
+
+### 14.3 VectorStore 接口:留 Qdrant 扩展性,但不现在上
+
+按 Hyperion provider 抽象哲学(模型工厂 / Embedder),`store.py` 抽象 `VectorStore` 接口,底层默认 LanceDB,**接口不锁死 LanceDB 专属 API**:
+
+```python
+class VectorStore(Protocol):
+    def upsert(self, repo: str, chunks: list[CodeChunk], vectors: np.ndarray) -> None: ...
+    def hybrid_search(self, repo: str, query_vec: np.ndarray, fts_query: str, top_k: int) -> list: ...
+```
+
+- 默认实现 `LanceDBStore`(table-per-repo)。
+- **未来若触发升级(见 14.4)**,加 `QdrantStore` 实现,config 一行切,上层 `retrieval.py` 不改。
+- **P1 不实现 QdrantStore**——只保证接口留口子,不现在上。
+
+### 14.4 升级触发器(何时才真该上 Qdrant/Milvus)
+
+任一满足才重新评估(当前一个都不满足):
+
+| 触发条件 | 该上 |
+|---|---|
+| Hyperion 变成**常驻后台 agent 服务**(规避嵌入式长驻内存泄漏) | Qdrant server |
+| 单库向量到**千万级**(≈几亿行代码) | Milvus 分布式 |
+| **多用户并发在线查询**(SaaS) | Qdrant client-server |
+| 仓库数到**几百 + 亿级向量** | Milvus |
+
+### 14.5 对报告其余建议的取舍
+
+| 报告建议 | 取舍 |
+|---|---|
+| 意图感知自适应 RRF(2.3) | 🟡 内核采纳,分阶段:P1 固定 k=60;P1.3 评测不达标则加**规则判别**(0x/ERR_/大写宏→强 BM25),**不引 Qwen3 分类器**;BM25 高置信捷径留 P1.3 |
+| 拓扑两阶段检索(2.4) | 🔁 已规划 = §7 repo_map + P1.5 code_graph;吸收"payload 存 callers/callees 供图扩散"(CodeChunk 已预留字段) |
+| 嵌入模型版本管理(2.5) | 🟡 版本元数据已由 `model_fingerprint` 覆盖(§5 / embed.py);**拒绝蓝绿零停机**(本地工具非 7×24) |
+| HNSW 调参 + BQ(2.6) | 🟡 调参评测驱动(先默认);**拒绝 BQ**(几十万 chunk 内存非瓶颈,<5% 召回损失不划算) |
+| 可观测看板(2.7) | 🟡 Recall@k 评测 = §11;**拒绝在线延迟 / 过滤选择性监控**(本地非在线服务) |
+| 多租户 shard(2.2) | ❌ 拒绝(非多租户,table-per-repo 足够) |
+
+---
+
+## 15. 参考
 
 - repo map:[Aider — Repository map](https://aider.chat/docs/repomap.html)
 - 代码图谱:[RepoGraph (ICLR 2025)](https://arxiv.org/abs/2410.14684) · [GitHub](https://github.com/ozyyshr/RepoGraph)
 - 缺陷定位 agent:[OrcaLoca (ICML 2025)](https://arxiv.org/abs/2502.00350) · [GitHub](https://github.com/fishmingyu/OrcaLoca)
 - 混合检索:[Hybrid Search: BM25, Vector & Reranking Reference 2026](https://www.digitalapplied.com/blog/hybrid-search-bm25-vector-reranking-reference-2026) · [RRF explained](https://blog.serghei.pl/posts/reciprocal-rank-fusion-explained/)
-- embedding:[bge-m3](https://huggingface.co/BAAI/bge-m3) · [bge-m3 论文](https://arxiv.org/html/2402.03216v3) · [voyage-code-3](https://blog.voyageai.com/2024/12/04/voyage-code-3/)
+- embedding:[Qwen3-Embedding(默认)](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) · [论文](https://arxiv.org/pdf/2506.05176) · [bge-code-v1(GPU 档)](https://huggingface.co/BAAI/bge-code-v1) · [bge-m3(回退)](https://huggingface.co/BAAI/bge-m3) · [voyage-code-3](https://blog.voyageai.com/2024/12/04/voyage-code-3/) · [CoIR 代码检索榜](https://github.com/coir-team/coir) · [Anthropic Contextual Retrieval](https://www.anthropic.com/engineering/contextual-retrieval)
 - 重排:[bge-reranker-v2-m3](https://huggingface.co/BAAI/bge-reranker-v2-m3)
 - 向量库:[LanceDB Hybrid Search](https://docs.lancedb.com/search/hybrid-search) · [RRF Reranker](https://docs.lancedb.com/reranking/rrf)
 - SWE 基准:[SWE-bench](https://www.swebench.com/)

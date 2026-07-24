@@ -92,3 +92,26 @@ sandbox:
   bash_output_max_chars: 20000
   read_file_output_max_chars: 50000
   ls_output_max_chars: 20000
+
+# 代码理解服务(P1 分阶段搭建,见 docs/p1-code-understanding-design.md)。
+# P1.2 先配 embedding;vector_store / retrieval / repo_map 随对应阶段补。
+code_index:
+  embedding:
+    # provider 抽象(像模型工厂):
+    #   openai_compatible = 远端 OpenAI 兼容 API(默认;免下载、免 torch,和调 chat 一样配 key)
+    #   sentence_transformers = 本地(需 `uv sync --extra embedding-local`;离线 / 数据不出本地)
+    provider: openai_compatible
+    # —— 远端 OpenAI 兼容(默认:阿里云百炼 DashScope)——
+    # 同一份代码,换 base_url + api_key + model 即可切 SiliconFlow / OpenAI / 自建 vLLM。
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: $DASHSCOPE_API_KEY
+    model: text-embedding-v4          # = Qwen3-Embedding 全血版(质量优于本地 0.6B)。换 SiliconFlow:Qwen/Qwen3-Embedding-0.6B 或 BAAI/bge-m3
+    dimensions: 1024                  # 输出维度(Qwen3 系列可调 64-2048;bge-m3 不支持此参数、固定 1024)。存取必须同 dim。
+    batch_limit: 10                   # 远端每请求文本条数上限(DashScope v4=10;SiliconFlow 更宽)。embed_chunks 自动分批。
+    normalize: true                   # 客户端 L2 归一化(API 返回未必归一化,显式做保 cosine 一致)
+    # —— 本地 sentence_transformers 模式(provider 改它时才生效)——
+    # local_model: Qwen/Qwen3-Embedding-0.6B
+    # max_seq_length: 8192            # ⚠️ 本地必须显式设(ST 默认 512 会静默截断长代码)
+    # device: cpu                     # cuda / mps
+    # hf_endpoint: https://hf-mirror.com
+    # query_instruction: query        # Qwen3 用 prompt_name="query";bge-m3 留空
