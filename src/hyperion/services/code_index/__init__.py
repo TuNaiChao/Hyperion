@@ -14,6 +14,7 @@ from hyperion.services.code_index.parser import (
     LanguageGrammar,
     Symbol,
     detect_language,
+    iter_source_files,
     parse_file,
     parse_repo,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "LanguageGrammar",
     "Symbol",
     "detect_language",
+    "iter_source_files",
     "parse_file",
     "parse_repo",
 ]

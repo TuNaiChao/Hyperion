@@ -118,29 +118,40 @@ def parse_file(path: Path, language: str | None = None) -> list[Symbol]: ...
 
 **按符号边界切,不按固定行数切**:
 - 每个 `function_definition` / `struct_specifier` / `#define` 一个 chunk。
-- bge-m3 有 8K 上下文,绝大多数 C 函数可整块装入;**仅超长函数**(>8K token,罕见)按 `compound_statement` 子节点再切,保留 `parent_symbol` + 行范围 + "part N/M"。
+- bge-m3 有 8K 上下文,绝大多数函数可整块装入。**超长切分延后**:`CodeChunk` 预留 `part`/`total` 字段,但 P1.1(Python/deer-flow)不实现切分——8K 够用、Python 函数不触发;真正的 cAST 式 AST 子语句切分留到 C 场景(bluez 状态机),见 [backlog #6](../.claude/memory/backlog-production-grade.md)。
 
 **chunk schema**:
 ```python
 @dataclass
 class CodeChunk:
-    id: str               # stable hash: f"{file}:{symbol}:{start_line}"
-    symbol: str
-    kind: str
+    id: str               # 稳定主键 f"{file}:{qualified_name}:{start_line}"(分段加 ":p{N}")
+    symbol: str           # 限定名;module chunk 用文件路径
+    kind: str             # function | method | class | module
     file: str
+    language: str
     start_line: int
     end_line: int
-    text: str             # 原始代码文本
+    text: str             # 原始代码文本(read_function 直接用,无加工)
     content_hash: str     # text 的 sha256,增量更新按它判变(见 §10)
-    callers: list[str]    # 来自 code_graph;P1.5 建好图谱后回填,P1.0-P1.4 为空 []
-    callees: list[str]    # 同上
-    fts_text: str         # 给 BM25 用的文本(symbol + 标识符 + 注释加权)
+    fts_text: str         # 给 BM25 的词袋(标识符拆词 + docstring,小写空格分隔)
+    part: int = 1         # 超长分段段号,预留
+    total: int = 1        # 总段数,预留(切分延后,见 backlog #6)
+    callers: tuple[str, ...] = ()  # 来自 code_graph;P1.5 建好图谱后回填
+    callees: tuple[str, ...] = ()  # 同上
 ```
 **`fts_text` 标识符分词**(C 召回关键技巧):同时处理 `snake_case`、`camelCase`、`SCREAMING_SNAKE`(宏)——用正则把标识符拆成词干再拼接,例如 `wpa_supplicant_assoc_req_ie_cb` → `wpa supplicant assoc req ie cb`,`hci_le_CisEstablished` → `hci le cis established`。光按 `_` 拆会漏掉 camelCase/宏。
 
 **`fts_text` 纳入注释 / docstring**(BM25 高信号,低成本):用 tree-sitter 抽函数定义节点**紧邻的前导 `comment` 节点**(C 的 doxygen `/** */` / 行注释)与**函数体首条 docstring**(Python),并入 `fts_text`,可加权重复一次。自然语言描述是纯标识符检索补不上的语义缺口。
 
 **重复 chunk 去重**:多文件相同的 `static inline` / 头文件重复定义会产生内容一致的 chunk。**不在存储层把 `file` 改成列表**(会拖累 schema 和 `read_function` 的单文件语义),而是**检索后按 `content_hash` 合并**同义结果、保留所有 `file:line` 位置;存储层去重留作 P6 优化。
+
+**P1.1 落地决策(2026-07-24,对照 cAST 调研)**:
+- **对标 [cAST](https://arxiv.org/html/2506.15655v1)**(EMNLP 2025)符号边界切块,但**只取其 split、不取跨符号 merge**——chunk 兼任 `read_function` 的单符号语义,合并会破坏。
+- **新增「模块级 chunk」**(kind=`module`):把每个文件里不属于任何函数/类的代码(import / 全局常量 / `if __name__`)聚成一个 chunk,保证覆盖率 100%(cAST 的 plug-and-play)。靠 parser 新增的 `iter_source_files` 全文件遍历实现(只按符号分组会漏无符号文件,如纯 import 的 `__init__.py`)。
+- **docstring 抽取归 parser**:`Symbol` 加 `docstring` 字段,parser 同一遍 DFS 抽好(parse-once、AST 精确),chunker 不碰 AST。**前导 comment / doxygen 抽取延后**到 C 场景([backlog #7](../.claude/memory/backlog-production-grade.md))——Python 靠 docstring 已够。
+- **chunk 大小用非空白字符数**(学 cAST,`MAX_CHUNK_CHARS=20000`),不用 token(省掉 tokenizer 依赖)。
+- **chunk_expansion(嵌入元数据头)**留到 P1.2 `embed.py`:嵌入时拼 `file|symbol|kind` 头 + 代码,让向量带上下文。
+- **id 用 `qualified_name`** 消歧同类同名;**callers/callees** 留 P1.5 code_graph 回填。
 
 ---
 
@@ -341,6 +352,7 @@ LanceDB 写入**不是跨批次原子**的:建库中途崩(磁盘满 / 进程被
 2. **P1.5(repo map + 代码图谱)延后**——P1 主范围先做扎实 P1.0-P1.4(检索 top-5 召回);repo map/调用图等 Bug-RCA 真跑起来再加。届时先按 §3 做 C 解析子调研。
 3. **(v2.2)grammar 包换路**:弃 `tree-sitter-language-pack` 1.x(运行时按需从 GitHub releases 下载语法,国内网络 timeout 不可用)→ 改用**每语言独立 grammar 包**(`tree-sitter-python` / 后续 `tree-sitter-c`),wheel 内置、零联网、可 pin。并发建索引用 `multiprocessing`(parser 单实例非线程安全),P1 单进程顺序建索引即可。
 4. **(v2.2)评审吸收**:采纳——索引原子性 + 状态清单(§10)、评测**行级映射** + 难度分层 + 负例(§11)、fts_text 加注释/docstring(§4)、检索**取消默认 type 预过滤**(§6)、repo map 入口点加权(§7)、图持久化 SQLite+networkx(§3)。纠正——LanceDB wheel 已覆盖 3.12/macOS arm64,无需编译(§12)。
+5. **(2026-07-24)P1.1 切块落地**:对照 [cAST](https://arxiv.org/html/2506.15655v1)(EMNLP 2025)调研后——符号边界切块取 cAST 的 split、不取跨符号 merge;新增模块级 chunk 兜底(import/常量)保覆盖率 100%;docstring 抽取归 parser(parse-once);超大符号 AST 切分 + 前导注释抽取延后到 C 场景(bluez);chunk_expansion 元数据头留 P1.2 embed;chunk 大小用非空白字符数。详见 §4「P1.1 落地决策」。
 
 ---
 

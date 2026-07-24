@@ -44,6 +44,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from tree_sitter import Language, Parser
 
@@ -68,6 +69,7 @@ class Symbol:
     start_line: int # 整块定义起始行,1-indexed
     end_line: int # 整块定义结束行,1-indexed
     signature: str | None  # 形参文本,如 "(self, question)";class 为 None
+    docstring: str | None = None  # 函数/类的 docstring(去引号纯文本);parser 同一遍 DFS 抽,无则 None
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -92,6 +94,8 @@ class LanguageGrammar:
     class_node: str # 类的 AST 节点类型
     name_field: str # 符号名字所在字段
     params_field: str # 形参所在字段(类无此字段可留 "() 占位,但 Python class 不走这里)
+    extract_docstring: Callable[[Any, bytes], str | None] | None = None
+    # 从函数/类 AST 节点抽 docstring(去引号文本);Python 传实现,C 场景留 None
 
 
 def _load_python() -> Language:
@@ -103,6 +107,38 @@ def _load_python() -> Language:
     import tree_sitter_python  # 懒导入:未装该 grammar 包时,本模块其余语言仍可用
 
     return Language(tree_sitter_python.language())
+
+
+def _extract_python_docstring(node, source: bytes) -> str | None:
+    """抽 Python 函数/类的 docstring —— body 里第一条语句若是纯字符串字面量,那就是 docstring。
+
+    tree-sitter 里:函数/类的 body 字段是个 block(语句块);block 的第一个「有名字子节点」
+    若是 expression_statement(表达式语句)、且里面是个 string 节点,就认作 docstring,取它的
+    string_content(不带引号的纯文本)。没有 docstring 就返回 None。
+
+    为什么要抽它:docstring 是这个符号的「自然语言说明」,是 BM25 检索的高信号词源
+    (函数名常是缩写,docstring 才是"这个函数到底干嘛"的大白话)。
+    """
+    body = node.child_by_field_name("body")
+    if body is None or not body.named_children:
+        return None
+    first = body.named_children[0]
+    # docstring = body 第一条语句是个裸字符串字面量(赋值/调用不算)
+    string_node = None
+    if first.type == "expression_statement":
+        kids = first.named_children
+        if kids and kids[0].type == "string":
+            string_node = kids[0]
+    elif first.type == "string":  # 极少数情况:裸 string 作首语句
+        string_node = first
+    if string_node is None:
+        return None
+    # string 节点内部结构:string_start / string_content / string_end。取 string_content
+    # 拿到不带引号的正文;取不到(空串等)就退化用整段 strip。
+    for child in string_node.children:
+        if child.type == "string_content":
+            return _node_text(child, source)
+    return _node_text(string_node, source).strip()
 
 
 # 注册表:加 C 时在此追加一条,并 `uv add tree-sitter-c`。
@@ -121,6 +157,7 @@ GRAMMARS: dict[str, LanguageGrammar] = {
         class_node="class_definition",
         name_field="name",
         params_field="parameters",
+        extract_docstring=_extract_python_docstring,
     ),
 }
 
@@ -185,6 +222,11 @@ def _extract_symbols(
             if name_node is not None:  # 无名定义(lambda 等)跳过
                 simple = _node_text(name_node, source)
                 params_node = node.child_by_field_name(grammar.params_field)
+                docstring = (
+                    grammar.extract_docstring(node, source)
+                    if grammar.extract_docstring is not None
+                    else None
+                )
                 symbols.append(
                     Symbol(
                         name=simple,
@@ -195,12 +237,18 @@ def _extract_symbols(
                         start_line=node.start_point[0] + 1,  # 0-indexed → 1-indexed
                         end_line=node.end_point[0] + 1,
                         signature=_node_text(params_node, source) if params_node else "()",
+                        docstring=docstring,
                     )
                 )
         # —— 类节点:记录,入栈,下钻,出栈弹 ——
         elif node.type == grammar.class_node:
             name_node = node.child_by_field_name(grammar.name_field)
             simple = _node_text(name_node, source) if name_node else "<anonymous>"
+            docstring = (
+                grammar.extract_docstring(node, source)
+                if grammar.extract_docstring is not None
+                else None
+            )
             symbols.append(
                 Symbol(
                     name=simple,
@@ -211,6 +259,7 @@ def _extract_symbols(
                     start_line=node.start_point[0] + 1,
                     end_line=node.end_point[0] + 1,
                     signature=None,
+                    docstring=docstring,
                 )
             )
             class_stack.append(simple)  # 进入类作用域:压栈
@@ -256,15 +305,18 @@ def parse_file(path: Path | str, language: str | None = None) -> list[Symbol]:
     return _parse_bytes(source, GRAMMARS[lang], str(path))
 
 
-def parse_repo(
+def iter_source_files(
     root: Path | str, languages: list[str] | None = None
-) -> list[Symbol]:
-    """递归解析整个仓库,返回所有符号。
+):
+    """遍历仓库里的源码文件,yield (绝对路径, 相对仓根路径字符串, 语言名)。
 
-    - languages=None:解析所有已注册语言;给 ["python"] 只解析 Python。
+    抽出来给 parse_repo / chunker 共用:chunker 要对「每个源码文件」切块
+    (含没有函数/类的纯模块文件,如只放 import/常量的 __init__.py),不能只靠
+    符号列表——否则会漏掉无符号文件,破坏 100% 覆盖(cAST 的 plug-and-play)。
+
+    - languages=None:遍历所有已注册语言;给 ["python"] 只遍历 Python。
     - 跳过 _SKIP_DIRS 里的目录和隐藏目录(.git / .venv …)。
-    - 符号的 file 字段是**相对仓根**的路径,适合做稳定的索引键
-      (仓挪位置不影响 file)。
+    - rel 用相对仓根路径(索引稳定;仓挪位置不影响)。
     """
     root = Path(root)
     want = set(languages) if languages else set(GRAMMARS)
@@ -274,7 +326,6 @@ def parse_repo(
     for lang in want:
         suffixes.update(GRAMMARS[lang].suffixes)
 
-    symbols: list[Symbol] = []
     for p in root.rglob("*"):
         if not p.is_file():
             continue
@@ -287,10 +338,25 @@ def parse_repo(
         lang = detect_language(p)
         if lang not in want:
             continue
+        yield p, str(rel), lang
+
+
+def parse_repo(
+    root: Path | str, languages: list[str] | None = None
+) -> list[Symbol]:
+    """递归解析整个仓库,返回所有符号。
+
+    - languages=None:解析所有已注册语言;给 ["python"] 只解析 Python。
+    - 跳过 _SKIP_DIRS 里的目录和隐藏目录(.git / .venv …)。
+    - 符号的 file 字段是**相对仓根**的路径,适合做稳定的索引键(仓挪位置不影响 file)。
+    - 文件遍历逻辑见 iter_source_files(与 chunker 共用)。
+    """
+    root = Path(root)
+    symbols: list[Symbol] = []
+    for p, rel, lang in iter_source_files(root, languages):
         try:
             source = p.read_bytes()
         except OSError:
             continue  # 跳过读不了的文件,不让单个坏文件中断整仓扫描
-        # file 用相对路径:索引稳定、便于跨机 / 跨位置复用
-        symbols.extend(_parse_bytes(source, GRAMMARS[lang], str(rel)))
+        symbols.extend(_parse_bytes(source, GRAMMARS[lang], rel))
     return symbols
