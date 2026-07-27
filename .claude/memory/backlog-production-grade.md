@@ -67,4 +67,24 @@ metadata:
     - 对齐:借鉴 code-review-graph `embeddings.py:380-600`(OpenAIEmbeddingProvider):① **响应 index 三分支校验**(全有→0..N-1 置换校验;全无→仅校验 count;混合→拒绝)——DashScope/LiteLLM 网关乱序/丢项硬防御;② **精确 retryable 分类**(RemoteDisconnected/IncompleteRead/BadStatusLine/ssl.SSLError/socket.timeout);③ **4xx body 透传**(解析 JSON error 抛真实原因);④ **自定义 User-Agent**(hyperion/<version>,规避 Cloudflare 拒 Python-urllib);⑤ **provider 身份含 endpoint+model**(规范化 userinfo/默认端口/trailing slash,进 fingerprint)。CRG 有现成实现 + 完备测试(`tests/test_embeddings.py`)。
     - 目标阶段:**P1.3 retrieval.py 落地时**(RemoteEmbedder + RemoteReranker 一并硬化),或 P2 生产化。
 
+13. **评测集扩到生产级(P1.3 之后)** — `eval/sets/`。
+    - 现状:P1.3 人工 curate 18 条(8 L1 + 10 L2,Hyperion 自身代码),indicative 非统计 tight。
+    - 对齐:扩到 ≥150 条(L1/L2/L3 各 ≥50);L3 跨模块需 P1.5 code_graph;**git-diff 行级金标自动抽取**(`git log --grep="Fixes:"` → diff hunk → tree-sitter 最小包围符号 = gold,见 §11)替手工 curate;跨 repo(holdout)防过拟合。借 CoSQA+ test-driven 自动金标(#11)降标注成本。
+    - 目标阶段:**P1.3 之后 / P2**(评测集要上量、要统计 tight 时)。
+
+14. **BM25-only baseline 模式(证语义增益)** — `retrieval.py` / `eval/run_eval.py`。
+    - 现状:retrieve 只支持 hybrid+RRF(+可选 rerank),无纯 BM25 路径;退出标准条件 5(BM25 baseline L2 recall ≤ 0.40)未测。
+    - 对齐:retrieve 加 `mode="bm25"|"vector"|"hybrid"`(对应 store 的 fts-only / vector-only / hybrid);eval 跑 BM25 baseline 对比,证语义检索真有增益。
+    - 目标阶段:**P1.3 之后**(补全退出标准条件 5)。
+
+15. **holdout repo 评测(防过拟合)** — `eval/`。
+    - 现状:只在 Hyperion 自身代码评测(单 repo),退出标准条件 6(holdout 衰减 ≤ 15pp)未测。
+    - 对齐:在第二个仓库(如 deer-flow 子集)建索引 + curate 评测集,对比 L2 recall 衰减;衰减大说明过拟合 Hyperion 代码风格。
+    - 目标阶段:**P1.3 之后 / P2**(有第二个被测仓库时)。
+
+16. **precision 指标校准(P1.3 实测发现)** — `eval/scorer.py` / `runner.py`。
+    - 现状:`precision@5 = |top5∩gold|/5`,小 gold 集(1-2 符号)天然封顶 |gold|/5≈0.2-0.4(P1.3 实测 0.240),退出标准 0.40 数学上不可达。
+    - 对齐:加 `precision_at_min_k(retrieved, gold, k) = |top-k∩gold| / min(k, |gold|)`(R-precision 风格,单 gold 命中=1.0);退出标准条件 2 改用它。
+    - 目标阶段:**P1.3 之后**(scorer/runner 小改,顺手)。
+
 (后续每发现一处最小实现就追加一条。)

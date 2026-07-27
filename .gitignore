@@ -26,3 +26,6 @@ code-review-graph/
 .DS_Store
 .idea/
 .vscode/
+
+# 另一个项目,误落在 Hyperion 目录树(非本项目代码)
+oh-my-pi/

@@ -118,13 +118,14 @@ class LanceDBStore:
     一个进程复用一个 LanceDBStore 实例(LanceDB 连接轻量、可并发读;写要串行,见 index.py)。
     """
 
-    def __init__(self, base_dir: Path | str = "data/code_index"):
+    def __init__(self, base_dir: Path | str = "data/code_index", *, db_name: str = "lancedb"):
         self._base = Path(base_dir)
+        self._db_name = db_name  # 全量重建时传 "lancedb_tmp" 写影子目录,成功后 swap
         self._base.mkdir(parents=True, exist_ok=True)
         self._tables: dict[str, Any] = {}  # repo -> table 句柄缓存
 
     def _repo_dir(self, repo: str) -> Path:
-        return self._base / repo / "lancedb"
+        return self._base / repo / self._db_name
 
     def _open_or_create(self, repo: str, dim: int | None = None) -> Any | None:
         """打开 repo 的表;不存在则用 dim 建表 + 建索引。dim=None 且表不存在时返回 None。"""

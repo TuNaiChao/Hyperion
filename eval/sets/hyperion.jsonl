@@ -1,0 +1,18 @@
+{"query": "create_embedder embedding provider 工厂", "gold": ["services/code_index/embed.py:create_embedder"], "tier": "L1"}
+{"query": "LanceDBStore 向量库存储句柄", "gold": ["services/code_index/store.py:LanceDBStore"], "tier": "L1"}
+{"query": "build_index 建索引编排", "gold": ["services/code_index/index.py:build_index"], "tier": "L1"}
+{"query": "retrieve 混合检索入口", "gold": ["services/code_index/retrieval.py:retrieve"], "tier": "L1"}
+{"query": "bash_tool 执行命令", "gold": ["tools/sandbox.py:bash_tool"], "tier": "L1"}
+{"query": "chunk_repo 切整个仓库", "gold": ["services/code_index/chunker.py:chunk_repo"], "tier": "L1"}
+{"query": "get_available_tools 加载工具", "gold": ["tools/registry.py:get_available_tools"], "tier": "L1"}
+{"query": "split_identifier 标识符拆词", "gold": ["services/code_index/chunker.py:split_identifier"], "tier": "L1"}
+{"query": "把代码块变成向量做语义嵌入的层", "gold": ["services/code_index/embed.py:create_embedder", "services/code_index/embed.py:RemoteEmbedder.embed_chunks"], "tier": "L2"}
+{"query": "按函数和类的语法边界把源码切成可检索的块", "gold": ["services/code_index/chunker.py:chunk_repo", "services/code_index/chunker.py:chunk_file"], "tier": "L2"}
+{"query": "用反射按 use 字段动态加载配置里声明的工具", "gold": ["tools/registry.py:get_available_tools"], "tier": "L2"}
+{"query": "tree-sitter 解析源文件抽取函数和类符号", "gold": ["services/code_index/parser.py:parse_file", "services/code_index/parser.py:parse_repo"], "tier": "L2"}
+{"query": "把 chunk 和向量存进 LanceDB 表支持条件 upsert", "gold": ["services/code_index/store.py:LanceDBStore.upsert", "services/code_index/store.py:LanceDBStore"], "tier": "L2"}
+{"query": "混合 BM25 全文和向量两路用 RRF 融合", "gold": ["services/code_index/store.py:LanceDBStore.hybrid_search", "services/code_index/retrieval.py:retrieve"], "tier": "L2"}
+{"query": "在受限本地沙箱里执行 shell 命令并捕获输出", "gold": ["tools/sandbox.py:bash_tool", "platform/sandbox/local.py:LocalSandbox.execute_command"], "tier": "L2"}
+{"query": "远端重排器对候选用 cross-encoder 重新打分排序", "gold": ["services/code_index/retrieval.py:RemoteReranker.rerank", "services/code_index/retrieval.py:retrieve"], "tier": "L2"}
+{"query": "全量重建索引时用临时目录原子切换避免写坏", "gold": ["services/code_index/index.py:build_index", "services/code_index/index.py:_full_rebuild"], "tier": "L2"}
+{"query": "算评测指标的 recall 和 nDCG", "gold": ["services/code_index/eval/scorer.py:recall_at_k", "services/code_index/eval/scorer.py:ndcg_at_k"], "tier": "L2"}

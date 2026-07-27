@@ -242,3 +242,13 @@ def _create_indexes(tbl: Any) -> None:
 
 > 一句话:**FTS 和向量各搜一路,RRF 把两路排名合一路**。
 
+
+
+### src/hyperion/services/code_index/retrieval.py
+
+* 采用**Hybrid（混合检索）** 指的是**同时执行“全文检索（FTS）”和“向量检索（Vector）”，并将两者的结果进行融合（合并与重排）**的检索方式
+
+ 
+
+### src/hyperion/services/code_index/eval/runner.py
+

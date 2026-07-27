@@ -126,10 +126,11 @@ code_index:
     query_boost: true                  # 查询类型 boosting(PascalCase→Class / snake→Function / dotted→qualified)
 
   # 重排(P1.3 retrieval.py):provider 抽象,镜像 embedding。默认远端(CPU 本地 257s/100doc 不可交互)。
+  # live 测确认:DashScope rerank 走「原生端点」(非 OpenAI 兼容面,compatible-mode/v1/reranks 是 404)。
   reranker:
-    provider: openai_compatible        # 默认远端;sentence_transformers=本地(仅 GPU);off=关
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1   # ⚠️ rerank 的 /reranks 端点 host 可能异于 embedding,落地时 live 测确认
+    provider: dashscope                # dashscope(原生,默认)| siliconflow(Cohere 形态,免费)| sentence_transformers(本地,GPU)| off
+    base_url: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
     api_key: $DASHSCOPE_API_KEY        # 与 embedding 同一个 key
     model: qwen3-rerank                # 100+ 语言;¥0.0005/千token(同 embedding 价,≈8 万次查询=¥1)
-    fallback: siliconflow              # SiliconFlow BAAI/bge-reranker-v2-m3 免费(Cohere 形态);off=关
     rerank_top_n: 5
+    # fallback(siliconflow 免费,需 $SILICONFLOW_API_KEY):provider: siliconflow, base_url: https://api.siliconflow.cn/v1/rerank, model: BAAI/bge-reranker-v2-m3

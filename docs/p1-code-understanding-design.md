@@ -320,12 +320,11 @@ code_index:
     fts_stem: false                    # 代码场景必须关(见 §6.1)
     fts_remove_stop_words: false       # 代码场景必须关(否则 int/void/public/return 被删)
     query_boost: true                  # 查询类型 boosting(PascalCase/snake/dotted,§6.3)
-  reranker:                            # provider 抽象,镜像 embedding(§6.2)
-    provider: openai_compatible        # 默认远端;fallback=siliconflow(免费);local=sentence_transformers(GPU)
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1   # ⚠️ rerank 的 /reranks 端点 host 可能异于 embedding,落地时 live 测确认
+  reranker:                            # provider 抽象,镜像 embedding(§6.2)。live 测:DashScope rerank 走原生端点(非 OpenAI 兼容面)
+    provider: dashscope                # dashscope(原生,默认)| siliconflow(Cohere 形态,免费)| sentence_transformers(本地,GPU)| off
+    base_url: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
     api_key: $DASHSCOPE_API_KEY        # 与 embedding 同一个 key
     model: qwen3-rerank                # 100+ 语言;¥0.0005/千token
-    fallback: siliconflow              # SiliconFlow BAAI/bge-reranker-v2-m3 免费
     rerank_top_n: 5
   repo_map:
     map_tokens: 2048                   # P1.5
@@ -414,6 +413,22 @@ P1.3 调研(前沿评测方法论 + CRG eval 框架借鉴)后强化。退出标�
   > 公开数据点:BM25 SWE-bench-Lite function Acc@5=0.32、CodeRankEmbed=0.59、SweRankEmbed-Large=0.72。0.55 对"通用 embedding 起步、未领域微调"是诚实目标;v1 数据出来后再决定是否收紧到 0.6。
 - **做法**:给 agent 某 bug 的症状/日志 → 收集 `search_code` 返回的 top-N → 算是否命中 fix 改动行的所属符号。
 
+### P1.3 实测结果(2026-07-27,Hyperion 自身代码首测)
+
+评测集 `eval/sets/hyperion.jsonl`:**人工 curate 18 条**(8 L1 + 10 L2;gold 独立标注;production 级 ≥150 条 + L3 + git-diff 自动抽取见 backlog #13)。在 `src/hyperion`(201 chunk)上建索引(DashScope text-embedding-v4 + qwen3-rerank),`uv run python eval/run_eval.py eval/sets/hyperion.jsonl hyperion` 出:
+
+| tier | recall@5 | precision@5 | MRR | nDCG@5 | hit@5 |
+|---|---|---|---|---|---|
+| L1 (n=8) | **1.000** | 0.200 | 0.854 | 0.891 | 1.000 |
+| L2 (n=10) | **0.650** | 0.240 | 0.483 | 0.496 | 0.800 |
+| L2 无 reranker | 0.600 | 0.220 | 0.378 | 0.402 | 0.800 |
+
+**退出标准裁定**:**主标准 L2 recall@5 = 0.650 ≥ 0.55 ✅ 达标**;L1 sanity 1.000 ✅;L2 MRR 0.483 ≥ 0.45 ✅。reranker 贡献主要在排序质量(L2 MRR +0.105、nDCG +0.094;recall 仅 +0.05),符合调研"reranker 增益在 precision/ordering"。
+- precision@5 = 0.240 未达 0.40——**指标定义问题非系统缺陷**:`precision@5 ≈ recall × |gold|/k = 0.65 × 2/5 = 0.26`,小 gold 集(1-2 符号)数学上封顶 ≈ 0.2-0.4,与实测吻合。修正:改 `precision@min(k, |gold|)`(backlog #16)。
+- BM25 baseline(条件 5)+ holdout(条件 6)待补:需 BM25-only 模式 + 第二仓库(backlog #14/#15)。
+
+**结论**:P1.3 主退出标准达标,检索管线(parser→chunker→embed→store→index→retrieval→reranker→eval)端到端跑通,有真实召回数字。诚实保留:18 条是 indicative(非 ≥150 统计 tight),production 级评测是后续。
+
 ---
 
 ## 12. 风险与对策
@@ -450,6 +465,7 @@ P1.3 调研(前沿评测方法论 + CRG eval 框架借鉴)后强化。退出标�
    - **chunk id 去 start_line**(§4):改 `{file}:{qualified_name}`(+`:p{N}`),行号作普通列(重构稳健性,借鉴 CRG)。
    - **eval harness**(§11,借鉴 CRG eval/runner.py):注册表+统一签名+异常隔离+失败语义+循环论证警示+SWE-Bench Illusion 污染警示。
    - backlog +TRF(#10)/CoSQA+ 自动金标(#11)/embedding provider 硬化(#12)。
+9. **(2026-07-27)P1.3 实测达标 + 退出标准裁定**:在 Hyperion 自身代码(201 chunk)上人工 curate 18 条评测集(8 L1 + 10 L2),`eval/run_eval.py` 跑出 **L2 recall@5 = 0.650 ≥ 0.55 ✅ 主标准达标**;L1 sanity 1.000、L2 MRR 0.483 也过。reranker(qwen3-rerank)主要提升排序质量(L2 MRR +0.105)。precision@5 = 0.240 未达 0.40——裁定为**指标定义问题**(小 gold 集封顶 |gold|/k),改 precision@min(k,|gold|)(backlog #16)。BM25 baseline + holdout 待补(backlog #14/#15);评测集扩 ≥150 + L3 + git-diff 自动金标(backlog #13)。**P1.3 收官,管线端到端跑通。** 详见 §11「P1.3 实测结果」。
 
 ---
 
