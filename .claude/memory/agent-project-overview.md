@@ -9,7 +9,7 @@ metadata:
 
 正在构建一个智能 agent(长期项目),面向 bluez / wpa_supplicant 等 Linux C 系统组件,三大场景:① bug 根因定位与报告;② 自主深度研究(含实测验证);③ 开源仓库 PR 持续跟踪与合入建议。要求"持续学习"(报告内化为记忆)。技术栈 Python 3.12 + LangGraph + LangChain,uv 管理依赖。
 
-完整设计文档:**[docs/architecture.md](../../docs/architecture.md)**。
+完整设计文档:**[docs/设计/architecture.md](../../docs/设计/architecture.md)**。
 
 核心约束(易忘、非代码可见):
 - `deer-flow/` 子目录是 ByteDance 的**参考实现,只读,当零件目录**(`.gitignore` 掉,各自 clone),不整体 fork。可移植:模型工厂、deep-research 方法论、记忆中间件、沙箱、社区检索工具。

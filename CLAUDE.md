@@ -12,7 +12,7 @@
 
 三大场景共享一个**平台 + 共享服务层**(代码理解、记忆与持续学习、沙箱、检索、可观测),并具备**持续学习**:每份报告经 Memorize 内化为可检索、带溯源、带置信度、带时序的记忆。Tagline:*Light on every root cause.*
 
-完整架构设计见 [docs/architecture.md](docs/architecture.md)。
+完整架构设计见 [docs/设计/architecture.md](docs/设计/architecture.md)。
 
 ## ⭐ 工作准则(必读)
 
@@ -36,7 +36,7 @@ Hyperion/
 │   ├── tools/        # agent 可调用工具(导航/检索/执行)+ 插件槽
 │   └── cli.py        # 入口(uv run hyperion ...)
 ├── config/           # config.yaml(模型/工具/记忆 声明式)+ extensions_config.json(MCP/skills)
-├── docs/architecture.md
+├── docs/             # 已完成/(已建模块用法)· 调研/(调研报告)· 设计/(架构+模块设计,进展在此改)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)
 ├── .claude/memory/   # Claude Code 项目记忆(随 git 跨机)
 └── deer-flow/        # 只读参考实现(.gitignore)

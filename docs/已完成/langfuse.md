@@ -86,11 +86,11 @@ uv run hyperion run "在工作区里 ls 并告诉我看到了什么"
 
 ## 5. 我们项目里的接线(已就绪)
 
-埋点代码已在 [src/hyperion/platform/tracing.py](../src/hyperion/platform/tracing.py),设计为**完全 opt-in**:
+埋点代码已在 [src/hyperion/platform/tracing.py](../../src/hyperion/platform/tracing.py),设计为**完全 opt-in**:
 
 - `build_tracing_callbacks()`:三个 `LANGFUSE_*` 没配齐 → 返回 `[]`;配了但没装 `langfuse` 包 → `try/except` 兜底也返回 `[]`。**不启用时零开销**。
 - `tracing_metadata()`:同样未配置时返回 `{}`,调用方无条件 merge 即可。
-- 二者都在 [agent.py](../src/hyperion/platform/agent.py) 的 `run_demo` 里挂到**图调用根**(`config["callbacks"]` / `config["metadata"]`)——这是 Langfuse v4 把 trace 属性提到根 span 的前提(单 run 单 trace,所有 node/LLM/tool 是子 span)。
+- 二者都在 [agent.py](../../src/hyperion/platform/agent.py) 的 `run_demo` 里挂到**图调用根**(`config["callbacks"]` / `config["metadata"]`)——这是 Langfuse v4 把 trace 属性提到根 span 的前提(单 run 单 trace,所有 node/LLM/tool 是子 span)。
 
 **约定**(对齐架构 §4.5):
 
@@ -109,4 +109,4 @@ langfuse_tags       = [model:xxx]    # 按模型筛
 - 自托管 docker compose:<https://langfuse.com/self-hosting/deployment/docker-compose>
 - LangChain 集成:<https://langfuse.com/integrations/frameworks/langchain>
 - LangGraph 可观测 cookbook:<https://langfuse.com/guides/cookbook/integration_langgraph>
-- 架构定位:见 [architecture.md §4.5](architecture.md#45-可观测性)
+- 架构定位:见 [architecture.md §4.5](../设计/architecture.md#45-可观测性)

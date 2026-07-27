@@ -1,7 +1,7 @@
 # LanceDB 使用说明(Hyperion 视角)
 
 > 这篇讲两件事:**怎么查看 Hyperion 存在 LanceDB 里的数据** + **LanceDB 在本项目怎么用**。
-> 版本对照:LanceDB 0.34(已 live 核实,见 [设计文档 §6 决策 #8](p1-code-understanding-design.md))。选型理由见 [向量数据库设计分析报告](向量数据库设计分析报告.md)。
+> 版本对照:LanceDB 0.34(已 live 核实,见 [设计文档 §6 决策 #8](../设计/p1-code-understanding-design.md))。选型理由见 [向量数据库设计分析报告](../调研/向量数据库设计分析报告.md)。
 
 ---
 
@@ -199,4 +199,4 @@ rm -rf data/demo_repo data/code_index/demo
 
 - LanceDB 官方文档:https://docs.lancedb.com/(hybrid search / reranking / merge_insert / FTS index)
 - 本项目实现:`src/hyperion/services/code_index/{store,index,retrieval,embed}.py`
-- 选型与设计:[向量数据库设计分析报告.md](向量数据库设计分析报告.md)、[P1 设计报告 §6/§14](p1-code-understanding-design.md)
+- 选型与设计:[向量数据库设计分析报告.md](../调研/向量数据库设计分析报告.md)、[P1 设计报告 §6/§14](../设计/p1-code-understanding-design.md)

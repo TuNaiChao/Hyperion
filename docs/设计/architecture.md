@@ -315,7 +315,7 @@ class PatchedChatDeepSeek(ChatOpenAI):
 ### 4.5 可观测性
 
 - **Langfuse**(自托管友好):trace / session / user / token / cost 全链路。callback 挂在图调用根(单 run 单 trace,所有 node/LLM/tool 是子 span)。
-- **P0 可选启用指南**:[docs/langfuse.md](langfuse.md)(是什么 / 怎么用 / 本地 docker compose 起服务 / 项目接线)。
+- **P0 可选启用指南**:[docs/langfuse.md](../已完成/langfuse.md)(是什么 / 怎么用 / 本地 docker compose 起服务 / 项目接线)。
 - 可同时开 LangSmith / Monocle(OTel)。
 - 关键约定:`langfuse_session_id = thread_id`,`langfuse_user_id = user_id`,`langfuse_tags = [env, model]`。
 
@@ -334,21 +334,23 @@ class PatchedChatDeepSeek(ChatOpenAI):
 
 **目标**:让 agent 能像 IDE 一样在大型 C 代码库里"导航"——这是 bug 定位和 PR 影响面分析的共同地基。
 
-**三层索引**:
-1. **tree-sitter**(主力):`tree-sitter-c` 容错解析,提取函数/struct/宏的定义与调用,构建 repo map(Aider 的 PageRank 式排名 + token 预算裁剪,见 [aider repo map](https://aider.chat/docs/repomap.html))。
-2. **universal-ctags**(补充):`ctags -R --output-format=json` 产出符号表(函数/宏/typedef/struct + 位置),补 tree-sitter 不擅长的宏。
-3. **clangd / LSP**(按需精确):需 `compile_commands.json`(Make 项目用 `bear -- make` 生成);万文件级索引慢,只在需要精确 caller/callee 时查。
+> **面向小白的类比——理解代码像查一栋大楼,分三层(叠加不替代)**:
+> - **L1 向量检索**(大楼的"语义索引"):你说"找处理蓝牙断连的地方",它按**意思**模糊匹配,给你几个可能的房间——模糊但快、覆盖广。**已建成**(P1.3,`services/code_index/`)。
+> - **L2 LSP/clangd**(大楼的"精确导航"):你说"谁调用了 `disconnect_cb`",它像 IDE 一样精确列出每一处调用点(连宏展开、跨文件、系统头文件都准)。**P1.5**。
+> - **L3 DAP/lldb·gdb**(大楼的"现场勘查"):进程跑起来 attach 上去,看此刻某个变量的值、调用栈。**P2**。
+>
+> 三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。详细设计见 [p1-code-understanding-design.md](p1-code-understanding-design.md);演进依据见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
-**切块 + 向量 + 混合检索**:
-- 按符号边界切(每个 `function_definition` / `struct_specifier` / `#define` 一个 chunk),不按固定行数切。
-- 向量库 LanceDB(嵌入式,本地友好)/ Qdrant(生产,原生 dense-sparse)。
-- embedding 模型:`voyage-code-3` 或 `bge-large-en-v1.5`(选定后不能换,换需全量重嵌)。
-- **混合检索**:BM25(符号/函数名/错误码精确) + 向量(语义) + **RRF 融合**(`score=Σ 1/(60+rank)`) + **`bge-reranker-v2-m3` 重排**(只对 top-50,取 top-5)。对 C 代码尤其重要——函数名/宏名是强信号。
+**L1 向量检索层(已成,P1.0–P1.3)**:`parser.py`(tree-sitter 抽符号,Python 起步、C 待加)→ `chunker.py`(按符号边界切块 + `fts_text` 标识符拆词)→ `embed.py`(远端 DashScope `text-embedding-v4` 默认 / 本地可选)→ `store.py`(LanceDB 嵌入式,table-per-repo)→ `retrieval.py`(BM25+向量+RRF 原生混合 + cross-encoder rerank,远端 `qwen3-rerank` 默认)。实测 **L2 recall@5 = 0.65 达标**(详见设计文档 §11)。embedding 模型选定后不能换,换需全量重嵌(由 `index_manifest.model_fingerprint` 检测触发)。`universal-ctags` 补宏表留作 C 场景增强;`repo_map`(Aider 式 PageRank"全仓最重要符号"地图)延后。
+
+**L2 精确导航层(P1.5,LSP/clangd)**:经 `multilspy`(Python LSP **client** 库,**不要用 pygls——那是写 server 的**)驱动 clangd,提供 `references`(精确调用点,带索引就绪重试)/ `definition`(跳定义,含系统头)/ `hover`(签名/宏展开)。硬前提 `compile_commands.json`(bluez `bear -- make`、systemd cmake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`)。`get_callers/get_callees` **由 LSP 提供,取代原计划的 code_graph 自建调用图**——clangd 有编译数据库,展开宏/消歧/重载,绕开 C 的 static 同名/宏包装/函数指针三墙(详见设计文档 §3 的转向说明)。
+
+**L3 运行时层(P2,DAP)**:手写轻量 DAP client 驱动 `lldb-dap`/`gdb -i dap`,`attach(pid)` + 断点 + `stack_trace/scopes/variables`(读栈、递归展开 `struct *` 字段),用于"可复现 bug 的现场深挖"(学术范式见 ChatDBG)。
 
 > **LanceDB 与 pgvector 各管一摊,不互相取代**:这里的 LanceDB 是**代码索引**的检索库——选它是因为① 嵌入式,本地零运维(dev 期无需起 Postgres);② 原生 dense+sparse(BM25)+RRF 混合检索,正是本节所需,几乎零胶水。而 §5.2 记忆层的 pgvector 是**另一条线**(随 LangGraph Store + PostgresSaver 在生产跑),dev 期用 InMemoryStore、不起 Postgres。生产期若想"代码索引也并入 Postgres 省一个组件",代价是自搓 BM25+RRF 或装 `pgvector sparsevec`/`pg_bm25`——届时再权衡,不在 P1。
 
 **导航工具集**(给定位 agent 的 ACI,借鉴 SWE-agent/OrcaLoca):
-`grep_symbol`、`read_function(sym)`、`get_callers(sym)`、`get_callees(sym)`、`search_code(query)`(混合检索)。
+`grep_symbol`、`read_function(sym)`、`search_code(query)`(L1 检索,P1.4);`get_callers(sym)`、`get_callees(sym)`(L2 经 LSP,P1.5)。
 
 ### 5.2 记忆与持续学习服务 `services/memory/` ⭐
 
@@ -642,8 +644,8 @@ my-agent/
 | 阶段 | 目标 | 关键交付 | 退出标准 |
 |---|---|---|---|
 | **P0 地基** (1–2w) | 平台骨架能跑 | LangGraph 骨架 + **模型工厂(多 provider)** + config + Langfuse + 本地沙箱 + demo agent(bash/read_file) | 给简单问题,agent 在沙箱里 ls/读文件/回答;切换 provider 只改配置 |
-| **P1 代码理解** (2–3w) | 共享地基 | tree-sitter repo map + ctags + LanceDB 函数级 chunk + BM25/向量/RRF/rerank;以 bluez 首建索引;导航工具可用 | 函数名/错误码混合检索召回 top-5 准确 |
-| **P2 Bug-RCA MVP** (3–4w) | 场景①跑通 | triage→locate→verify→report 图 + 三路径符号化 + 静态分析 + 报告模板 | 真实 bluez/wpa bug 日志 → 定位到正确文件/函数并出报告 |
+| **P1 代码理解** (2–3w) | 共享地基(L1+L2)| **L1 向量检索**(parser/chunker/embed/store/index/retrieval/eval,**P1.0–P1.3 已成**,L2 recall@5=0.65)→ **P1.4 导航工具**(grep_symbol/read_function/search_code)→ **P1.5 LSP/clangd**(L2 精确导航,取代 code_graph) | P1.3:L2 recall@5≥0.55(已达标);P1.4:agent 能用导航工具定位;P1.5:精确 caller/callee 可查 |
+| **P2 Bug-RCA MVP** (3–4w) | 场景①跑通 | triage→locate→verify→report 图 + 三路径符号化 + 静态分析 + **L3 DAP 现场深挖** + Hashline 补丁(替 str_replace)+ TTSR/advisor 护栏 + 报告模板 | 真实 bluez/wpa bug 日志 → 定位到正确文件/函数并出报告 |
 | **P3 记忆+学习** (2–3w) | 内化闭环 | Memorize pipeline + Recall 注入 + 评测集;进阶 Graphiti 领域 KG | 同类 bug 第二次出现,Recall 召回首解;LongMemEval 指标达标 |
 | **P4 PR-Tracker** (2–3w) | 场景③跑通 | cron + GraphQL 增量 + Send 并行 review + 决策卡 + 冲突评估 | 定期产出 bluez/wpa 合入建议清单 |
 | **P5 Deep-Research** (3–4w) | 场景②跑通 | supervisor + 子代理 + 对抗验证 + 沙箱实测(hwsim/hci_vhci) + 移植 deep-research SKILL | 给调研问题 → 搜 web + 结合代码 + 实跑测试 + 出带引用报告 |

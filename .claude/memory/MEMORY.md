@@ -7,3 +7,4 @@
 - [生产级补齐待办清单](backlog-production-grade.md) — "最小实现→对齐 deer-flow"的跨阶段待办(首条:P1 移植 search.py 升级 grep/glob)。
 - [注释面向小白](comment-style-beginner-friendly.md) — 注释/docstring 用大白话+类比讲清每个库的作用,别晦涩、别默认读者懂。
 - [Python语法.md 要提交](commit-python-syntax-notes.md) — 用户 2026-07-24 反转原约束,以后都随 git 提交(跨机同步优先)。
+- [oh-my-pi 调研与后续设计演进](oh-my-pi-research-and-design-evolution.md) — 2026-07-27 报告位置 + 核心结论(三层代码智能栈:vector→LSP/clangd→DAP);新借鉴项已入 backlog #17–#27。

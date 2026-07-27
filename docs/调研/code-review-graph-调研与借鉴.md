@@ -1,7 +1,7 @@
 # code-review-graph(CRG)调研与借鉴报告
 
 > 状态:调研稿(v1,2026-07-24)· 调研对象:[tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) v2.3.7(本地只读克隆 `code-review-graph/`,已 `.gitignore`)
-> 关联:[P1 设计报告](p1-code-understanding-design.md) §6/§10/§11/§13 决策 #8、[backlog](../.claude/memory/backlog-production-grade.md) #10/#11/#12
+> 关联:[P1 设计报告](../设计/p1-code-understanding-design.md) §6/§10/§11/§13 决策 #8、[backlog](../../.claude/memory/backlog-production-grade.md) #10/#11/#12
 > 目的:白纸黑字记录「调研过 CRG、借鉴了什么、没借鉴什么及为什么」,避免重复造轮子,也避免盲目照搬。
 
 ---
@@ -265,8 +265,8 @@ CREATE TABLE edges (
 
 ## 8. 已落地到哪里
 
-- **设计文档**([p1-code-understanding-design.md](p1-code-understanding-design.md)):§4(chunk id)、§6(store/retrieval 真实 API + 补强)、§9(config retrieval/reranker)、§10(原子性重审)、§11(eval 多指标 + 循环论证 + 污染警示 + harness)、§13 决策 #8、§15 参考。
-- **backlog**([backlog-production-grade.md](../.claude/memory/backlog-production-grade.md)):#10 TRF、#11 CoSQA+ 自动金标、#12 provider 硬化。
+- **设计文档**([p1-code-understanding-design.md](../设计/p1-code-understanding-design.md)):§4(chunk id)、§6(store/retrieval 真实 API + 补强)、§9(config retrieval/reranker)、§10(原子性重审)、§11(eval 多指标 + 循环论证 + 污染警示 + harness)、§13 决策 #8、§15 参考。
+- **backlog**([backlog-production-grade.md](../../.claude/memory/backlog-production-grade.md)):#10 TRF、#11 CoSQA+ 自动金标、#12 provider 硬化。
 - **代码**:P1.3 store.py(已 live 验证 LanceDB 0.34 API);index.py / retrieval.py / eval 待敲。
 - **待补**:簇 4(parser/多语言/flows)→ P1.5 C 子调研。
 
