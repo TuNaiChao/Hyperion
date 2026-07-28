@@ -8,6 +8,8 @@ metadata:
   modified: 2026-07-27T08:08:33.434Z
 ---
 
+> **⚠️ v2 更正(2026-07-28 产品重规划,优先以此为准):** 下文"三层代码智能栈"是**用户的心智模型**——深读 omp 源码确认 vector(L1)/LSP(L2)/DAP(L3)三件**都真实存在但并未被 omp 串成一条管线**,各自独立。Hyperion 把它们组合起来是**本项目原创设计**。且 omp **无专门的 bug-RCA 子系统**。**记忆:** v2 不直接用 omp mnemopi 作底座,而是自建 `MemoryService` 契约(deer-flow MemoryManager ABC + omp backend-swap 形状),v1 后端组合已有 code_index + code-review-graph,**只借鉴 mnemopi 的巩固/衰减/veracity 设计**;omp 同时是 bug-RCA 的**委托目标**(默认 `omp -p`)。详见 [[agent-project-overview]] + [memory-design.md](../../docs/设计/memory-design.md) + [bug-rca-design.md](../../docs/设计/bug-rca-design.md)。
+
 2026-07-27 深读了 can1357/oh-my-pi(omp,生产级 Rust+TS coding agent,本地 `oh-my-pi/`,只读参考)+ 2026 最佳实践,生成后续设计报告:[docs/调研/后续设计演进报告-oh-my-pi与最佳实践.md](../../docs/调研/后续设计演进报告-oh-my-pi与最佳实践.md)。新可借鉴项已登入 [[backlog-production-grade]](#17–#27)。
 
 **核心结论(报告主线)**:Hyperion 的代码理解要从一层模糊检索演进为**三层代码智能栈**——

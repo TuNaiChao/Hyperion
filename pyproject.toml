@@ -34,8 +34,12 @@ dependencies = [
 
 [project.optional-dependencies]
 providers = ["langchain-anthropic>=1.0", "langchain-ollama>=1.0"]
-memory = ["mem0ai>=0.1"]
-graph = ["graphiti-core>=0.10"]
+# 记忆核心(MemoryService)的**可切换备选后端**——v1 默认 native(组合已有 code_index+code-review-graph,零额外依赖)。
+# 这些 extra 只在想把 memory.backend 切到外部框架时才装(对应 backends/<name>/):`uv sync --extra mem0` / `--extra cognee` / `--extra graphiti`。
+# v1 不强制装;按 architecture.md §5.2 / memory-design.md §2 的 backend-swap 设计,零锁死。
+mem0 = ["mem0ai>=0.1"]
+cognee = ["cognee>=0.1.20"]
+graphiti = ["graphiti-core>=0.10"]
 # 本地 embedding(P1.2 embed.py 的 LocalEmbedder):默认走远端 OpenAI 兼容 API
 # (DashScope / SiliconFlow,复用 langchain-openai,零新依赖、不装 torch);只有要离线 /
 # 数据不出本地时才装这套(会拉 torch ~800MB+)。`uv sync --extra embedding-local`。

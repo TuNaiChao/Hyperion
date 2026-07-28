@@ -1,0 +1,135 @@
+# 代码仓深度调研工作流 — 设计文档(P1)
+
+> 状态:设计稿 v1(2026-07-28)· 实现阶段:**R3**(PR 跟踪子项 **R4**)
+> 上位文档:[architecture.md §3/§7](architecture.md) · 参考:deer-flow Reporter、code-review-graph、Aider repo-map、gpt-researcher、storm
+
+---
+
+## 0. 这是什么(面向小白)
+
+**给 Hyperion 一个代码仓库(git 链接或本地路径),它产出一份"这个库怎么读"的详细文档**——设计架构、关键模块怎么实现的、入口和执行流在哪、哪里是高风险/难维护的地方。让人(或 agent)接手陌生大库时不用从零啃。
+
+**与 bug-RCA 的关系:** 同一套底座(记忆 + code_index + code-review-graph + 委托)。调研产出的"代码库知识"沉淀进记忆,**正好喂给后续的 bug-RCA** 用——两者形成闭环(P1 调研给 P2 RCA 铺地基)。
+
+**多语言:** 先 Python + C(bluez/wpa 是 C);code-review-graph 经 tree-sitter 已多语言 → 结构侧早多语言;code_index 的 parser 按需补 grammar(R3 前补 `tree-sitter-c`)。
+
+---
+
+## 1. 工作流(R3 实现)
+
+```
+START → 1.ingest(git clone / 本地路径,注册 scope)
+     → 2.index(code_index 建语义索引 + code-review-graph 建结构图 + repomap)
+     → 3.plan(按报告骨架拆子问题/子模块;可选 delegate 协助)
+     → 4.research(并行:每子模块用 自有工具 + 可选 delegate 深挖,带 file:line 证据)
+     → 5.report(渲染架构/模块文档,§5 骨架)
+     → 6.memorize(抽 CodebaseFact 入记忆)→ END
+```
+
+| 步 | 动作 | 关键点 |
+|---|---|---|
+| **1 ingest** | `git clone` 或本地路径;注册 `(owner, codebase)` scope | 复用 code_index.index 的原子/增量建索引 |
+| **2 index** | code_index(语义)+ **code-review-graph**(结构图:函数/类/调用/继承/测试 + 社区 + hub/bridge)+ **repomap**(Aider 式) | 三张图是调研的证据来源 |
+| **3 plan** | 按报告骨架(§5)拆子模块/子问题;**storm 式多视角提问**生成深挖大纲(安全/性能/维护者视角) | 决定"每个模块要回答哪些问题" |
+| **4 research** | 并行深挖每子模块;可用 delegate(omp/opencode)读代码 + Hyperion 自有 nav 工具;**gpt-researcher 式行内引用纪律** | 每个结论锚 file:line |
+| **5 report** | 渲染架构/模块文档(§5) | code-review-graph 的架构地图作为一等章节(图驱动,非 LLM 瞎编) |
+| **6 memorize** | 抽 `CodebaseFact`(module/symbol/architecture)入记忆,带 commit SHA | 闭环:喂给后续 bug-RCA |
+
+---
+
+## 2. Aider repo-map(R3 新增模块,关键借鉴)
+
+> 借自 [Aider-AI/aider](https://github.com/Aider-AI/aider)(~48k,Apache-2.0)的 `aider/repomap.py` + `queries/<lang>/tags.scm`。这是 P1 调研的**最高杠杆单点借鉴**。
+
+**是什么:** 用 tree-sitter 的 `tags.scm`(查询文件)抽出全仓所有"定义 + 引用",建一张**符号引用图**,对它跑 **PageRank**,得到"全仓最重要的 N 个符号",再按 **token 预算**裁剪成一张"仓库地图"。一眼看出这库的核心在哪。
+
+**怎么落到 Hyperion:** 新增 `services/code_index/repomap.py`,**叠在已有 `parser.py` 上**(parser 已用 tree-sitter 抽符号,repomap 复用它的符号抽取 + 加 references 边 + PageRank):
+
+```
+parser.py(已抽 defs)→ + tags.scm 抽 refs → networkx 建图 → PageRank
+  → get_repo_map(repo, map_tokens=1024) → 排序后的"最重要符号"地图
+```
+
+- 抄 Aider 的 `tags.scm`(各语言);**补 `c.tags.scm`** 供 bluez/wpa 用。
+- 这张地图既是调研报告"系统架构/关键模块"章节的骨架,也是 bug-RCA 委托前组装上下文的"全局视角"补充(给 delegate 看全仓重点)。
+
+> Aider repo-map 在 v0.1 架构里被标"延后";v2 因 P1 调研支柱而**提前到 R3**(并继续服务 bug-RCA)。
+
+---
+
+## 3. code-review-graph 集成(结构侧引擎)
+
+> [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph)(~26.5k,MIT):Tree-sitter → SQLite 图(函数/类/调用/继承/测试)+ Leiden 社区 + blast-radius + 30 MCP 工具。
+
+**Hyperion 用它做调研的"结构真相源":**
+- `get_architecture_overview` → 社区图 + 耦合告警 → 报告"系统架构"章节(自动生成,非 LLM 想象)。
+- hub/bridge 节点(betweenness centrality)→ "结构风险"章节(架构瓶颈点)。
+- 意外跨社区边 / 测试盲区 → "知识缺口"。
+- `list_flows`/`get_affected_flows` → "入口与关键执行流"章节。
+
+**接入方式:** clone 进仓库(已在 .gitignore),Hyperion 经 MCP 或直接 import 调它的工具。它也是记忆核心 native 后端的"结构检索"那条腿(见 [memory-design.md §4](memory-design.md))。
+
+---
+
+## 4. 调研方法论(综合三方)
+
+| 借鉴 | 来源 | 用在哪 |
+|---|---|---|
+| Orchestrator→Planner→Researcher→Reporter 主脊 | [deer-flow](https://github.com/bytedance/deer-flow) Reporter | 整体流程(cited Markdown) |
+| **行内引用纪律** + 并行执行 | [gpt-researcher](https://github.com/assafelovic/gpt-researcher) | 每结论 → source file:line |
+| **多视角提问**生成大纲 | [storm](https://github.com/stanford-oval/storm) | plan 步:模拟 安全/性能/维护者 视角问"这模块该深挖啥" |
+| **图驱动架构地图** | code-review-graph | report 的"系统架构"章节 |
+
+---
+
+## 5. 报告骨架(代码仓调研报告,Markdown,带溯源)
+
+```
+1. 元数据 + 溯源(repo, commit SHA, 生成日期, 模型/provider, 图统计 节点/边/社区, token 预算)
+2. TL;DR(3-5 句:这系统是啥、干啥用的、最关键的架构洞察)
+3. 系统架构(分层/组件图 + code-review-graph 社区图 + 耦合告警 + 语言构成)
+4. 入口与关键执行流(按关键性排序的调用链)
+5. 关键模块深挖(每个模块一节)
+   └ 用途 / 公开面(导出函数类型)/ 关键内部类型 / 依赖(进出)/ 数据与控制流 / 持久化/状态 / 值得注意的设计决策
+6. 横切关注点(错误处理 / 配置 / 日志可观测 / 安全鉴权 / 并发模型)
+7. 结构风险(hub 瓶颈 / bridge 节点 / 意外跨社区耦合 / 测试盲区)
+8. 未决问题 / 后续调研目标
+9. 来源(每条结论的 file:line,锚到 commit SHA)
+```
+
+> 调研报告同时整体存为 `ResearchReport` 文档,并抽取 `CodebaseFact` 入记忆。
+
+---
+
+## 6. PR 持续跟踪 + 合入建议(R4 子项)
+
+> v0.1 工作流③,cron + Send map-reduce。v2 放 **R4**(团队/多库之后)。
+
+```
+cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + cursor 分页)
+           → Send→ PR-reviewer ×N(并行,每 PR 独立上下文)
+               ├ fetch diff
+               ├ 影响面(blame + 调用图 + 依赖,复用 code_index + code-review-graph)
+               ├ 与本地分支冲突评估
+               └ 输出决策卡(JSON)
+           → reduce 汇总 → "合入/cherry-pick/观望/跳过" 清单 → memorize
+```
+
+**决策卡**(借鉴 PR-Agent/CodeRabbit):`recommendation`(合入/cherry-pick/观望/跳过)+ `confidence` + 多维评分(safety/compatibility/dependencies/test_coverage/upstream_stability)+ `conflict` + `action_items`。GraphQL 轮询(一次拿全 PR+reviews+comments+files,省额度)。
+
+---
+
+## 7. R3 退出标准(可验证)
+
+1. `uv run hyperion research --repo <wpa 或 bluez 路径>` → 产出一份架构/模块文档 `.md`。
+2. **人工抽查**:模块深挖小节是否锚 file:line、是否覆盖关键执行流;系统架构章节是否图驱动(code-review-graph 产出)。
+3. `repomap` 产出的"最重要符号"地图合理(核心模块在前)。
+4. 产出抽成 `CodebaseFact` 入记忆;后续 bug-RCA 能 `recall` 命中这些事实(验证 P1→P2 闭环)。
+
+## 8. 待办(记 backlog)
+
+- `tree-sitter-c` 接入 parser + `c.tags.scm`(R3 前置)。
+- repomap 的 token 预算 / PageRank 阻尼参数调优。
+- 多语言 grammar 扩展(Python+C 之外按需)。
+- PR tracker 的 GraphQL 增量 + 决策卡(R4)。
+- 调研报告"多视角提问"的视角集固化。

@@ -1,741 +1,265 @@
-# 软件 Bug 定位 / 深度研究 / PR 跟踪 Agent — 架构设计
+# Hyperion — 架构设计(v2,产品重规划版)
 
-> 状态:设计稿(v0.1) · 目标代码库:bluez / wpa_supplicant 等 Linux C 系统组件
-> 语言:Python 3.12 · 框架:LangGraph + LangChain
-> 参考实现:[deer-flow/](deer-flow/)(ByteDance,作为"零件目录"按需移植,不整体 fork)
+> 状态:设计稿 v2(2026-07-28 产品重规划)· 目标代码库:bluez / wpa_supplicant 等(但**不限语言**,P1 调研支持任意代码仓)
+> 语言:Python 3.12 · 框架:LangGraph + LangChain · 默认模型:DeepSeek(多 provider)
+> 参考实现(只读):[deer-flow/](../../deer-flow/)、oh-my-pi、code-review-graph(见 §10)
 
----
-
-## 0. 一句话定位
-
-构建一个 **平台 + 三条工作流 + 共享服务层** 的智能 agent:
-
-- **三条工作流**:① Bug 根因定位与分析;② 自主深度研究(含实测验证);③ 开源仓库 PR 持续跟踪与合入建议。
-- **共享服务层**:代码理解、记忆与持续学习、日志符号化、沙箱执行、检索、可观测——三条工作流公用。
-- **持续学习**:每条工作流末尾有一个一等公民的 **Memorize 内化节点**,把报告变成可检索、带溯源、带置信度、带时序的记忆;入口有 **Recall 注入**,实现经验复用。
-
-**核心取舍**:不整体 fork deer-flow(它是 30+ 中间件的 ReAct 超级 harness,自主性强但控制流不透明);自建精简平台,移植 deer-flow 的优质零件(模型工厂、deep-research 方法论、记忆中间件、沙箱工具、Tavily/DDG 检索)。Bug 定位需要严格的"假设→定位→验证"闭环,用显式 StateGraph 比自主 ReAct 更可调试。
+> **v1(v0.1)的纠偏**:v0.1 是"先把三大场景的共享地基建深再接场景",**地基跑在了场景前面** → 过度设计。v2 重新定义产品为**调度型 agent**(编排 + 记忆 + 委托),差异化聚焦在「记忆 + 持续学习 + 精准调度」,不在重造一个 coding agent。已建的代码理解层(code_index P1.0–P1.5)作为**资产保留**,降级为记忆/检索的后端 + 调研/委托的上下文源。
 
 ---
 
-## 1. 核心架构决策
+## 0. 一句话定位(北极星)
+
+> **Hyperion = 给系统软件代码库做"带记忆的 bug 根因定位 + 深度调研"的调度型 agent。差异化在「记忆 + 持续学习 + 精准调度」,不在重造一个 coding agent。**
+
+**三大支柱:**
+- **P1 代码仓深度调研**:任意语言仓库(bluez/wpa/deer-flow…)→ 详细准确的文档(架构 + 关键模块实现)。含开源 **PR 持续跟踪 + 合入建议**(R4)。
+- **P2 bug 根因定位**:源码 + 日志/漏洞报告 → 根因 + **补丁 + 分析报告**。**重活委托**给成熟 coding agent(omp/opencode),Hyperion 负责调度。
+- **P3 记忆与持续学习(★特色)**:把"代码库调研知识"和"bug 分析报告"沉淀成可检索、带溯源、团队共享、持续学习的记忆。
+
+**解决用户三大痛点:** ① 记忆跨会话(不再每次从零);② 省 token(委托前组装手术刀级上下文,不整库 dump);③ 流水线(一条命令跑完"召回→组装→委托→验证→报告→沉淀")。
+
+---
+
+## 1. 核心架构决策(v2)
 
 | # | 决策 | 理由 |
 |---|---|---|
-| **D1** | 自建精简平台 + 移植 deer-flow 零件 | 控制流透明、可调试、能真正吃透架构;deep-research 用 supervisor+子代理 |
-| **D2** | 平台 + 三工作流 + 共享服务 三层分离 | 代码索引/记忆/沙箱/检索三流共用,放共享层避免三套实现 |
-| **D3** | bug 工作流用显式 StateGraph;研究/PR 用 supervisor + Send map-reduce | 不同场景控制需求不同,不强行统一成一个大 ReAct |
-| **D4** | 记忆分层:LangGraph Store(基座)→ mem0(抽取/合并)→ Graphiti(时序领域 KG) | Store 零额外服务但无合并;mem0 补"内化";Graphiti 用 `valid_at/expired_at` 解决"同一 bug 认知随版本演变" |
-| **D5** | 代码理解 = tree-sitter repo map + ctags 符号 + LanceDB 混合检索 + 静态分析器 | 纯向量对 C 的函数名/宏/错误码召回弱,必须 BM25+向量+RRF+rerank |
-| **D6** | "实测验证"走仿真:wifi 用 `mac80211_hwsim`+`hostapd`;蓝牙用 `hci_vhci`/QEMU/btproxy | 把"会写报告"升级为"会做实验"的关键可行性杠杆,无需裸机即可无人值守回归 |
-| **D7** | LLM provider 用**反射 + 配置声明**,不硬编码任何厂家 | 直接移植 deer-flow 的 `use: module:ClassName` 机制;加厂家只改配置、零代码(见 §4.1) |
+| **D1** | **调度型 agent**:重活委托给 omp/opencode,自做记忆+调度 | 差异化在记忆+调度,不在重造 coding agent;一人/数月预算要用在刀刃上 |
+| **D2** | **平台 + 三工作流 + 共享服务** 三层分离(沿用 v0.1 骨架) | 代码理解/记忆/沙箱/检索三流共用,避免三套实现 |
+| **D3** | bug-RCA v1 **单委托、单轮、结构化 JSON 契约、直出报告** | 用户要求"第一版别太复杂";多轮/多 candidate/自动 PoC 放 R5 |
+| **D4** | **记忆底座 = 自有 `MemoryService` 契约**(deer-flow MemoryManager ABC + oh-my-pi backend-swap 形状);v1 后端组合 code_index+code-review-graph;cognee/mem0 可换 | 组合已有两个引擎(语义+结构)避免第三套重叠检索栈;差异化(持续学习闭环)必须自己握住;零锁死 |
+| **D5** | **委托抽象 `CodingAgentDelegate`**;v1 默认 omp,opencode 团队分发,配置可换 | omp 本地已装 + 结构化子 agent 产出 + `/review` 判级 + `--mode rpc`;opencode 单二进制便于团队分发 |
+| **D6** | MVP 先 **bug-RCA**(有 demo1/demo2 金标准可对照) | 一次验证记忆+委托+省 token+流水线四个痛点 |
+| **D7** | LLM provider **反射 + 配置声明**,不硬编码厂家(沿用 v0.1) | 直接移植 deer-flow `use: module:ClassName`,加厂家零代码(见 §4.1,**已实现**) |
+
+> v0.1 的 D4(LangGraph Store+mem0+Graphiti+LightRAG 四层)、D5(自建静态分析)、D6(仿真验证)在 v2 中**降级**:四层记忆 → 自有契约 + 可换后端;静态分析/log_symbolizer → 委托给 coding agent,v1 不自建(移 backlog);仿真验证 → R5 生产化再议。
 
 ---
 
-## 2. 总体架构
+## 2. 总体架构(编排 + 记忆 + 委托)
 
 ```
-                 ┌──────────────────────────────────────────────────┐
-  用户 / IM / cron ─▶│              Harness / 平台层                     │
-                 │  Gateway(FastAPI)·路由·权限·流式·HITL·checkpoint·cron│
-                 └────────────────────┬─────────────────────────────┘
-                                      │
-            ┌─────────────────────────┼───────────────────────────┐
-            ▼                         ▼                           ▼
-   ┌─────────────────┐      ┌────────────────────┐      ┌──────────────────┐
-   │ ① Bug-RCA 工作流 │      │ ② Deep-Research    │      │ ③ PR-Tracker     │
-   │  显式 StateGraph │      │  supervisor+子代理 │      │  cron+map-reduce │
-   │ triage→locate→  │      │  plan→fan-out→     │      │  pull→Send并行→  │
-   │ verify→report→  │      │  verify→test→      │      │  review→scorecard│
-   │ memorize        │      │  report→memorize   │      │  →summarize→记忆 │
-   └────────┬────────┘      └─────────┬──────────┘      └────────┬─────────┘
-            └────────────────────────┼┴──────────────────────────┘
-                                     ▼
-        ┌──────────────────── 共享服务层 ────────────────────────┐
-        │ 代码理解: tree-sitter·universal-ctags·LanceDB(混合检索) │
-        │           sparse/smatch/coccinelle·addr2line·btmon解析  │
-        │ 记忆:     LangGraph Store·mem0·Graphiti(FalkorDB)       │
-        │           BM25+向量+RRF+bge-reranker·LightRAG(领域KG)   │
-        │ 沙箱:     Docker/OpenHands runtime(跑测试/复现/编译)     │
-        │ 检索:     Tavily/DDG·web_fetch                           │
-        │ 可观测:   Langfuse·PostgresSaver(checkpointer)           │
-        └────────────────────────────────────────────────────────┘
+                    ┌────────────────── Hyperion(调度型 agent)──────────────────┐
+用户/团队 ──CLI──▶  │  workflows/  三条工作流(R1 起真正落地)                      │
+                    │    ├─ bug_rca      调度:召回→组装精确上下文→委托→出报告→沉淀  │
+                    │    ├─ deep_research 代码仓→架构/模块文档(复用记忆+检索)       │
+                    │    └─ pr_tracker   上游 PR 跟踪 + 合入建议(R4)              │
+                    │                                                              │
+                    │  services/memory/   ★记忆核心(P3,差异化)★                 │
+                    │    MemoryService 契约 + 可换后端(v1=code_index+code-review-graph)│
+                    │                                                              │
+                    │  services/code_index/  (已有,保留)语义检索 L1 + clangd L2   │
+                    │  tools/  (已有,保留)导航/沙箱工具 + 委托接口                │
+                    │  platform/ (已有,保留)模型工厂/配置/反射/沙箱/可观测         │
+                    └──────────────────────────┬───────────────────────────────────┘
+                                               │ CodingAgentDelegate(抽象接口)
+                          ┌────────────────────┼────────────────────┐
+                          ▼                    ▼                    ▼
+                   omp -p(默认)         opencode run         claude -p/SDK
+                   (本地,结构化产出)     (主流/团队分发,R4)    (可选高档后端)
+                          │
+                          └── 反向:MCP 把 Hyperion 记忆暴露给委托 agent 现场查
 ```
 
----
-
-## 3. 工作流概览(详细设计见 §6)
-
-| 工作流 | 触发 | 编排范式 | 核心差异化能力 |
-|---|---|---|---|
-| ① Bug-RCA | 用户给日志/症状 | 显式 StateGraph(triage→locate→verify→refine 循环) | 三路径日志符号化(内核 oops / btmon / wpa)对齐源码行 |
-| ② Deep-Research | 用户给问题/代码库 | supervisor + 子代理(Send 并行)+ 沙箱 | 对抗式验证(红队找反例)+ 实测验证(hwsim/hci_vhci) |
-| ③ PR-Tracker | LangGraph cron | map-reduce(Send 并行 review) | GraphQL 增量拉取 + 多维合入决策卡 + 本地冲突评估 |
+**记忆/委托/检索的正交关系(面向小白):**
+- **记忆(memory)** = Hyperion 的"长期笔记本":跨会话累积"这个库长啥样、之前哪些 bug 怎么修的"。
+- **委托(delegate)** = 把"读代码、写补丁"的力气活外包给 omp/opencode,Hyperion 只递上精确的上下文片段。
+- **代码理解(code_index L1/L2)** = Hyperion 的"代码地图 + IDE 导航",既给记忆当检索后端,也给委托前组装上下文用。
+- 三者通过 **MCP** 打通:delegate 干活时能反查 Hyperion 的记忆(见 §6)。
 
 ---
 
-## 4. Harness / 平台层
+## 3. 三大支柱概览(详细设计见独立文档)
 
-### 4.1 模型工厂:多 provider 自动适配 ⭐
+| 支柱 | 工作流 | 编排范式 | 核心能力 | 详细设计 |
+|---|---|---|---|---|
+| **P1 深度调研** | deep_research | 调度(delegate + 自有工具) | 代码仓→架构/模块文档;PR 跟踪(R4) | [deep-research-design.md](deep-research-design.md) |
+| **P2 bug-RCA** ★MVP | bug_rca | 调度(召回→组装→委托→报告→沉淀) | 源码+日志/漏洞→根因+补丁+报告 | [bug-rca-design.md](bug-rca-design.md) |
+| **P3 记忆/学习** ★特色 | (横切于 P1/P2) | MemoryService 契约 + 可换后端 | 持续学习、团队共享、带溯源 | [memory-design.md](memory-design.md) |
 
-> 直接移植 deer-flow 的 [factory.py](deer-flow/backend/packages/harness/deerflow/models/factory.py) 设计。
+---
 
-**核心思想**:不硬编码任何 provider。每个模型在 `config.yaml` 里声明一个 `use: <module>:<ClassName>` 字段,工厂用**反射**动态加载该 LangChain chat model 类,把它声明的其余字段作为 kwargs 传入。**加一家新 provider,通常零代码——只改配置。**
+## 4. Harness / 平台层(✅ 已实现,沿用 v0.1)
 
-#### 4.1.1 配置声明(多 provider 示例)
+> 这一层 v0.1 已建成生产级(`platform/`),v2 **原样保留**:模型工厂、配置、反射、沙箱、可观测。已是 deer-flow 同款设计。
+
+### 4.1 模型工厂:多 provider 自动适配 ⭐(已实现 `platform/models.py`)
+
+**核心思想**:不硬编码 provider。`config.yaml` 每个模型声明 `use: <module>:<ClassName>`,工厂 `create_chat_model` 用**反射**(`platform/reflection.py:resolve_class`)动态加载该 LangChain chat model 类。**加一家新 provider 通常零代码——只改配置。**
 
 ```yaml
-# config/config.yaml
+# config/config.yaml(当前实际配置的快照;换 provider 只改这里)
 models:
-  # —— OpenAI 官方 ——
-  - name: gpt-4.1
-    display_name: GPT-4.1
-    use: langchain_openai:ChatOpenAI          # 反射目标:import langchain_openai; ChatOpenAI
+  - name: gpt-4.1                       # OpenAI
+    use: langchain_openai:ChatOpenAI
     model: gpt-4.1
-    api_key: $OPENAI_API_KEY                  # $ 前缀 → 环境变量解析
+    api_key: $OPENAI_API_KEY
     base_url: https://api.openai.com/v1
-    request_timeout: 600.0
-    max_retries: 2
-    max_tokens: 8192
-    temperature: 0.2
     supports_vision: true
-    pricing: { currency: usd, input_per_million: 2.0, output_per_million: 8.0 }
-
-  # —— Anthropic(原生 thinking 参数)——
-  - name: claude-sonnet
-    display_name: Claude Sonnet
-    use: langchain_anthropic:ChatAnthropic
-    model: claude-sonnet-4-5
-    api_key: $ANTHROPIC_API_KEY
-    max_tokens: 8192
-    supports_thinking: true
-    supports_vision: true
-    when_thinking_enabled: { thinking: { type: enabled, budget_tokens: 8000 } }
-    when_thinking_disabled: { thinking: { type: disabled } }
-
-  # —— DeepSeek(OpenAI 兼容;用 patched 子类保留 reasoning_content)——
-  - name: deepseek-reasoner
-    display_name: DeepSeek Reasoner
-    use: my_agent.models.patched_deepseek:PatchedChatDeepSeek
-    model: deepseek-reasoner
+  - name: deepseek-v4-pro               # DeepSeek(OpenAI 兼容,性价比高,当前默认)
+    use: langchain_openai:ChatOpenAI
+    model: deepseek-v4-pro
     api_key: $DEEPSEEK_API_KEY
-    base_url: https://api.deepseek.com/v1
-    supports_thinking: true
-    when_thinking_enabled: { extra_body: { thinking: { type: enabled } } }
-    when_thinking_disabled: { extra_body: { thinking: { type: disabled } } }
-
-  # —— 本地 Ollama(用原生 provider,保留 think 内容)——
-  - name: qwen3-local
-    display_name: Qwen3 32B (Ollama)
-    use: langchain_ollama:ChatOllama           # 注意:别走 OpenAI 兼容端点,会丢 reasoning
-    model: qwen3:32b
-    base_url: http://localhost:11434
-    num_predict: 8192
-    supports_thinking: true
-
-  # —— 自托管 vLLM ——
-  - name: vllm-qwen
-    use: my_agent.models.vllm_provider:VllmChatModel
-    model: Qwen/Qwen3-32B
-    base_url: http://localhost:8000/v1
-    api_key: EMPTY
-    supports_thinking: true
-    when_thinking_enabled:
-      extra_body: { chat_template_kwargs: { enable_thinking: true } }
-
-  # —— 任意 OpenAI 兼容网关(火山方舟/Kimi/GLM 等,同一切换)——
-  - name: glm-coding
-    use: my_agent.models.patched_deepseek:PatchedChatDeepSeek
-    model: glm-4.6
-    api_key: $ZHIPU_API_KEY
-    base_url: https://open.bigmodel.cn/api/paas/v4
-
-# 角色 → 模型名 的路由(分层:便宜模型做摘要,强模型做定位/写作)
-model_roles:
-  default: gpt-4.1
-  planner: claude-sonnet          # 规划用强模型
-  locator: claude-sonnet          # 代码定位用强模型
-  summarizer: gpt-4.1-mini        # 摘要/压缩用便宜模型
-  verifier: gpt-4.1               # 验证用可靠模型
-  memory_extractor: gpt-4.1-mini  # 记忆抽取用便宜模型
-  title: qwen3-local               # 标题生成用本地免费模型
+    base_url: https://api.deepseek.com
+  # 任意 OpenAI 兼容网关(GLM/Kimi/火山/SiliconFlow/自建 vLLM)同形追加即可。
+  # Anthropic / 本地 Ollama 见 config.yaml 里注释掉的样例(需 `uv sync --extra providers`)。
+model_roles:                            # 角色→模型 路由(分层控成本;当前单模型,接入强模型后按角色分层)
+  default: deepseek-v4-pro
+  planner: deepseek-v4-pro
+  locator: deepseek-v4-pro
+  summarizer: deepseek-v4-pro
+  verifier: deepseek-v4-pro
+  memory_extractor: deepseek-v4-pro
+  title: deepseek-v4-pro
 ```
 
-#### 4.1.2 反射加载器
+- **反射加载器** `resolve_class(dotted, base)`:`"langchain_openai:ChatOpenAI"` → 真实类;缺包给安装提示而非 ImportError 栈。**已对齐 deer-flow** [resolvers.py](../../deer-flow/backend/packages/harness/deerflow/reflection/resolvers.py)。
+- **工厂** `create_chat_model(name, role, thinking_enabled, **overrides)`:剥离元字段、thinking 归一化(OpenAI-compat 走 `extra_body`、Anthropic 走 `thinking`、vLLM 走 `chat_template_kwargs`)、base_url 归一化、未知字段告警、挂 Langfuse。详见 [platform/models.py](../../src/hyperion/platform/models.py)。
+- **加新 provider**:标准 provider 只改配置;有非标字段(如 DeepSeek `reasoning_content`)写一个 `PatchedXxx(BaseChatOpenAI)` 子类。
 
-```python
-# src/my_agent/platform/reflection.py
-import importlib
+### 4.2 配置系统(已实现 `platform/config.py`)
 
-def resolve_class(dotted_path: str, base_class: type):
-    """'langchain_openai:ChatOpenAI' → 真实的类;校验它是 base_class 的子类。
+Pydantic-v2 + YAML;`$ENV` 解析(放 API key);`get_app_config()` 缓存 + 内容签名校验自动重载。子系统按 concern 拆(`LSPConfig` 等已落地)。对齐 deer-flow [config/](../../deer-flow/backend/packages/harness/deerflow/config/)。
 
-    缺包时给出可执行的安装提示(deer-flow 同款做法),而不是 ImportError 栈。
-    """
-    module_path, _, attr = dotted_path.partition(":")
-    try:
-        module = importlib.import_module(module_path)
-    except ImportError as e:
-        # 把常见 provider 映射到安装命令
-        hints = {
-            "langchain_openai": "uv add langchain-openai",
-            "langchain_anthropic": "uv add langchain-anthropic",
-            "langchain_ollama": "uv add langchain-ollama",
-        }
-        hint = hints.get(module_path.split(".")[0], f"uv add {module_path}")
-        raise ImportError(f"无法加载 {module_path}({e});请先安装:`{hint}`") from None
-    cls = getattr(module, attr, None)
-    if cls is None:
-        raise AttributeError(f"{module_path} 没有 {attr}")
-    if not (isinstance(cls, type) and issubclass(cls, base_class)):
-        raise TypeError(f"{dotted_path} 不是 {base_class.__name__} 的子类")
-    return cls
-```
+### 4.3 工具注册与 MCP(已实现 `tools/registry.py`)
 
-#### 4.1.3 工厂函数(简化版,对应 deer-flow `create_chat_model`)
+声明式 + 反射:`config.yaml` 的 `tools:` 每项 `use: <module>:func`,`get_available_tools()` 反射加载;`tool_groups` 分组(`web/code/memory/sandbox`)。MCP:v2 新增"把 Hyperion 记忆暴露给 delegate"的 MCP server(见 §6)。
 
-```python
-# src/my_agent/platform/models.py
-from langchain.chat_models import BaseChatModel
-from langchain_openai.chat_models.base import BaseChatOpenAI
-from my_agent.platform.reflection import resolve_class
-from my_agent.platform.config import get_app_config
+### 4.4 沙箱执行(已实现 `platform/sandbox/`)
 
-# 排除这些"元字段"——它们是给我们自己用的,绝不能透传给 provider 客户端
-_META_FIELDS = {
-    "use", "name", "display_name", "description",
-    "supports_thinking", "supports_reasoning_effort",
-    "when_thinking_enabled", "when_thinking_disabled", "thinking",
-    "supports_vision", "pricing",
-}
+`Sandbox` ABC + `LocalSandboxProvider`(dev,宿主 FS)+ 预留 Docker/E2B。`env_policy` 刮掉 `*KEY*/*SECRET*/*TOKEN*`;命令超时 + pgid kill + 有界捕获。对齐 deer-flow [sandbox/](../../deer-flow/backend/packages/harness/deerflow/sandbox/)。工具:`bash/read_file/write_file/str_replace/ls/grep`(已挂)。
 
-def create_chat_model(name: str | None = None, *, thinking_enabled: bool = False,
-                      role: str | None = None, **overrides) -> BaseChatModel:
-    """根据 config.yaml 声明构造一个 chat model。
+### 4.5 可观测性(已实现 `platform/tracing.py`)
 
-    - name: 模型逻辑名;None 时按 role 路由,再退回 models[0]。
-    - thinking_enabled: 若该模型声明 supports_thinking,注入 when_thinking_enabled 的 kwargs。
-    - role: 'locator' / 'summarizer' / ... 走 model_roles 路由(分层控成本)。
-    - overrides: 调用方临时覆盖 temperature/max_tokens 等。
-    """
-    config = get_app_config()
-    if name is None:
-        name = config.model_roles.get(role) if role else None
-        name = name or config.model_roles["default"]
-
-    mc = config.get_model(name)                      # ModelConfig(pydc, extra="allow")
-    model_class = resolve_class(mc.use, BaseChatModel)
-
-    # 1) 其余字段 → kwargs;剥离元字段
-    kw = mc.model_dump(exclude_none=True, exclude=_META_FIELDS)
-    kw.update({k: v for k, v in overrides.items() if v is not None})
-
-    # 2) thinking 开关:不同 provider 的归一化(OpenAI-compat 走 extra_body,Anthropic 走 thinking,vLLM 走 chat_template_kwargs)
-    wte = _merge_thinking(mc.when_thinking_enabled, mc.thinking)
-    if thinking_enabled and mc.supports_thinking and wte:
-        kw.update(wte)
-    elif not thinking_enabled:
-        if mc.when_thinking_disabled:
-            kw.update(mc.when_thinking_disabled)
-        elif wte:  # 默认显式关闭,避免 provider 意外开启
-            kw.setdefault("extra_body", {})["thinking"] = {"type": "disabled"}
-
-    # 3) OpenAI 兼容客户端的 base_url 归一化(用户常误写 api_base)
-    _normalize_base_url(model_class, kw)
-
-    # 4) 流式 usage 默认开(否则第三方端点丢 token 统计)
-    if issubclass(model_class, BaseChatOpenAI):
-        kw.setdefault("stream_usage", True)
-        kw.setdefault("stream_chunk_timeout", 240.0)  # 推理模型首 chunk 可达 90~150s
-
-    # 5) 未知字段告警(把 typo 从"请求时崩溃"提前到"构建时告警")
-    _warn_unknown(model_class, name, kw)
-
-    instance = model_class(**kw)
-    _attach_tracing(instance)                         # Langfuse callback
-    return instance
-```
-
-> 完整版还应包含 deer-flow 的 `supports_reasoning_effort` 处理、Codex Responses API 的 `max_tokens` 剥离、MindIE 的 retry 约束等——按需逐步补齐。见 [factory.py](deer-flow/backend/packages/harness/deerflow/models/factory.py) 第 174–319 行。
-
-#### 4.1.4 加一家新 provider 的两种路径
-
-| 场景 | 做法 | 工作量 |
-|---|---|---|
-| **标准 provider**(OpenAI/Anthropic/Ollama/Gemini/任意 OpenAI 兼容网关) | 只在 `config.yaml` 加一条 `models:` 项,填对 `use:` 和 `base_url` | **零代码** |
-| **有非标准行为的 provider**(如 DeepSeek 的 `reasoning_content` 字段、vLLM 的 `reasoning` 字段需要保留) | 写一个 `PatchedXxx(BaseChatOpenAI)` 子类,override `_convert_*` 把非标字段保存在 `additional_kwargs` | 一个小文件 |
-
-patched provider 模板(保留 reasoning_content,对应 deer-flow [patched_deepseek.py](deer-flow/backend/packages/harness/deerflow/models/patched_deepseek.py)):
-
-```python
-# src/my_agent/models/patched_deepseek.py
-from langchain_openai import ChatOpenAI
-
-class PatchedChatDeepSeek(ChatOpenAI):
-    """DeepSeek / GLM / Kimi / 火山方舟等 OpenAI 兼容但额外吐 reasoning_content 的网关。
-
-    保留 reasoning_content 到 additional_kwargs,避免被 BaseChatOpenAI 丢弃。
-    """
-    # override 相关的 _convert_dict_to_message / _convert_chunk_to_message 即可
-```
-
-#### 4.1.5 角色 → 模型 路由(成本控制)
-
-深度研究/批量 PR 评审会爆 token,必须分层:`summarizer` / `memory_extractor` / `title` 用便宜模型(gpt-4.1-mini / 本地 Ollama),`planner` / `locator` / `final_report` 用强模型。工厂函数接受 `role=` 参数,从 `config.yaml` 的 `model_roles` 查表。open_deep_research 的四角色范式是参考基线。
-
-### 4.2 配置系统
-
-移植 deer-flow 的声明式风格([config.example.yaml](deer-flow/config.example.yaml)):
-
-- **主配置** `config/config.yaml`:models / model_roles / tools / sandbox / memory / retrieval / workflows / observability。
-- **扩展配置** `extensions_config.json`:MCP servers + skills 启用状态。
-- **`$ENV` 解析**:任何值以 `$` 开头 → 解析为环境变量(放 API key)。
-- **热重载边界**:per-run 字段(`models[*].max_tokens`、`memory.*` 等)改完下次请求即生效;基础设施字段(`database` / `sandbox` / `scheduler`)需重启。deer-flow 用 `STARTUP_ONLY_FIELDS` 注册表标记,值得照搬。
-- **配置缓存 + 签名校验**:`get_app_config()` 缓存解析结果,但当文件内容签名(含 sha256)变化时自动重载——避免 mtime 在网络挂载上失效。
-
-### 4.3 工具注册与 MCP
-
-- **声明式 + 反射**:`config.yaml` 的 `tools:` 列表每项有 `use: <module>:<func>`,`get_available_tools()` 用 `resolve_variable()` 动态加载(同 deer-flow [tools.py](deer-flow/backend/packages/harness/deerflow/tools/tools.py))。
-- **工具组**:`tool_groups` 把工具按 `web` / `code` / `memory` / `sandbox` 分组,工作流按需挂载。
-- **MCP**:用 `langchain-mcp-adapters` 的 `MultiServerMCPClient`,支持 stdio/SSE/HTTP + OAuth;延迟发现(`tool_search`)避免 schema 撑爆上下文。
-
-### 4.4 沙箱执行
-
-移植 deer-flow 的 `SandboxProvider` 抽象([sandbox/](deer-flow/backend/packages/harness/deerflow/sandbox/)):
-
-| 实现 | 用途 |
-|---|---|
-| `LocalSandboxProvider` | 开发期,宿主文件系统;虚拟路径 `/mnt/user-data/{workspace,outputs}` 映射到每线程目录 |
-| `DockerSandboxProvider` | 生产期,容器隔离(对应 deer-flow `AioSandbox`);host bash 默认关 |
-| (可选)`E2B / Boxlite` | 远程沙箱 / 微 VM |
-
-工具:`bash`(带命令超时 + 后台进程处理)、`read_file`、`write_file`、`str_replace`、`ls`。
-**安全**:`env_policy` 刮掉 `*KEY*/*SECRET*/*TOKEN*` 类环境变量,平台凭据不泄进 skill 子进程;`read_before_write` 哈希门防盲写。
-
-### 4.5 可观测性
-
-- **Langfuse**(自托管友好):trace / session / user / token / cost 全链路。callback 挂在图调用根(单 run 单 trace,所有 node/LLM/tool 是子 span)。
-- **P0 可选启用指南**:[docs/langfuse.md](../已完成/langfuse.md)(是什么 / 怎么用 / 本地 docker compose 起服务 / 项目接线)。
-- 可同时开 LangSmith / Monocle(OTel)。
-- 关键约定:`langfuse_session_id = thread_id`,`langfuse_user_id = user_id`,`langfuse_tags = [env, model]`。
-
-### 4.6 持久化与调度
-
-- **Checkpointer**:`PostgresSaver`(生产)/ `SqliteSaver`(单机)/ `MemorySaver`(开发)。跨对话状态恢复、HITL rewind、断点续跑的基础。
-- **Store**:跨线程 KV + 向量索引(记忆基座,见 §5.2)。
-- **Cron**:`LangGraph Platform` 原生 `CronClient` + cron 表达式(UTC)。上游仓无权挂 webhook,**cron 轮询 GraphQL 是 PR 跟踪主路径**。
-- **Background run**:长任务(深度研究、批量 PR 评审)从请求线程解耦。
+Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread_id`、`langfuse_user_id=owner`。指南见 [langfuse.md](../已完成/langfuse.md)。
 
 ---
 
 ## 5. 共享服务层
 
-### 5.1 代码理解服务 `services/code_index/`
+### 5.1 代码理解服务 `services/code_index/`(✅ 已实现 P1.0–P1.5,资产保留)
 
-**目标**:让 agent 能像 IDE 一样在大型 C 代码库里"导航"——这是 bug 定位和 PR 影响面分析的共同地基。
+**目标**:让 agent 能像 IDE 一样在大型代码库里"导航"——bug 定位、调研、PR 影响面的共同地基;**v2 还兼作记忆核心的语义检索后端**。
 
 > **面向小白的类比——理解代码像查一栋大楼,分三层(叠加不替代)**:
-> - **L1 向量检索**(大楼的"语义索引"):你说"找处理蓝牙断连的地方",它按**意思**模糊匹配,给你几个可能的房间——模糊但快、覆盖广。**已建成**(P1.3,`services/code_index/`)。
-> - **L2 LSP/clangd**(大楼的"精确导航"):你说"谁调用了 `disconnect_cb`",它像 IDE 一样精确列出每一处调用点(连宏展开、跨文件、系统头文件都准)。**P1.5**。
-> - **L3 DAP/lldb·gdb**(大楼的"现场勘查"):进程跑起来 attach 上去,看此刻某个变量的值、调用栈。**P2**。
->
-> 三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。详细设计见 [p1-code-understanding-design.md](p1-code-understanding-design.md);演进依据见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
+> - **L1 向量检索**(大楼的"语义索引"):按**意思**模糊匹配,快、覆盖广。**已建成**。
+> - **L2 LSP/clangd**(大楼的"精确导航"):像 IDE 精确列每一处调用点(宏展开/跨文件/系统头都准)。**已建成**。
+> - **L3 DAP/lldb·gdb**(大楼的"现场勘查"):进程跑起来 attach,看此刻变量值/调用栈。**R2 末/P3**。
 
-**L1 向量检索层(已成,P1.0–P1.3)**:`parser.py`(tree-sitter 抽符号,Python 起步、C 待加)→ `chunker.py`(按符号边界切块 + `fts_text` 标识符拆词)→ `embed.py`(远端 DashScope `text-embedding-v4` 默认 / 本地可选)→ `store.py`(LanceDB 嵌入式,table-per-repo)→ `retrieval.py`(BM25+向量+RRF 原生混合 + cross-encoder rerank,远端 `qwen3-rerank` 默认)。实测 **L2 recall@5 = 0.65 达标**(详见设计文档 §11)。embedding 模型选定后不能换,换需全量重嵌(由 `index_manifest.model_fingerprint` 检测触发)。`universal-ctags` 补宏表留作 C 场景增强;`repo_map`(Aider 式 PageRank"全仓最重要符号"地图)延后。
+**L1(P1.0–P1.3 已成)**:`parser.py`(tree-sitter 抽符号,Python 起步、**C 待加,R3 前补**)→ `chunker.py`(符号边界切块 + `fts_text` 拆词)→ `embed.py`(远端 DashScope 默认/本地可选)→ `store.py`(LanceDB 嵌入式,table-per-repo,原生 BM25+向量+RRF 混合)→ `retrieval.py`(cross-encoder rerank)。实测 **recall@5 = 0.65 达标**。
+**L2(P1.5 已成,LSP/clangd)**:经 `multilspy` + 自写 `ClangdServer` 驱动 clangd,`find_references/goto_definition/hover`;硬前提 `compile_commands.json`。`get_callers/get_callees` **由 LSP 提供,取代原 code_graph 自建调用图**。
+**L3(P2 末/P3,DAP)**:手写轻量 DAP client 驱动 `lldb-dap`/`gdb -i dap`,仅用于**可复现 bug** 的现场深挖(学术范式 ChatDBG;事后日志分析不适用)。
 
-**L2 精确导航层(P1.5 已成,LSP/clangd)**:经 `multilspy`(Python LSP **client** 库,**不要用 pygls——那是写 server 的**)驱动 clangd,提供 `find_references`(精确调用点 = callers,带索引就绪重试)/ `goto_definition`(跳定义,含系统头)/ `hover`(签名/宏展开)。硬前提 `compile_commands.json`(bluez `bear -- make`、systemd cmake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`)。`get_callers/get_callees` **由 LSP 提供,取代原计划的 code_graph 自建调用图**——clangd 有编译数据库,展开宏/消歧/重载,绕开 C 的 static 同名/宏包装/函数指针三墙(详见设计文档 §5 的转向说明)。**2026-07-28 实测**:自带 C fixture 上 `find_references` 零漏召(两处调用点全中)。
+> 详细设计见 [p1-code-understanding-design.md](p1-code-understanding-design.md);演进依据见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
+> **新增借鉴(Aider)**:R3 起新增 `repomap.py`——Aider 式 tree-sitter `tags.scm` → PageRank → token 预算"全仓最重要符号"地图,叠在 `parser.py` 上(见 §10/backlog)。
 
-**L3 运行时层(P2,DAP)**:手写轻量 DAP client 驱动 `lldb-dap`/`gdb -i dap`,`attach(pid)` + 断点 + `stack_trace/scopes/variables`(读栈、递归展开 `struct *` 字段),用于"可复现 bug 的现场深挖"(学术范式见 ChatDBG)。
+### 5.2 记忆与持续学习服务 `services/memory/`(★ P3 差异化,R1 新建)
 
-> **LanceDB 与 pgvector 各管一摊,不互相取代**:这里的 LanceDB 是**代码索引**的检索库——选它是因为① 嵌入式,本地零运维(dev 期无需起 Postgres);② 原生 dense+sparse(BM25)+RRF 混合检索,正是本节所需,几乎零胶水。而 §5.2 记忆层的 pgvector 是**另一条线**(随 LangGraph Store + PostgresSaver 在生产跑),dev 期用 InMemoryStore、不起 Postgres。生产期若想"代码索引也并入 Postgres 省一个组件",代价是自搓 BM25+RRF 或装 `pgvector sparsevec`/`pg_bm25`——届时再权衡,不在 P1。
+> v0.1 是"LangGraph Store + mem0 + Graphiti + LightRAG 四层"。v2 改为**自有 `MemoryService` 契约 + 可换后端**,v1 后端 = 组合已有的 **code_index(语义)+ code-review-graph(结构)**;cognee/mem0 作可一键切换的备选后端(零锁死)。理由:组合已有引擎避免第三套重叠检索栈;持续学习闭环(差异化)必须自己握住。
 
-**导航工具集**(给定位 agent 的 ACI,借鉴 SWE-agent/OrcaLoca):
-`grep_symbol`、`read_function(sym)`、`search_code(query)`(L1 检索,P1.4);`get_callers(sym)`、`get_callees(sym)`(L2 经 LSP,P1.5)。
+**契约形状(照搬 deer-flow `MemoryManager` ABC + oh-my-pi backend-swap):** tier-1 `memorize/recall`;后端可换(丢 `backends/<name>/` + 配置 `memory.backend`)。**双接入**:workflow 内自动召回注入 + agent 工具自管(deer-flow 双模式)。
 
-### 5.2 记忆与持续学习服务 `services/memory/` ⭐
+**知识项 schema(三类,贴合代码域):** `CodebaseFact` / `BugLesson` / `ResearchReport|RcaReport`(整份报告 + 抽取的知识项,带 commit SHA 溯源)。
 
-**分层栈**(分阶段叠加,不是一开始就上全套):
+**持续学习闭环:** 调研→抽 `CodebaseFact`;bug-RCA→抽 `BugLesson` + 图边连相关 fact/历史 lesson;下一次先 `recall` 命中"这模式见过";巩固(借 mnemopi:去重/衰减/升级稳定事实)。
 
-| 层 | 选型 | 职责 | 引入时机 |
-|---|---|---|---|
-| 基座 | LangGraph Store + pgvector | 跨线程 KV + 向量检索;所有节点原生可访问 | Phase 1 |
-| 抽取/合并 | mem0 OSS(Apache-2.0) | 报告→原子事实;ADD/UPDATE/DELETE 判定 | Phase 3 |
-| 时序领域 KG | Graphiti + FalkorDB(Apache-2.0) | `valid_at/expired_at/invalid_at`;同一 bug 认知随版本演变 | Phase 3 进阶 |
-| 静态领域 KG | LightRAG | bluez/wpa 官方文档/源码注释建成静态知识库 | Phase 5 |
+**多代码库/团队:** 每个 `(owner, codebase)` 一个 scope;native 后端用 LanceDB table-per-repo + owner 字段做租户隔离。v1 单机,R4 多人。
 
-> **别把这张表当成"同时起 4 个存储"**。基座 Store 是唯一必起的持久层;mem0 是它之上的"抽取/合并"逻辑层(产物写回 Store/Graphiti,不开第 4 个库);Graphiti 与 LightRAG 虽都含图引擎,但职责正交(时序演变 vs 静态领域知识),按 Phase 3/5 分阶段引入,届时再评估是否共用一个图引擎以降运维成本。多库写入延迟用"只写必要库 + Recall 按角色只查必要库"控制(见 §7)。
+> 详细设计见 [memory-design.md](memory-design.md)。
 
-**两个横切组件**(挂在每条工作流上,详见 §7):
+### 5.3 (裁剪)日志符号化 / 静态分析 → 移 backlog
 
-- **Recall**(读,入口):症状/问题 → 多路召回(Store 语义 + Graphiti 图遍历 + BM25 精确)→ RRF 融合 → reranker 重排 → 只取 top-3~5 → 注入 context(每条带 溯源+置信度+时间戳)。
-- **Memorize**(写,出口):报告 → 抽取原子事实 → 实体消歧 → 冲突合并(recency-wins + 显式失效)→ 设置信度 → 存 Store/mem0/Graphiti + provenance。
-
-**记忆分类学 × bug 场景**:
-
-| 类型 | 存什么 | 存哪 |
-|---|---|---|
-| 工作记忆 | 当前 bug 报告、已排除的假设 | LangGraph State(Checkpointer) |
-| 情景记忆 | "2026-07 分析了 A2DP 断连案例 X,根因是 avdtp_start 滞后" | Store namespace `(component,"episodes")` |
-| 语义记忆 | "BlueZ transport_state 在 SUSPENDING 态下不接受 new start" | mem0 事实 / Graphiti 边 / LightRAG KG |
-| 程序性记忆 | "排查连接问题标准流程:btmon→dbus signal→状态机" | Store namespace `("procedures",)` + few-shot 示例 |
-
-**合并四杠杆**(来自 Hindsight 框架,write-time 策略):
-Importance(只存根因/模式,不存日志流水)→ Merge(实体消歧 + recency/source/confidence 择优)→ Decay(指数衰减 + 补丁发布即 invalidate)→ Eviction(仅合规用,不为性能删)。
-
-### 5.3 日志符号化服务 `services/log_symbolizer/`
-
-三条路径把日志对齐到源码行(你场景的核心差异化能力):
-
-| 日志类型 | 工具 | 对齐方式 |
-|---|---|---|
-| **内核 oops/panic** | `addr2line -e vmlinux -f -C <addr>` + `/proc/kallsyms` | 直接出文件:行(需 `CONFIG_DEBUG_INFO=y`) |
-| **btmon(HCI)** | 协议层无地址 → 提取 opcode/event 码 → 在 bluez 源码 switch-case 映射处理函数 | tree-sitter 检索 `hci_le_cis_established_evt` 等符号 |
-| **wpa_supplicant `-dd`** | 日志行通常自带函数名(如 `wpa_supplicant_assoc_req_ie_cb`) | ctags 直接定位 |
-
-**时间线重建**:把 btmon + dmesg + wpa log + journalctl 按统一时间轴合并,NTP 校准,每事件标对应代码符号,作为 LLM 上下文推因果链。
-
-### 5.4 静态分析服务 `services/static_analysis/`
-
-封装内核/C 静态分析器,作为 verify 节点的"确定性兜底":
-
-| 工具 | 用途 | 调用 |
-|---|---|---|
-| **Sparse** | 地址空间违规(`__user`/`__iomem`/`__rcu`)、锁注解 | `make C=2 drivers/bluetooth/` |
-| **Smatch** | 空指针、未初始化、锁问题(Sparse + 数据流) | `smatch_scripts/kchecker` |
-| **Coccinelle** | API 误用模式(Semantic Patch Language) | `make coccicheck MODE=report` |
-| **scan-build / `-fanalyzer`** | 通用 C bug(死存储、空指针) | `scan-build make CC=clang` |
-| (可选)**CodeQL** | 自定义 bug 模式查询 | `codeql database create` |
-
-### 5.5 检索服务
-
-移植 deer-flow [community/](deer-flow/backend/packages/harness/deerflow/community/) 的搜索/抓取:
-- 搜索:Tavily(质量高,推荐)/ DDG(免费)/ Brave / Exa / Serper。
-- 抓取:httpx + markdownify;或 Firecrawl / Jina Reader。
-- 切换只改 `config.yaml` 一行 `use:` 路径。
+v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_analysis/`(sparse/smatch/coccinille)在 v2 **v1 不自建**——委托给 omp/opencode 后,日志/静态分析由 delegate 用自己的工具做。域工具(bluez/wpa 专用解析)后续按需再加。两条均记入 [backlog](../../.claude/memory/backlog-production-grade.md)。
 
 ---
 
-## 6. 三条工作流详细设计
+## 6. 委托层 `CodingAgentDelegate`(★ v2 新增,R2 实现)
 
-### 6.1 工作流 ① Bug-RCA(显式 StateGraph)
+**为什么委托:** bug 定位 + 补丁合成正是成熟 coding agent 最擅长的;Hyperion 自建检索+推理+补丁引擎去拼 opencode/omp 会烧光预算在通用能力上。**Hyperion 的差异化在记忆 + 调度 + 团队知识,不在重造 agentic coding。**
 
-范式:学术界 MA-RCA / LLM4FL 验证的 **hypothesize → locate → verify → refine** 循环。
+**接口:** `CodingAgentDelegate.run(prompt, cwd, output_schema) -> StructuredResult`。后端:`omp`(默认,`omp -p`/`--mode rpc`)、`opencode`(`run`)、`claude`(`-p`/SDK,可选)。配置 `delegate.backend` 切换。**两者都支持、可自定义用哪个**(抽象接口从第一天起)。
 
-```
-START → triage ────────────────────────────┐
-   (解析日志/症状,符号化,Recall 历史)      │
-            ▼                              │
-        hypothesize ── Top-K 假设 ──┐       │
-                                  │ Send   │
-                          ┌───────▼───────┐│
-                          │    locate     ││ ← grep_symbol/read_function/
-                          │  (并行×K)     ││   get_callers + 日志符号化结果
-                          └───────┬───────┘│
-                                  ▼        │
-                          ┌──────────────┐ │
-                          │   verify     │ │ ← 静态分析/调用链交叉/对照症状
-                          │ (verify_loop)│ │   失败 → refine 回 hypothesize(最多 N 轮)
-                          └──────┬───────┘ │
-                                 │ pass    │
-                          ┌──────▼──────┐  │
-                          │   report    │  │ ← 结构化模板:症状/根因/证据链/修复建议/置信度
-                          └──────┬──────┘  │
-                          ┌──────▼──────┐  │
-                          │  memorize   │  │ ← 抽取事实 → 消歧 → 合并 → 入记忆
-                          └─────────────┘  │
-```
+**反向 MCP:** Hyperion 把 `memory` + `code_index` + `code-review-graph` 暴露为 MCP server,delegate 干活时现场查 Hyperion 累积的知识(不是 MCP 驱动 delegate,而是 delegate 查 Hyperion)。
 
-**关键设计**:
-- **triage** 先跑 Recall:同类 bug 是否见过?直接复用首解路径。
-- **hypothesize** 用 `Send` API 对 Top-K 假设并行 locate(map-reduce),互不污染上下文。
-- **verify** 用**对抗式**:独立 verifier 子代理 + 确定性工具(静态分析/编译/测试),不让同一个 LLM 自评。
-- **report** 模板带证据链(每个结论附 源码 file:line + 日志原文 + 引用),置信度低时显式标注。
-- **memorize** 只抽根因/模式/规则,不存原始日志流水。
-
-### 6.2 工作流 ② Deep-Research(supervisor + 子代理 + 沙箱)
-
-借鉴 LangChain 官方 `open_deep_research` + `deepagents` 的 `task()` 子代理模式:
-
-```
-supervisor(lead)
-  ├─ planner        分解为子问题(Top-K)
-  ├─ Send→ researcher ×K   并行 search + fetch + 摘要(带引用)
-  ├─ adversary      对抗验证:提取原子断言 → 找反例 → 不过打回   ★
-  ├─ experimenter   沙箱里实际跑测试/复现验证结论                 ★
-  ├─ synthesizer    跨子代理去重引用 + 综合报告
-  └─ memorize       内化
-```
-
-**两个关键差异点**(把"会写报告"升级为"会做研究"):
-1. **对抗式验证节点**:朴素"LLM 自检"有自我认同偏差(ACL 2025 实证)。独立红队子代理专门找反例/跑反例测试。
-2. **实测验证闭环**:沙箱里编译/跑测试,配合 D6 仿真(hwsim/hci_vhci)在 CI 里无人值守验证。借鉴 deer-flow `/goal` 目标驱动续跑(便宜评估模型判定"是否达成",自动续跑到测试通过,带熔断:2 次无进展即停)。
-
-**HITL 断点**:planner 审批 + 报告定稿前。
-
-### 6.3 工作流 ③ PR-Tracker(cron + Send map-reduce)
-
-```
-cron(每天,UTC) → graphql 增量拉 bluez/wpa 近期 PR(updatedAt 过滤 + cursor 分页)
-                   │
-                   └─Send→ PR-reviewer ×N(并行,每 PR 独立上下文)
-                            ├─ fetch diff
-                            ├─ 影响面分析(blame + 调用图 + 依赖,复用 §5.1 代码索引)
-                            ├─ 与本地分支冲突评估
-                            └─ 输出决策卡(JSON)
-                   ▼
-              reduce 汇总 → "合入/cherry-pick/观望/跳过" 清单 → memorize
-```
-
-**"是否建议合入"决策卡**(借鉴 PR-Agent/CodeRabbit 维度):
-```json
-{"recommendation":"cherry-pick","confidence":0.82,
- "dimensions":{
-   "safety":{"score":4,"notes":"修复 use-after-free,有 CVE"},
-   "compatibility":{"score":5,"notes":"API 向后兼容"},
-   "dependencies":{"score":3,"notes":"依赖上游另一未合入 commit"},
-   "test_coverage":{"score":4,"notes":"含回归测试"},
-   "upstream_stability":{"score":4,"notes":"已在上游 main,2 周"}},
- "conflict":"与本地 patch btusb-quirk 冲突,需手动适配",
- "action_items":["本地验证编译","跑 hwsim 回归"]}
-```
-
-**调度**:LangGraph cron。**轮询用 GraphQL**——一次拿全 PR + reviews + comments + files,比 REST 省额度;`updatedAt` 过滤 + cursor 分页只拉增量。
+> 详细(workflow 七步、结构化产出契约、delegate 选型对比)见 [bug-rca-design.md](bug-rca-design.md)。
 
 ---
 
-## 7. 持续学习闭环(一等公民)
+## 7. 持续学习闭环(一等公民,横切 P1/P2)
 
-### 7.1 Recall(读,工作流入口)
-
-```python
-# src/my_agent/services/memory/recall.py(伪代码)
-async def recall(query: str, component: str, top_k: int = 5) -> list[Memory]:
-    sem  = await store.search(namespace=(component,"semantic"), query=query, limit=20)
-    epis = await store.search(namespace=(component,"episodes"), query=query, limit=20)
-    graph = await graphiti.search(query)                    # 图遍历(多跳)
-    fused = rrf([sem, epis, graph])                         # 倒排融合
-    final = await reranker.rerank(query, fused, top_k=top_k)  # bge-reranker-v2-m3
-    return final  # 每条带 source/case_id/confidence/valid_at → 注入 prompt
-```
-
-注入规则:rerank 后只取 top-3~5,按 `score × confidence × recency_weight` 排序,**每条带溯源 + 时间戳**,让模型知道可信度与时效。
-
-### 7.2 Memorize(写,工作流出口)
-
-```python
-# src/my_agent/services/memory/memorize.py(伪代码)
-async def memorize(report: BugReport, component: str):
-    # ① 抽取:按预定义本体(Component/Interface/State/Function/Symptom/RootCause/Patch/Version)
-    facts = await extractor.extract(report, ontology=ONTOLOGY[component])
-    for f in facts:
-        f.entities = canonicalize(f.entities)               # ② write-time 实体消歧
-        f.confidence = llm_score(f) * source_weight(report) # ④ 置信度
-    # ③ 合并:recency-wins + 显式失效(旧事实标记 invalid,不删除)
-    await mem0.add(facts, user_id=component, merge="recency")
-    await graphiti.add_episode(report.id, report.text, reference=report.url)  # ⑤ 时序图
-    # 附 provenance
-```
-
-**关键原则**:
-- write-time 严格过滤(只存根因/模式/规则,不存日志流水)——脏数据进索引后 rerank 也救不回来。
-- 冲突显式失效而非并存,避免两条矛盾事实都进 top-k。
-- 每条记忆保留到 episode(原始报告)的引用,可追溯。
-
-### 7.3 关于"持续学习"的清醒认知
-
-检索分数好 ≠ 记忆对。真正衡量是**合并策略让"该被召回的"存活下来**。所以必须有评测闭环(§13),否则记忆会悄悄膨胀/污染。
+- **Recall(读,入口)**:症状/问题 → memory 多路召回(语义 code_index + 结构 code-review-graph + 历史教训)→ 融合 → reranker 重排 → 只取 top-3~5 → 注入提示词(每条带 溯源+置信度+时间戳)。
+- **Memorize(写,出口)**:报告 → 抽知识项 → 实体消歧 → 冲突合并(recency-wins + 显式失效)→ 设置信度 → 入 memory + provenance。write-time 严格过滤(只存根因/模式/规则,不存日志流水)。
+- **清醒认知**:检索分数好 ≠ 记忆对。真正衡量是**合并策略让"该被召回的"存活下来**——所以必须有评测闭环(§9),否则记忆悄悄膨胀/污染。
 
 ---
 
-## 8. 领域知识建模
-
-把 **状态机作为一等公民**建模(纯向量 RAG 做不到的多跳推理)。用 Graphiti 的 Pydantic 自定义实体/边类型:
-
-```python
-# data/knowledge/ontology.py
-class Component(EntityNode): name: str; subsystem: str; source_path: str
-class StateTransitionEdge(Edge):
-    __edge_type__ = "TRANSITIONS_TO"
-    trigger: str           # 触发条件——很多 bug 就是非法迁移
-    valid_at: datetime     # 该迁移在哪个版本起存在
-
-# BlueZ 协议栈:HCI 状态机 / L2CAP(ERTM) / A2DP(configured→open→streaming→suspend→close)
-#   / RFCOMM / LE ISO(CIS, 蓝牙 5.2+ LE Audio)
-# wpa_supplicant:EAPOL/EAP/RSN 4-way handshake 状态机
-#   (disconnected→scanning→authenticating→associating→4way→groupkey→completed)
-```
-
-领域知识字典存 `data/knowledge/{bluez,wpa}/` 为 YAML:状态名 + 转换条件 + 对应源码 file:line + 典型日志特征(btmon opcode / wpa 日志模式)。Agent 先匹配状态机字典定位协议层,再深入源码。
-
----
-
-## 9. 技术栈
-
-| 层 | 选型 | 包 | 阶段 |
-|---|---|---|---|
-| 编排(核心) | LangGraph 显式 StateGraph + Send/Command | `langgraph>=1.2` | P0 |
-| 编排(多代理) | langgraph-supervisor + deepagents(`task()` 子代理) | `langgraph-supervisor`, `deepagents` | P5 |
-| 模型 | 任选(OpenAI/Anthropic/DeepSeek/Ollama/vLLM),分层路由 | `langchain_openai` / `langchain_anthropic` / `langchain_ollama` | P0 |
-| 代码解析 | tree-sitter + tree-sitter-c + universal-ctags | `tree-sitter`, `tree-sitter-language-pack` | P1 |
-| 向量库 | LanceDB(本地)/ Qdrant(生产) | `lancedb` | P1 / P6 |
-| 静态分析 | sparse / smatch / coccinelle / scan-build(可选) | 内核工具链 | P2 |
-| 符号化 | addr2line / objdump / kallsyms | binutils | P2 |
-| 记忆-基座 | LangGraph Store + PostgresSaver(checkpointer) | `langgraph` + PG + pgvector | P1 |
-| 记忆-抽取/合并 | mem0 OSS(Apache-2.0)— Store 之上的合并层,产物写回 Store/Graphiti | `mem0ai` | P3 |
-| 记忆-时序KG | Graphiti + FalkorDB(Apache-2.0) | `graphiti-core` | P3 进阶 |
-| 记忆-领域KG | LightRAG | `lightrag-hku` | P5 |
-| 检索增强 | BM25 + RRF + `bge-reranker-v2-m3` | — | P1 |
-| web 检索 | Tavily / DDG + httpx+markdownify | deer-flow `community/` | P5 |
-| 沙箱 | 本地沙箱(P0)/ Docker 自建 / OpenHands runtime | — | P0 / P6 |
-| 可观测 | Langfuse(自托管) | — | P0(可选) |
-| 部署 | LangGraph Self-Hosted Lite(免费至 1M 节点)→ 或 FastAPI+PG+Docker | — | P6 |
-
-> **MVP 最小栈(P0-P2 只起这些)**:LangGraph + 本地沙箱 + tree-sitter/ctags + LanceDB + BM25/RRF/rerank + PostgresSaver/SqliteSaver(checkpointer)+ Langfuse(可选)。
-> mem0 / Graphiti / LightRAG / Qdrant / 内核静态分析 / supervisor / deepagents **全部按 §11 阶段叠加,切勿 day-1 全上**——否则会陷在 6 个存储的状态同步里。混合检索(BM25+RRF+rerank)看似重,但对 C 的函数名/宏名/错误码是**最小可行**而非奢侈品,务必在 P1 就上。
-
-> **编排成熟度备注(2026 核实)**:`langgraph-supervisor` 已是生产成熟、多代理编排的事实默认,可放心用;`deepagents` 较新(托管版仍 private beta,开源 harness 快速迭代)。关键坑:`task()` 子代理的 state 交接是**按顶层 key 过滤**的,层级多代理有 [state 丢失风险](https://forum.langchain.com/t/state-loss-in-hierarchical-multi-agent-system-with-deep-agents-and-custom-agentstate/2592)。P5 做 deep_research 时二选一:① 把子代理需回传的字段建模为顶层 key;② 用 `Send`/`Command` 手写 supervisor 拿回全控制权(workflow ① 已是手写 StateGraph,可复用)。
-
----
-
-## 10. 项目结构
-
-```
-my-agent/
-├── pyproject.toml
-├── config/
-│   ├── config.yaml             # 模型/角色/工具/记忆/沙箱 声明式配置
-│   ├── extensions_config.json  # MCP servers + skills
-│   └── .env                    # API keys
-├── src/my_agent/
-│   ├── platform/               # Harness
-│   │   ├── models.py           # ★ create_chat_model(多 provider 工厂)
-│   │   ├── reflection.py       # ★ resolve_class / resolve_variable
-│   │   ├── config.py           # AppConfig + $ENV 解析 + 热重载
-│   │   ├── gateway.py          # FastAPI 入口
-│   │   ├── tools/              # 工具注册 + MCP
-│   │   ├── sandbox/            # local / docker
-│   │   ├── observability.py    # Langfuse
-│   │   └── runtime.py          # checkpointer + cron
-│   ├── workflows/
-│   │   ├── bug_rca/            # ① StateGraph + nodes + tools
-│   │   ├── deep_research/      # ② supervisor + 子代理
-│   │   └── pr_tracker/         # ③ cron + Send
-│   ├── services/               # ★ 共享服务层
-│   │   ├── code_index/         # tree-sitter/ctags/LanceDB + 混合检索
-│   │   ├── memory/             # Store/mem0/Graphiti + Recall/Memorize
-│   │   ├── log_symbolizer/     # addr2line/btmon/wpa
-│   │   └── static_analysis/    # sparse/smatch/coccinelle
-│   ├── models/                 # patched providers(DeepSeek/vLLM/...)
-│   ├── tools/                  # agent 可调用工具(导航/检索/执行)
-│   └── prompts/
-├── data/
-│   ├── knowledge/{bluez,wpa}/  # 状态机字典(YAML)
-│   └── datasets/               # ground truth(git fix commits 提取)
-├── eval/                       # Top-N / MFR / LongMemEval
-├── tests/
-├── docs/architecture.md        # 本文件
-└── deer-flow/                  # 参考实现(只读,当零件目录)
-```
-
----
-
-## 11. 分阶段路线图
+## 8. 路线图(一人、数月、本地优先;v2)
 
 | 阶段 | 目标 | 关键交付 | 退出标准 |
 |---|---|---|---|
-| **P0 地基** (1–2w) | 平台骨架能跑 | LangGraph 骨架 + **模型工厂(多 provider)** + config + Langfuse + 本地沙箱 + demo agent(bash/read_file) | 给简单问题,agent 在沙箱里 ls/读文件/回答;切换 provider 只改配置 |
-| **P1 代码理解** (2–3w) | 共享地基(L1+L2)| **L1 向量检索**(parser/chunker/embed/store/index/retrieval/eval,**P1.0–P1.3 已成**,L2 recall@5=0.65)→ **P1.4 导航工具**(grep_symbol/read_function/search_code)→ **P1.5 LSP/clangd**(**已成**,L2 精确导航 find_references/goto_definition/hover,取代 code_graph) | P1.3:L2 recall@5≥0.55(已达标);P1.4:agent 能用导航工具定位;**P1.5:精确 caller/callee 可查(已达标,fixture 零漏召)** |
-| **P2 Bug-RCA MVP** (3–4w) | 场景①跑通 | triage→locate→verify→report 图 + 三路径符号化 + 静态分析 + **L3 DAP 现场深挖** + Hashline 补丁(替 str_replace)+ TTSR/advisor 护栏 + 报告模板 | 真实 bluez/wpa bug 日志 → 定位到正确文件/函数并出报告 |
-| **P3 记忆+学习** (2–3w) | 内化闭环 | Memorize pipeline + Recall 注入 + 评测集;进阶 Graphiti 领域 KG | 同类 bug 第二次出现,Recall 召回首解;LongMemEval 指标达标 |
-| **P4 PR-Tracker** (2–3w) | 场景③跑通 | cron + GraphQL 增量 + Send 并行 review + 决策卡 + 冲突评估 | 定期产出 bluez/wpa 合入建议清单 |
-| **P5 Deep-Research** (3–4w) | 场景②跑通 | supervisor + 子代理 + 对抗验证 + 沙箱实测(hwsim/hci_vhci) + 移植 deep-research SKILL | 给调研问题 → 搜 web + 结合代码 + 实跑测试 + 出带引用报告 |
-| **P6 生产化** (持续) | 上线 | Docker 部署 + 模型分层控成本 + 评测 harness + 记忆膨胀治理 | 稳定、成本可控、可观测、可回放 |
+| **R0** | 本规划落地 | 重写 architecture.md v2 + 新建 memory/bug-rca/deep-research 设计文档;裁剪占位;更新 CLAUDE.md/记忆 | 文档自洽、断链修完;`uv run hyperion models/tools/lsp health` 仍绿 |
+| **R1** | 记忆核心 v1 | `MemoryService` ABC + native 后端(code_index+code-review-graph)+ memorize/recall + MCP 暴露 + CLI `memory recall/add` | demo 报告抽成知识项存入、按语义+结构召回命中 |
+| **R2** ★MVP | bug-RCA 端到端 | `CodingAgentDelegate`(默认 omp)+ workflow 七步 + 报告渲染 | **输入 `example/demo2` 的 wpa+日志,产出形如 demo2 的报告+补丁**(金标准对照) |
+| **R3** | 代码仓深度调研 | 补 C parser、接 code-review-graph、Aider repomap、出架构/模块文档;闭环(调研→CodebaseFact) | 对 wpa/bluez 出达标架构文档,知识入库可复用 |
+| **R4** | 团队/多代码库 + PR 跟踪 | 租户隔离、文档统一管理、PR tracker workflow、opencode 后端(团队分发) | 多 owner/多库互不串;PR 跟踪出合入建议 |
+| **R5** | 生产化 | 对齐 deer-flow 边界处理、多轮/多 candidate 委托、自动 PoC、仿真验证、可观测、backlog 逐条 | 按 backlog-production-grade 清单收敛 |
 
-> **路线逻辑**:P1 代码索引是 P2/P4 共同地基,先建;P2 最难且逼出工具链;P3 紧跟 P2(有报告可内化);P4 比 P5 简单且高价值,先于 P5;P5 复用前面一切。
+> **路线逻辑**:R1 记忆是 R2/R3 共同地基;R2 用 demo 金标准一次验证四痛点;R3 复用 R1 记忆 + R2 委托;R4/R5 扩展。**不 day-1 全上**——每阶段一个可验证场景。
 
 ---
 
-## 12. 关键风险与对策
+## 9. 关键风险与对策
 
 | 风险 | 对策 |
 |---|---|
-| 真机复现难 | D6 仿真(hwsim/hci_vhci)+ 静态分析做无硬件验证代理;符号/日志级验证为主,真机最终确认 |
-| C 解析精度 | tree-sitter 容错做主力;clangd 按需补精确(`bear -- make` 生成 compile_commands.json) |
-| 成本/token 爆炸 | 模型分层(summarizer 用 mini/本地)+ 子代理并发上限 + 工具预算(researcher "简单≤3 次搜索,5 次找不到就停") |
-| 记忆污染/膨胀 | write-time 严格过滤 + rerank 后只取 top-3~5 + recency/confidence 降权 + 显式失效;仅合规做 eviction |
-| LLM 自查不可靠 | 对抗式验证(独立红队)+ 确定性工具兜底(静态分析/测试) |
-| provider 切换踩坑 | 工厂函数归一化:base_url 别名、stream_usage 默认开、stream_chunk_timeout 240s、未知字段告警(全抄 deer-flow factory.py) |
+| 委托结果不稳定/锁 provider | 抽象 `CodingAgentDelegate` 接口,omp/opencode/claude 可换;锁结果 schema(JSON 契约)而非锁 provider |
+| token 爆炸 | 委托前用 memory + code-review-graph blast-radius 组装**手术刀级上下文**;模型分层(便宜模型做抽取/摘要) |
+| 记忆污染/膨胀 | write-time 严格过滤 + rerank top-3~5 + recency/confidence 降权 + 显式失效;借 mnemopi 巩固 |
+| C 解析精度 | tree-sitter 容错主力 + clangd 精确补(`compile_commands.json`);R3 前补 `tree-sitter-c` |
+| 真机复现难 | 委托给 coding agent 在沙箱编译/apply 验证;符号+日志级验证为主,真机最终确认 |
+| LLM 自查不可靠 | 报告每条结论锚 file:line(证据纪律);可选对抗式二次委托验证 |
 
 ---
 
-## 13. 评估方法
+## 10. 参考项目(clone 优先级;URL 已核实,star 近似)
 
-**缺陷定位准确率**(场景①/②):
-- 指标:**Top-1/3/5 Accuracy**、**MFR**(首正确排名)、**MAR**(平均排名)、**EXAM**(检查比例)。
-- Ground truth:从 bluez([github.com/bluez/bluez](https://github.com/bluez/bluez))、wpa([w1.fi/cgit/hostap/](https://w1.fi/cgit/hostap/))git 历史用 `git log --grep="Fixes:"` + CVE 批量提取 fix commit 改的文件/行。给 agent bug 时的日志,收集它定位的 Top-N,算准确率。
+**P0 必 clone(核心参考):**
+| 项目 | star | license | 借鉴什么 |
+|---|---|---|---|
+| [bytedance/deer-flow](https://github.com/bytedance/deer-flow) | ~47k | MIT | 架构主脊 + Reporter;MemoryManager ABC + backend-swap(已本地) |
+| [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) | — | MIT | 委托目标 omp + mnemopi 持续学习件(已本地) |
+| [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) | ~26.5k | MIT | 结构图(blast-radius/社区/hub)+ 架构地图(已本地) |
+| [Aider-AI/aider](https://github.com/Aider-AI/aider) | ~48k | Apache-2.0 | **repo-map**(`tags.scm`→PageRank→token 预算)→ 新增 repomap.py |
+| [openautocoder/agentless](https://github.com/openautocoder/agentless) | ~2.1k | MIT | **分层定位漏斗**(file→function→line)→ 委托前预筛 |
+| [SWE-agent/mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent) | — | MIT | **ACI 工具契约**(swe-agent 已停维护,用活跃的最小化重写版)→ delegate 工具面规范 |
+| [OpenHands/openhands](https://github.com/OpenHands/openhands) | ~82k | MIT | **3 层记忆**(Condenser→View→ConversationMemory)+ microagents |
 
-**记忆有效性**(持续学习):
-- LongMemEval 式多会话推理准确率([ICLR 2025](https://arxiv.org/abs/2410.10813))。
-- 矛盾注入测试:注入状态变更,测 agent 一周后能否返回新状态。
-- 每轮 token 成本应随索引增长平稳,线性涨说明合并策略失败。
+**P1 值得 clone:** [mem0ai/mem0](https://github.com/mem0ai/mem0)(~55k,scoped 记忆,未来可换后端)、[getzep/graphiti](https://github.com/getzep/graphiti)(bi-temporal 知识图)、[assafelovic/gpt-researcher](https://github.com/assafelovic/gpt-researcher)(planner→reporter + 行内引用)、[plasma-umass/chatdbg](https://github.com/plasma-umass/chatdbg)(reproduce-then-debug,L3/DAP)、[nus-apr/auto-code-rover](https://github.com/nus-apr/auto-code-rover)(stratified+SBFL)、[continuedev/continue](https://github.com/continuedev/continue)(索引管线交叉验证)、[stanford-oval/storm](https://github.com/stanford-oval/storm)(多视角提问大纲)、[aorwall/moatless-tools](https://github.com/aorwall/moatless-tools)(大 C 仓向量索引 + eval)。
 
-**生产监控**:每轮检索数、token 用量、实体合并率、事实失效事件、缓存命中率。
+**P2 读文档/论文:** cognee、Sourcegraph Cody(SCIP/clangd)、Cline Memory Bank、nano-graphrag;**论文必读(无代码)**:**T2L-Agent**(arXiv 2510.02389,直接在 bluez/wpa 评估)、**Code Researcher**(arXiv 2506.11060,commit-log 因果做 C/C++ RCA)。
+
+**跳过(不 fit):** letta/MemGPT、MemOS、microsoft/graphrag(DeepSeek 缺 response-schema,issue #2200)、getzep/zep(已废弃)、sweep(AGPL+停更)、Roo-Code(扩展已关)、langmem。
+
+**其他参考(沿用 v0.1):** LangGraph Send/Store/Platform、langgraph-supervisor、SWE-bench、btmon wiki、wpa_supplicant 代码结构、PR-Agent、LongMemEval(ICLR 2025)。详见 [backlog](../../.claude/memory/backlog-production-grade.md)。
 
 ---
 
-## 14. 参考资料
+## 11. 项目结构(v2)
 
-**深度研究 Agent**
-- LangChain open_deep_research: https://github.com/langchain-ai/open_deep_research
-- deepagents(子代理 task()): https://docs.langchain.com/oss/python/deepagents/deep-research
-- GPT Researcher: https://github.com/assafelovic/gpt-researcher
-- LangGraph Send API(map-reduce): https://docs.langchain.com/oss/python/langgraph/use-graph-api
-
-**记忆与持续学习**
-- LangGraph Stores: https://docs.langchain.com/oss/python/langgraph/stores
-- mem0 LangGraph 集成: https://docs.mem0.ai/integrations/langgraph
-- Graphiti(时序 KG): https://github.com/getzep/graphiti
-- LightRAG: https://github.com/hkuds/lightrag
-- 四杠杆合并框架(Hindsight): https://hindsight.vectorize.io/blog/2026/05/21/agent-memory-consolidation
-- LongMemEval(ICLR 2025): https://arxiv.org/abs/2410.10813
-
-**LLM 缺陷定位**
-- OrcaLoca(ICML 2025): https://github.com/fishmingyu/OrcaLoca
-- FlexFL(TSE 2025): https://dl.acm.org/doi/10.1109/TSE.2025.3553363
-- RepoGraph(ICLR 2025): https://github.com/ozyyshr/RepoGraph
-- Aider repo map: https://aider.chat/docs/repomap.html
-- SWE-bench: https://www.swebench.com/
-- 内核静态分析教程: https://gautammenghani.com/linux,/c/2022/05/19/static-analysis-tools-linux-kernel.html
-
-**日志符号化**
-- btmon wiki: https://github.com/bluez/bluez/wiki/btmon
-- 内核 oops 解析: https://www.kernel.org/doc/html/v4.13/admin-guide/bug-hunting.html
-- wpa_supplicant 代码结构: https://w1.fi/wpa_supplicant/devel/code_structure.html
-
-**PR 分析**
-- PR-Agent: https://github.com/The-PR-Agent/pr-agent
-- CodeRabbit Context Engineering: https://www.coderabbit.ai/blog/context-engineering-ai-code-reviews
-- LangGraph cron: https://docs.langchain.com/langsmith/cron-jobs
-- GitHub GraphQL PR: https://docs.github.com/en/graphql/reference/pulls
-
-**沙箱与验证**
-- OpenHands Runtime: https://docs.openhands.dev/openhands/usage/architecture/runtime
-- 对抗式事实性(ACL 2025): https://aclanthology.org/2025.acl-long.81.pdf
-
-**多 Agent**
-- langgraph-supervisor: https://reference.langchain.com/python/langgraph-supervisor
-- langgraph-swarm: https://github.com/langchain-ai/langgraph-swarm
-- 多 Agent 架构基准: https://www.langchain.com/blog/benchmarking-multi-agent-architectures
-
-**部署**
-- LangGraph Platform(自托管): https://docs.langchain.com/langsmith/deploy-standalone-server
-- FastAPI+LangGraph 生产模板: https://github.com/wassim249/fastapi-langgraph-agent-production-ready-template
-
-**参考实现**
-- deer-flow(本仓库子目录): [deer-flow/](deer-flow/)
-  - 模型工厂: [factory.py](deer-flow/backend/packages/harness/deerflow/models/factory.py)
-  - 配置示例: [config.example.yaml](deer-flow/config.example.yaml)
-  - 沙箱: [sandbox/](deer-flow/backend/packages/harness/deerflow/sandbox/)
-  - 记忆: [agents/memory/](deer-flow/backend/packages/harness/deerflow/agents/memory/)
-  - 子代理: [subagents/](deer-flow/backend/packages/harness/deerflow/subagents/)
-  - 社区检索工具: [community/](deer-flow/backend/packages/harness/deerflow/community/)
+```
+Hyperion/
+├── src/hyperion/
+│   ├── platform/         # ✅ Harness(已实现):models/config/reflection/sandbox/tracing/agent
+│   ├── services/
+│   │   ├── code_index/   # ✅ 代码理解(已实现 P1.0–P1.5):L1 向量+L2 LSP+outline+eval
+│   │   └── memory/       # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
+│   ├── workflows/        # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
+│   ├── tools/            # ✅ 导航/沙箱工具(已实现)+ 🆕 CodingAgentDelegate + memory 工具
+│   └── cli.py            # ✅ 入口(已实现 models/run/index/tools/lsp;🆕 R1+ 加 memory/bug-rca/research)
+├── config/               # config.yaml(声明式)+ extensions_config.json
+├── docs/                 # 已完成/· 调研/· 设计/(本文件在此)
+├── example/              # demo1/demo2 金标准(输入+补丁+报告)
+├── deer-flow/ · oh-my-pi/ · code-review-graph/   # 只读参考(各自 clone,.gitignore)
+└── .claude/memory/       # 项目记忆(随 git)
+```

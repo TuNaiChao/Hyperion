@@ -209,3 +209,42 @@ metadata:
     - 现状:P1.5 fixture 手写 compile_commands;setup.sh 装了 bear+compiledb 但没用过真实 autotools 仓。
     - 对齐:autotools 用 `compiledb --parse make -nW V=1`(解析 dry-run,不受 LD_PRELOAD/SELinux/CCACHE 干扰)比 `bear -- make V=1` 稳(bear 4.0.x 有空 JSON bug #660/#656);交叉编译(bluez arm/wpa)加 `--query-driver=/usr/bin/arm-linux-*` + `.clangd` `CompileFlags.Compiler`。`CodeChunk.callers/callees` 空字段清理(确认无害后删)。
     - 目标阶段:**P2 首个真实 C 仓**(bluez/wpa build 环境就绪时)。
+
+## v2 产品重规划后的新借鉴项(#38–#44)
+
+> 来源:2026-07-28 产品重规划(编排 + 记忆 + 委托),高星参考项目调研。**阶段标注从 P→R**(R0 规划→R1 记忆→R2 bug-RCA MVP→R3 深度调研→R4 团队/PR→R5 生产化);上列 #1–#37 的技术债仍有效,只是阶段标签按新路线对齐(原 P2≈现 R2,原 P3≈现 R1 记忆,原 P5≈现 R3)。详见 [[agent-project-overview]] + [architecture.md §10](../../docs/设计/architecture.md)。
+
+38. **Aider repo-map(P1 调研最高杠杆单点借鉴)** — 新增 `src/hyperion/services/code_index/repomap.py`。
+    - 对齐:[Aider-AI/aider](https://github.com/Aider-AI/aider) `aider/repomap.py` + `queries/<lang>/tags.scm`(~48k,Apache-2.0)。tree-sitter `tags.scm` 抽 defs+refs → networkx 建符号引用图 → **PageRank** → 按 token 预算(`map_tokens`)裁剪成"全仓最重要符号"地图。
+    - 落地:**叠在已有 `parser.py` 上**(复用其符号抽取 + 加 references 边 + PageRank);抄各语言 `tags.scm`,**补 `c.tags.scm`** 供 bluez/wpa。产出服务调研报告"系统架构/关键模块"骨架 + bug-RCA 委托前给 delegate 的全局视角。
+    - 目标阶段:**R3**(代码仓深度调研;v0.1 标"延后",v2 因 P1 调研支柱提前)。
+
+39. **Agentless 分层定位漏斗(bug-RCA 委托前的确定性预筛)** — `src/hyperion/workflows/bug_rca/` localize 步。
+    - 对齐:[openautocoder/agentless](https://github.com/openautocoder/agentless)(~2.1k,MIT)——无 agent 循环的 localize→repair→validate,~$0.34/issue。localize 是**分层**:file→class→function→line,每级 embedding 相似 + LLM rerank。
+    - 落地:直接建在已有 `code_index` 上(语义检索 + BM25 + chunker 符号边界),产 `[(file,function,line,why)]` 锚点 + code-review-graph blast-radius → 喂委托前的 assemble。**不让 delegate 在整库自由探索**(省 token、可控)。
+    - 目标阶段:**R2**(bug-RCA MVP,步骤 2-3)。
+
+40. **mini-swe-agent ACI 工具契约(delegate 工具面规范)** — `src/hyperion/tools/delegate.py` + 提示词。
+    - 对齐:[SWE-agent/mini-swe-agent](https://github.com/SWE-agent/mini-swe-agent)(MIT,活跃维护的最小化重写版;原 swe-agent 已停维护)的 ACI(Agent-Computer Interface,概念源自 SWE-agent NeurIPS 2024):`find_file/search_dir/search_file/edit` + 输出上限(100 行窗口/100 匹配 cap)+ 编辑守卫(auto-indent/mismatch 警告/post-edit diff)。消融:这些 search 命令是定位成功最大贡献因子。
+    - 落地:Hyperion 给 delegate 的提示词里申明这套工具契约(文档 `docs/background/aci.md`)。
+    - 目标阶段:**R2**。
+
+41. **OpenHands 3 层记忆架构(native 后端参考)** — `src/hyperion/services/memory/`。
+    - 对齐:[OpenHands/openhands](https://github.com/OpenHands/openhands)(~82k,MIT)`openhands/memory/`:`Condenser → View → ConversationMemory` 三层 + EventStream append-log(`CondensationEvent`)+ `.openhands/microagents/` 仓库级知识(关键词+符号触发)。
+    - 落地:Hyperion `MemoryService` native 后端的"工作/情景/语义记忆"分层 + 仓库级知识文件机制参考它。v1 先做语义(`CodebaseFact`/`BugLesson`),工作/情景随 workflow state。
+    - 目标阶段:**R1**(记忆核心,架构参考)。
+
+42. **graphiti bi-temporal(记忆时序维度)** — `src/hyperion/services/memory/schema.py`。
+    - 对齐:[getzep/graphiti](https://github.com/getzep/graphiti)(Apache-2.0):bi-temporal 知识图(event-time + ingestion-time),`valid_at/expired_at/invalid_at`,能答"这 bug 报时我们对这模块知道啥"。
+    - 落地:**先 schema 留位**(`KnowledgeItem.valid_at` 已留),完整实现(含图引擎)后补;需要时也可作 MemoryService 可换后端。
+    - 目标阶段:**R1 起步(schema),R5 完整**。
+
+43. **委托后端多档(omp/opencode/claude)+ 无头参数实测** — `src/hyperion/tools/delegate.py`。
+    - 现状:仅设计(抽象 `CodingAgentDelegate`,v1 默认 omp)。
+    - 对齐/待办:实测 omp `omp -p` 与 `--mode rpc`(NDJSON 流式)、opencode `opencode run` 与 `serve`(HTTP)、claude `-p`/SDK 的精确无头参数与结构化产出契约;锁定 R2 的 JSON schema 字段。URL 已核实(mini-swe-agent→`SWE-agent/mini-swe-agent`(swe-agent 已停维护),agentless→`openautocoder/agentless`)。
+    - 目标阶段:**R2**(委托落地时)。
+
+44. **C/RCA 论文必读(无代码,eval 方法论)** — 调研参考。
+    - **T2L-Agent**(arXiv 2510.02389):runtime-trace-guided 漏洞定位 module→file→line,**直接在 bluez & wpa_supplicant 上评估**——正是 Hyperion 目标。提炼其 trace 解析 + 模块收敛作为 eval 方法论。
+    - **Code Researcher**(arXiv 2506.11060,MSR):deep-research agent 对 C/C++ 系统代码做多步推理 + **commit-log 因果推理**,48% crash 解决率。提炼 commit-log 作 RCA 先验 + 假设-证据报告结构。
+    - 目标阶段:**R2/R3**(bug-RCA 与深度调研的 eval/方法论参考;无代码,读论文)。

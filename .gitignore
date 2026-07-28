@@ -16,6 +16,10 @@ build/
 # Runtime / sandbox data(agent 工作区、输出等运行时产物)
 data/
 
+# 本地 demo 金标准(example/demo1、demo2:含 wpa 源码树 + 日志 + 漏洞 PDF + 报告/补丁)。
+# 本地独享不入库(含完整 wpa 源码树 + 嵌套 .git,110M);Mac 那台做 R2 时需手动拷贝。
+example/
+
 # L2 导航 fixture 的 compile_commands.json(由 tests/fixtures/lsp_c/gen_compile_commands.sh 生成,
 # 绝对路径因机器而异,不提交)
 tests/fixtures/lsp_c/compile_commands.json
@@ -28,6 +32,14 @@ tests/fixtures/lsp_c/compile_commands.json
 deer-flow/
 #   git clone https://github.com/tirth8205/code-review-graph  (P1.3 借鉴:SQLite 图/增量/原子性/hybrid/eval)
 code-review-graph/
+#   git clone https://github.com/Aider-AI/aider  (R3 借鉴:repomap tags.scm→PageRank→token 预算地图)
+aider/
+#   git clone https://github.com/openautocoder/agentless  (R2 借鉴:分层定位漏斗 file→function→line)
+agentless/
+#   git clone https://github.com/SWE-agent/mini-swe-agent  (R2 借鉴:ACI 工具契约;swe-agent 已停维护,用活跃的最小化重写版)
+mini-swe-agent/
+#   git clone https://github.com/sst/opencode  (R2/R4 委托后端之一:opencode;Go 单二进制,团队分发友好)
+opencode/
 
 # OS / editor
 .DS_Store

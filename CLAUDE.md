@@ -4,15 +4,15 @@
 
 ## Hyperion 是什么
 
-面向系统软件(后续 bluez / wpa_supplicant 等 Linux C 组件)的智能 agent,三大场景:
+**给系统软件代码库做"带记忆的 bug 根因定位 + 深度调研"的调度型 agent。** 差异化在「记忆 + 持续学习 + 精准调度」,不在重造一个 coding agent——重活委托给成熟 coding agent(omp/opencode),Hyperion 自做记忆 + 调度。三大支柱:
 
-1. **Bug 根因定位与分析** — 结合源码 + 日志精准定位根因,生成分析报告。
-2. **自主深度研究** — 给定代码库/问题,自主调研、实测验证、生成带引用的报告。
-3. **开源仓库 PR 持续跟踪** — 定期分析上游 PR,给出"是否合入本地"的建议。
+1. **(P1)代码仓深度调研** — 任意语言仓库(git/本地)→ 详细准确的架构/模块文档;含开源 PR 持续跟踪 + 合入建议(R4)。
+2. **(P2)bug 根因定位** ★MVP — 源码 + 日志/漏洞报告 → 根因 + 补丁 + 分析报告;**重活委托** omp/opencode,Hyperion 负责召回+组装精确上下文+调度+沉淀。
+3. **(P3)记忆与持续学习** ★特色 — 把"代码库调研知识"和"bug 分析报告"沉淀成可检索、带溯源、团队共享、持续学习的记忆。
 
-三大场景共享一个**平台 + 共享服务层**(代码理解、记忆与持续学习、沙箱、检索、可观测),并具备**持续学习**:每份报告经 Memorize 内化为可检索、带溯源、带置信度、带时序的记忆。Tagline:*Light on every root cause.*
+三者共享一个**平台 + 共享服务层**(代码理解、记忆、沙箱、检索、可观测),解决三大痛点:① 记忆跨会话;② 省 token(委托前组装手术刀级上下文);③ 流水线(一条命令跑完)。Tagline:*Light on every root cause.*
 
-完整架构设计见 [docs/设计/architecture.md](docs/设计/architecture.md)。
+> v2(2026-07-28)产品重规划:从 v0.1"先建深地基再接场景"改为"编排 + 记忆 + 委托"。已建的 code_index(P1.0–P1.5)作为资产保留。完整架构见 [docs/设计/architecture.md](docs/设计/architecture.md);三支柱详细设计见 [memory-design.md](docs/设计/memory-design.md) / [bug-rca-design.md](docs/设计/bug-rca-design.md) / [deep-research-design.md](docs/设计/deep-research-design.md)。
 
 ## ⭐ 工作准则(必读)
 
@@ -30,17 +30,24 @@
 ```
 Hyperion/
 ├── src/hyperion/
-│   ├── platform/     # Harness:模型工厂 / 配置 / 反射 / 网关 / 沙箱 / 可观测
-│   ├── workflows/    # 三条工作流:bug_rca / deep_research / pr_tracker
-│   ├── services/     # 共享服务:code_index / memory / log_symbolizer / static_analysis
-│   ├── tools/        # agent 可调用工具(导航/检索/执行)+ 插件槽
-│   └── cli.py        # 入口(uv run hyperion ...)
-├── config/           # config.yaml(模型/工具/记忆 声明式)+ extensions_config.json(MCP/skills)
-├── docs/             # 已完成/(已建模块用法)· 调研/(调研报告)· 设计/(架构+模块设计,进展在此改)
+│   ├── platform/     # ✅ Harness(已实现):模型工厂 / 配置 / 反射 / 沙箱 / 可观测 / demo agent
+│   ├── services/
+│   │   ├── code_index/  # ✅ 代码理解(已实现 P1.0–P1.5):parser/chunker/embed/store/retrieval/index/lsp/outline/eval
+│   │   └── memory/      # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
+│   ├── workflows/    # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
+│   ├── tools/        # ✅ 导航/沙箱工具(已实现 12 个)+ 🆕 委托接口 delegate + memory 工具
+│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp 已实现;🆕 R1+ 加 memory/bug-rca/research)
+├── config/           # config.yaml(模型/工具/记忆/委托 声明式)+ extensions_config.json(MCP/skills)
+├── docs/             # 已完成/ · 调研/ · 设计/(architecture + memory/bug-rca/deep-research + p1-code-understanding)
+├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)
 ├── .claude/memory/   # Claude Code 项目记忆(随 git 跨机)
-└── deer-flow/        # 只读参考实现(.gitignore)
+├── deer-flow/        # 只读参考(.gitignore)— 架构主脊 + Reporter + MemoryManager
+├── oh-my-pi/         # 只读参考(.gitignore)— 委托目标 omp + mnemopi 记忆
+└── code-review-graph/  # 只读参考(.gitignore)— 结构图引擎(blast-radius/架构地图)
 ```
+
+> 状态标记:✅ 已实现 · 🆕 待建(R1 起)。日志符号化(log_symbolizer)/ 静态分析(static_analysis)在 v2 **裁出 v1**(委托给 omp/opencode),记 backlog。
 
 ## 模型:多 provider 自适应
 
@@ -67,6 +74,8 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 工具是**声明式 + 反射 + 插件**:`config.yaml` 的 `tools:` 声明工具的 `use: <module>:func`,按需加载。domain 工具(bluez/wpa 解析等)放 `src/hyperion/tools/plugins/<name>/`,在配置里开关,不改核心。
 
-## 路线
+## 路线(v2,2026-07-28 重规划)
 
-P0 地基 → P1 代码理解 → P2 Bug-RCA → P3 记忆闭环 → P4 PR-Tracker → P5 Deep-Research → P6 生产化(见 architecture.md §11)。
+**R0** 规划落地(文档/裁剪)→ **R1** 记忆核心(MemoryService + native 后端 code_index+code-review-graph)→ **R2** ★bug-RCA MVP(委托 omp,对照 demo2 金标准)→ **R3** 代码仓深度调研(Aider repomap + 出架构文档)→ **R4** 团队/多库 + PR 跟踪 + opencode 后端 → **R5** 生产化。详见 [architecture.md §8](docs/设计/architecture.md)。
+
+**三锁定决策:** ① 记忆 = 自有 MemoryService 契约 + v1 native 后端(组合 code_index+code-review-graph),cognee/mem0 可换;② bug-RCA 委托给 coding agent,抽象 `CodingAgentDelegate`,v1 默认 omp,opencode 可换;③ MVP 先 bug-RCA。详见各设计文档。
