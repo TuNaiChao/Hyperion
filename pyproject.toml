@@ -26,6 +26,10 @@ dependencies = [
     "tree-sitter-python>=0.25",  # P1.0 先 Python(deer-flow 首测);C(bluez)落地时加 tree-sitter-c
     "lancedb>=0.34,<0.36",  # P1.3:hybrid/Reranker API 已对照 0.34 核实;锁上限避破坏性变更(见设计文档 §6 决策 #8)
     "rank-bm25>=0.2.2",
+    # L2 精确导航(P1.5):multilspy = 微软 Python LSP client 库,管 JSON-RPC/initialize 握手/文件同步/同步包装。
+    # 只用它的通用机制 + 自写 ClangdServer 适配器(multilspy 0.0.15 无 clangd、main 未发版且 cmd 不带 flag,见设计文档 §5.1)。
+    # 依赖轻(pygls/lsprotocol/requests/jedi),无 torch/node。
+    "multilspy>=0.0.15,<0.1",
 ]
 
 [project.optional-dependencies]

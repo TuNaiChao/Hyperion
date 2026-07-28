@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from langchain_core.tools import tool
 
@@ -230,3 +231,200 @@ def search_code_tool(description: str, query: str, top_k: int = 5) -> str:
         out.append(f"\n--- {disp}:{h.start_line}-{h.end_line}  ({h.kind} {h.symbol})  score={h.score:.3f}")
         out.append(first_line)
     return "\n".join(out)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# L2 精确导航工具(clangd/LSP):find_references / goto_definition / hover
+# 经 services/code_index/lsp.py 的 ClangdServer + get_lsp_server 单例。
+# ──────────────────────────────────────────────────────────────────────────
+
+def _lsp_repo_root() -> Path:
+    """LSP 服务的 repo 根(= clangd 工作区根,通常 = workspace 目录)。
+
+    config.lsp.compile_commands_dir 强制时用它;否则回退 workspace(和 L1 工具一致)。
+    """
+    cfg = get_app_config()
+    lsp = getattr(cfg.code_index, "lsp", None)
+    cc = getattr(lsp, "compile_commands_dir", None) if lsp else None
+    return Path(cc) if cc else _workspace()
+
+
+def _symbol_column(file_path: Path, line_1: int, symbol: str) -> int | None:
+    """在 file 的第 line_1 行(1-based)找 symbol 首次出现的列(0-based)。
+
+    LSP 要精确 (line, column) 指在符号上;工具只收 file+line+symbol,这里把 symbol
+    在该行的列位置解出来。找不到(行里没这符号)返 None。
+    """
+    try:
+        lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    if line_1 < 1 or line_1 > len(lines):
+        return None
+    idx = lines[line_1 - 1].find(symbol)
+    return None if idx < 0 else idx  # 注:LSP column 按 UTF-16 code unit,纯 ASCII == 字符索引;CJK 近似(记 backlog)
+
+
+def _rel(path: str, ws: Path) -> str:
+    """绝对路径显示成相对 workspace 的(短、稳);不在 workspace 下就原样。"""
+    try:
+        return str(Path(path).resolve().relative_to(ws.resolve()))
+    except (ValueError, OSError):
+        return path
+
+
+def _render_locations(locs: Any, ws: Path) -> str:
+    """把 LSP Location 列表渲染成 'file:line:col  <首行片段>' 文本(给 LLM 看)。"""
+    if not locs:
+        return ""
+    seen: set[tuple[str, int]] = set()  # 按 (file, line) 去重(宏展开会多次命中同行)
+    rows: list[str] = []
+    for loc in locs:
+        uri = loc.get("uri", "")
+        rng = loc.get("range", {}).get("start", {})
+        line, col = rng.get("line", 0), rng.get("character", 0)
+        path = uri[7:] if uri.startswith("file://") else uri  # 去 file:// 前缀
+        if (path, line) in seen:
+            continue
+        seen.add((path, line))
+        snippet = ""
+        try:
+            tlines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+            if 0 <= line < len(tlines):
+                snippet = "  " + tlines[line].strip()[:120]
+        except OSError:
+            pass
+        rows.append(f"{_rel(path, ws)}:{line + 1}:{col + 1}{snippet}")
+    return "\n".join(rows)
+
+
+def _do_lsp_request(kind: str, symbol: str, file: str, line: int,
+                    description: str, max_results: int | None = None) -> str:
+    """三个 LSP 工具的共用实现:解列号 → 取 clangd 单例 → 请求(空则重试)→ 渲染。
+
+    任何环节失败都返**可操作错误串**(不抛、不静默空)——空结果会被 agent 误判"没人调用"。
+    """
+    import time
+
+    from hyperion.services.code_index.lsp import get_lsp_server, lsp_health
+
+    fpath = Path(file)
+    if not fpath.is_file():
+        return f"错误:文件不存在: {file}"
+
+    ws = _lsp_repo_root()
+    try:
+        rel = fpath.resolve().relative_to(ws.resolve())  # multilspy 收相对 repo 根的路径
+    except ValueError:
+        rel = Path(file)  # 不在 repo 根下:退化用绝对(multilspy 的 os.path.join 仍能定位)
+
+    col = _symbol_column(fpath, line, symbol)
+    if col is None:
+        return (f"错误:在第 {line} 行找不到符号 '{symbol}' 的列位置(行内容里没这个名字)。"
+                f"先用 read_file 核对 {file}:{line} 的确切符号名/行号。")
+
+    # health 提示(不启动 server):compile_commands 缺失给警告但继续(heuristic 模式)
+    health = lsp_health(str(ws))
+    warn = "" if health.compile_commands else (
+        "  ⚠️ 未找到 compile_commands.json,clangd 走 heuristic 模式,references 质量降级。\n"
+        "     生成:autotools `bear -- make V=1` / cmake `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`。\n"
+    )
+
+    try:
+        sync = get_lsp_server(str(ws))
+    except Exception as e:
+        return f"错误:启动 clangd 失败: {e}\n  先跑 `uv run hyperion lsp health` 自检。"
+
+    line0, col0 = line - 1, col  # LSP 0-based
+    cfg = get_app_config()
+    lsp_cfg = getattr(cfg.code_index, "lsp", None)
+    retries = getattr(lsp_cfg, "index_retry", 1) if lsp_cfg else 1
+    delay = getattr(lsp_cfg, "index_retry_delay", 0.3) if lsp_cfg else 0.3
+
+    result = None
+    for attempt in range(retries + 1):
+        try:
+            with sync.open_file(str(rel)):
+                if kind == "references":
+                    result = sync.request_references(str(rel), line0, col0)
+                elif kind == "definition":
+                    result = sync.request_definition(str(rel), line0, col0)
+                else:  # hover
+                    result = sync.request_hover(str(rel), line0, col0)
+        except Exception as e:
+            return f"错误:LSP {kind} 请求失败: {e}"
+        # references/definition 有结果就停;空且还能重试 → 等一下再试(后台索引可能没建完)
+        if kind == "hover" or result:
+            break
+        if attempt < retries:
+            time.sleep(delay)
+
+    if kind == "hover":
+        if not result:
+            return f"{warn}无 hover 信息(符号可能不是可悬停目标,或索引未就绪 → 重试)。"
+        hover: Any = result  # result 是 multilspy Hover(TypedDict);标 Any 解耦,不绑死键形状
+        contents = hover.get("contents", result) if isinstance(result, dict) else result
+        if isinstance(contents, dict):
+            text = contents.get("value", str(contents))
+        elif isinstance(contents, list):
+            text = "\n".join(c.get("value", str(c)) if isinstance(c, dict) else str(c) for c in contents)
+        else:
+            text = str(contents)
+        return f"{warn}# hover: {symbol} @ {file}:{line}\n{text.strip()}"
+
+    locs: Any = result or []
+    footer = ""
+    if max_results is not None and len(locs) > max_results:
+        total = len(locs)
+        locs = locs[:max_results]
+        footer = f"\n...[共 {total} 处,已截断到 {max_results};调大 max_results 查全]"
+    rendered = _render_locations(locs, ws)
+    if not rendered:
+        noun = "调用点/引用" if kind == "references" else "定义"
+        return f"{warn}未找到 '{symbol}' 的{noun}(确认符号名/行号,或 clangd 索引未就绪 → 重试)。"
+    label = "调用点/引用" if kind == "references" else "定义"
+    return f"{warn}# {symbol} 的{label}({len(locs)} 处)@ 来自 {file}:{line}\n{rendered}{footer}"
+
+
+@tool("find_references", parse_docstring=True)
+def find_references_tool(description: str, symbol: str, file: str, line: int,
+                         max_results: int = 50) -> str:
+    """L2 精确查找:谁"引用/调用"了这个符号(clangd textDocument/references)。
+
+    比 search_code/grep 精确:连宏展开、跨文件、系统头都准,不会漏同名。需仓库有
+    compile_commands.json(见 `hyperion lsp health`)。
+
+    Args:
+        description: 为什么要查(简短)。
+        symbol: 符号名(用来在该行定位列号)。
+        file: 符号所在文件的绝对路径。
+        line: 符号所在行(1-based,从 grep_symbol/read_function 结果取)。
+        max_results: 最多返回多少条调用点(默认 50)。
+    """
+    return _do_lsp_request("references", symbol, file, line, description, max_results)
+
+
+@tool("goto_definition", parse_docstring=True)
+def goto_definition_tool(description: str, symbol: str, file: str, line: int) -> str:
+    """L2 精确跳转:这个符号"定义"在哪(clangd textDocument/definition,含系统头宏展开)。
+
+    Args:
+        description: 为什么要跳(简短)。
+        symbol: 符号名(用来定位列号)。
+        file: 符号被使用处的文件绝对路径。
+        line: 符号被使用处的行(1-based)。
+    """
+    return _do_lsp_request("definition", symbol, file, line, description)
+
+
+@tool("hover", parse_docstring=True)
+def hover_tool(description: str, symbol: str, file: str, line: int) -> str:
+    """L2 查符号的类型/签名/宏展开/文档(clangd textDocument/hover)。
+
+    Args:
+        description: 为什么要查(简短)。
+        symbol: 符号名(用来定位列号)。
+        file: 符号所在文件绝对路径。
+        line: 符号所在行(1-based)。
+    """
+    return _do_lsp_request("hover", symbol, file, line, description)

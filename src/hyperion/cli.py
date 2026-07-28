@@ -114,6 +114,54 @@ def cmd_tools(args) -> int:
     return 0
 
 
+def cmd_lsp(args) -> int:
+    """L2 精确导航(clangd/LSP)子命令:health 自检 / refs 冒烟。
+
+      hyperion lsp health [repo_root]   检测 clangd + compile_commands 是否就位
+      hyperion lsp refs <file> <line> <col> [repo_root]   冒烟:直接打一次 references
+    """
+    from pathlib import Path
+
+    from hyperion.services.code_index.lsp import get_lsp_server, lsp_health
+
+    cfg = get_app_config()
+    repo = Path(args.repo_root).resolve() if args.repo_root else Path(cfg.sandbox.workspace).resolve()
+
+    if args.lsp_cmd == "health":
+        h = lsp_health(str(repo))
+        print(h.render())
+        return 0 if h.ok else 1
+
+    if args.lsp_cmd == "refs":
+        fpath = Path(args.file)
+        if not fpath.is_file():
+            print(f"错误:文件不存在: {args.file}", file=sys.stderr)
+            return 1
+        try:
+            rel = fpath.resolve().relative_to(repo)
+        except ValueError:
+            rel = fpath
+        try:
+            sync = get_lsp_server(str(repo))
+        except Exception as e:
+            print(f"错误:启动 clangd 失败: {e}\n  先跑 `uv run hyperion lsp health`。", file=sys.stderr)
+            return 1
+        with sync.open_file(str(rel)):
+            locs = sync.request_references(str(rel), args.line - 1, args.col - 1)
+        if not locs:
+            print(f"(无 references:{args.file}:{args.line}:{args.col})")
+            return 0
+        for loc in locs:
+            uri = loc.get("uri", "")
+            rng = loc.get("range", {}).get("start", {})
+            p = uri[7:] if uri.startswith("file://") else uri
+            print(f"{p}:{rng.get('line', 0) + 1}:{rng.get('character', 0) + 1}")
+        return 0
+
+    print(f"(未知 lsp 子命令: {args.lsp_cmd})", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -140,6 +188,17 @@ def main(argv: list[str] | None = None) -> int:
     sub_tools = sub.add_parser("tools", help="列出已加载的 agent 工具")
     sub_tools.add_argument("--group", default=None, help="只看某 group(如 code / file:read / sandbox)")
     sub_tools.set_defaults(func=cmd_tools)
+
+    sub_lsp = sub.add_parser("lsp", help="L2 精确导航(clangd):health 自检 / refs 冒烟")
+    sub_lsp_sub = sub_lsp.add_subparsers(dest="lsp_cmd", required=True)
+    sub_lsp_health = sub_lsp_sub.add_parser("health", help="检测 clangd + compile_commands 是否就位")
+    sub_lsp_health.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
+    sub_lsp_refs = sub_lsp_sub.add_parser("refs", help="冒烟:打一次 references")
+    sub_lsp_refs.add_argument("file", help="文件路径")
+    sub_lsp_refs.add_argument("line", type=int, help="行号(1-based)")
+    sub_lsp_refs.add_argument("col", type=int, help="列号(1-based)")
+    sub_lsp_refs.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
+    sub_lsp.set_defaults(func=cmd_lsp)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

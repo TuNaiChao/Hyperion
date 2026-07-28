@@ -96,6 +96,16 @@ tools:
   - name: grep
     group: file:read
     use: hyperion.tools.sandbox:grep_tool
+  # —— P1.5 L2 精确导航工具(clangd/LSP,需 compile_commands.json)——
+  - name: find_references
+    group: code
+    use: hyperion.tools.code_nav:find_references_tool
+  - name: goto_definition
+    group: code
+    use: hyperion.tools.code_nav:goto_definition_tool
+  - name: hover
+    group: code
+    use: hyperion.tools.code_nav:hover_tool
 
 # 沙箱 provider + 参数(P0 本地沙箱;P6 换 Docker 时只改 use 即可)。
 sandbox:
@@ -148,3 +158,15 @@ code_index:
     model: qwen3-rerank                # 100+ 语言;¥0.0005/千token(同 embedding 价,≈8 万次查询=¥1)
     rerank_top_n: 5
     # fallback(siliconflow 免费,需 $SILICONFLOW_API_KEY):provider: siliconflow, base_url: https://api.siliconflow.cn/v1/rerank, model: BAAI/bge-reranker-v2-m3
+
+  # L2 精确导航(P1.5 lsp.py):clangd 经 multilspy 驱动。caller/callee(查找引用)、跳定义、hover。
+  # 硬前提:仓库根有 compile_commands.json(autotools 用 `bear -- make V=1` 或 `compiledb --parse make -nW V=1`;
+  # cmake 用 `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`)。没有它 references 质量骤降(见设计文档 §5.7 降级)。
+  lsp:
+    clangd_path: null          # null = shutil.which("clangd") 自动找;或写绝对路径(如 /usr/bin/clangd)
+    extra_args: []             # 追加 clangd flag(如交叉编译 ["--query-driver=/usr/bin/arm-linux-gnueabihf-gcc*"])
+    start_timeout: 30          # 起 clangd + initialize 超时(秒)
+    request_timeout: 15        # 单次 references/definition/hover 超时(秒)
+    index_retry: 1             # 结果为空/偏少时重试次数(防后台索引未就绪)
+    index_retry_delay: 0.3     # 重试间隔(秒)
+    compile_commands_dir: null # null = clangd 自动从源文件向上找;或写绝对路径强制指定 compile_commands.json 所在目录

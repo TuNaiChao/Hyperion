@@ -1,6 +1,6 @@
 # P1 设计:代码理解服务(`services/code_index/`)
 
-> **状态**:P1.0–P1.4 已成(P1.4 导航工具 6/6 验证通过,2026-07-28);P1.5 待做。本文档随进展更新。
+> **状态**:P1.0–P1.5 已成(P1.5 L2 精确导航 find_references/goto_definition/hover 活验证通过,2026-07-28)。本文档随进展更新。
 > **目标代码库**:bluez / wpa_supplicant 等 Linux C 组件(P1 以 Python/deer-flow 起步把管线跑通,C 专属难点留到 C 场景)。
 > **总纲**:[architecture.md §5.1](architecture.md#51-代码理解服务-servicescode_index);**演进依据**:[后续设计演进报告(oh-my-pi 与最佳实践)](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
@@ -18,15 +18,15 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 | 层 | 比喻 | 你问什么 | 对应 | 状态 |
 |---|---|---|---|---|
 | **L1 向量检索** | 大楼的"语义索引" | "找处理蓝牙断连的地方"(按**意思**模糊匹配) | `services/code_index/`(本文档) | **P1.0–P1.3 已成** |
-| **L2 LSP/clangd** | 大楼的"精确导航"(像 IDE) | "**谁调用**了 `disconnect_cb`"(精确到每一处,连宏/跨文件/系统头) | P1.5 新增 | 待做 |
+| **L2 LSP/clangd** | 大楼的"精确导航"(像 IDE) | "**谁调用**了 `disconnect_cb`"(精确到每一处,连宏/跨文件/系统头) | P1.5 | **已成** |
 | **L3 DAP/lldb·gdb** | 大楼的"现场勘查" | "进程崩在这,此刻这个变量值是多少、栈是什么" | P2 新增 | 待做 |
 
-三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。**本服务当前覆盖 L1(已成);L2 在 P1.5 接入;L3 留 P2。**
+三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。**本服务当前覆盖 L1+L2(已成);L3 留 P2。**
 
 ### 退出标准
 - **P1.3(已成)**:L2(语义查询)recall@5 ≥ 0.55 —— 实测 **0.650 达标**(见 §3)。
 - **P1.4(已成)**:agent 能用导航工具(grep_symbol/read_function/search_code/grep)+ read BFS 摘要 + 二进制守卫 —— 6/6 验证通过(见 §4.9)。
-- P1.5:精确 caller/callee 经 LSP 可查。
+- **P1.5(已成)**:精确 caller/callee 经 LSP 可查 —— fixture 实测 `find_references` 零漏召(见 §5.10)。
 
 ### 选型一览(P1 基础全部建在外部 SOTA 上)
 | 能力 | 选型 |
@@ -419,13 +419,149 @@ def search_code_tool(description, query, top_k=5) -> str:
 
 > 三层栈视角:L1(向量,已成)回答"大概在哪",L2(LSP)回答"精确谁调谁",L3(DAP,P2)回答"运行时为什么"。L1 不被取代——L2 叠在其上(先 L1 定位模块,再 L2 串调用链)。
 
-### 落地
-- **经 `multilspy`**(微软开源 Python LSP **client** 库,内部处理 stdio JSON-RPC + initialize 握手 + 文件同步)。**不要用 pygls**(那是写 server 的)。
-- **三件套工具**:`lsp_references(file,line,symbol)`(精确调用点,带 2 次重试 + 250ms 退避防索引未完成)、`lsp_definition(file,line,symbol)`(跳定义,含系统头)、`lsp_hover(file,line,symbol)`(签名/宏展开/枚举值)。定位统一 `file+line+symbol`。
-- `get_callers/get_callees` 由 `lsp_references` 提供;`CodeChunk.callers/callees` 字段不再回填(P1.4 清理时可移除,默认空 tuple 无害)。
-- **硬前提**:`compile_commands.json`。bluez(autotools):`bear -- make`;systemd(cmake):`cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON`。没有它 clangd references 质量骤降。
+### 落地(2026-07-28 调研后定稿)
 
-**退出标准**:对带 compile_commands 的 C 仓,`lsp_references` 返回精确调用点(对比 L1 向量召回,漏召显著降低);demo agent 能串调用链。
+> 调研结论一句话:**经 multilspy(微软 Python LSP client),自写一层 `ClangdServer` 适配器接 clangd**——multilspy 不自带 clangd(见下"勘误"),但它的 LSP 通用机制(JSON-RPC、initialize 握手、文件同步、请求/响应关联、超时、同步包装)全部可复用,我们只补"怎么起 clangd"这一小块。
+
+#### 5.1 multilspy 现状勘误(关键,改了原假设)
+
+原 §5 假设"multilspy 开箱即用 clangd"。**实测装包读源码后修正**:
+
+- **multilspy 0.0.15**(MIT;依赖轻:pygls / lsprotocol / requests,**无 torch、无 node**)。
+- 它**自带 9 种**语言服务适配器:python(jedi)/ rust(rust-analyzer)/ go(gopls)/ java(jdtls)/ js/ts / ruby / c#(omni)/ kotlin / dart。**没有 C/C++/clangd**(对应 GitHub issue #14「C++ Support?」至今未官方接入)。
+- 其 `Language` 枚举(`multilspy_config.py`)**不含 C/C++** → 不能用 `LanguageServer.create(config, ...)` / `SyncLanguageServer.create(...)` 工厂(工厂按 `config.code_language` 分发,没有 clangd 分支)。
+- **关于 `main` 分支(2026-07-28 核实)**:multilspy 的 `main`(未发版)其实已并入官方 `ClangdLanguageServer` + `Language.CPP` + `MultilspyConfig.server_binary`(用系统 clangd、免下载)。**但仍不自用它**,原因:① PyPI 最新仍 **0.0.15**(clangd 仅在 `main`,无发版 wheel,pin 到移动 git HEAD 不符生产级);② 它的 `ProcessLaunchInfo(cmd=[clangd])` **不带任何 flag**——加不了 `--limit-references=0`(clangd 默认截断到 1000 条 references,见 5.6,对 agent 是"假完整"致命);③ `start_server` 里硬编码 `assert ... completionProvider == {...}`(连触发字符都断言),换 clangd 版本就崩。**故即便用 main 仍要 override**——那就直接在 released 0.0.15 上自写,pin 干净、完全自控。
+
+**对策**:照 `rust_analyzer.py` / `gopls.py` 的模板(rust-analyzer 与 clangd 同为「stdio + 编译型」语言服务,最像),自写 `ClangdServer(LanguageServer)`——只实现三件事,其余继承:
+
+| 要实现的 | 干什么 | 参考模板(file:line) |
+|---|---|---|
+| `__init__` | 找 clangd 二进制(`shutil.which` 或 config)→ 拼 `ProcessLaunchInfo(cmd="clangd --background-index ...", cwd=repo_root)` → `super().__init__(config, logger, repo_root, launch_info, "cpp")` | rust_analyzer.py:`__init__` |
+| `_get_initialize_params(root)` | 填 `rootPath`/`rootUri`/`workspaceFolders`(clangd 靠它定位工程根 + 找 compile_commands) | rust_analyzer.py:`_get_initialize_params` |
+| `start_server`(async ctx-mgr) | 注册 `window/logMessage`·`textDocument/publishDiagnostics`·`$/progress` 处理器 → `await self.server.start()` → 发 `initialize` → `notify.initialized({})` → `yield self` → `shutdown`/`stop` | rust_analyzer.py:`start_server` |
+
+> **不 monkeypatch multilspy 内部枚举**,只继承 + 直接 `ClangdServer(...)` 实例化,再包进 `SyncLanguageServer(clangd_server, timeout)`。绕开工厂,零侵入。这是 P1.5 唯一的「原创代码块」(约 80 行);JSON-RPC 收发、Content-Length 分帧、文件 did_open/did_close 同步、请求 id 关联、超时——全部白嫖 multilspy。
+
+#### 5.2 multilspy 真实 API(照着写代码用)
+
+读 `multilspy/language_server.py` 确认:
+
+- **`SyncLanguageServer`**(line 686)是同步门面,**自带一个 asyncio loop + daemon 线程**(经 `start_server()` ctx-mgr 起停,line 757)。我们要的三个方法都是**同步**签名(内部 `run_coroutine_threadsafe(...).result(timeout)`):
+  - `request_references(file_path, line, column) -> List[Location]`(line 791)——**精确调用点 = callers**。
+  - `request_definition(file_path, line, column) -> List[Location]`(line 775)——跳定义,含系统头宏展开。
+  - `request_hover(file_path, line, column) -> Hover | None`(line 840)——签名/宏展开/枚举值/类型。
+  - 另送:`request_workspace_symbol(query)`(line 856,全仓符号)、`request_document_symbols(rel_path)`(line 826,单文件大纲)——P1.5 先不暴露,记 backlog。
+- **`open_file(rel_path)` ctx-mgr**(line 727):发 `did_open`(带文件全文)→ 请求 → `did_close`,带引用计数。**工具调用模板**:
+  ```python
+  with sync_server.start_server_held():        # 单例里只进一次(见 5.3)
+      with sync_server.open_file(rel_path):
+          locs = sync_server.request_references(rel_path, line_0, col_0)
+  ```
+- **`ProcessLaunchInfo.cmd` 是 shell 字符串**(`lsp_protocol_handler/server.py:54`,经 `create_subprocess_shell` 启动,line 217)→ 不是 list。拼 clangd 命令行必须用 `shlex.join([clangd_path, "--background-index", ...])`,**别手拼**(路径/参数有空格会被 shell 拆错)。
+- **LSP 位置是 0-based**(line 和 character 都从 0 起,character 按 UTF-16 code unit)。
+- **agent 暴露的三件套工具**(命名对齐 Cursor / Claude Code,LLM 更熟):`find_references` → `request_references`(精确调用点 = callers)、`goto_definition` → `request_definition`(跳定义,含系统头)、`hover` → `request_hover`(签名/宏展开/类型)。
+
+#### 5.3 生命周期:进程级单例(照搬 sandbox provider)
+
+clangd 起一次要数秒(建索引),**不能每个工具调用都重启**。故镜像 `get_sandbox_provider`(`platform/sandbox/provider.py`):
+
+- `get_lsp_server(repo_root) -> SyncLanguageServer`:**首次懒起**一个 clangd 常驻进程——手动 `cm = sync_server.start_server(); cm.__enter__()` 进上下文一次(不退出),`atexit.register(cm.__exit__, None, None, None)` 注册优雅关闭。
+- 双检锁、锁内解析类、锁外构造(防回调自死锁)——与 sandbox provider 同构。
+- 多 repo:单例按 `repo_root` 缓存(`dict[str, SyncLanguageServer]`);P1.5 实际只单仓,留口子。
+
+#### 5.4 定位协议:`file + line + symbol → column`
+
+工具统一收 `file + line + symbol`(line 用 parser 的 1-based)。`request_references` 要精确 `(line, column)` 指在符号上,故:
+1. `line_0 = line - 1`(转 0-based);
+2. 读该行,正则找 `symbol` 出现的列 `col_0`(取首个;符号名一般是 ASCII,CJK 极少,UTF-16 近似够用);
+3. 调 `request_references(file, line_0, col_0)`。
+找不到列(行里没这符号)→ 返可操作错误(提示用 `read_file` 核对行号)。
+
+#### 5.5 索引未就绪 → 重试一次
+
+clangd `initialized` 后即可响应,但**后台索引还在建**,首次 `references` 可能少召回。空或偏少时**重试 1 次 + ~300ms 退避**(`--background-index` 二次启动会复用 `.cache/clangd/index`,故重试收益主要在首次冷启)。多次重试收益递减,不做。
+
+#### 5.6 clangd 启动参数(走 config 可调)
+
+| flag | 作用 | 默认 |
+|---|---|---|
+| `--limit-references=0` | **★ 关键**:clangd 默认把 references 截断到 **1000 条**(对 `g_dbus_proxy_new` 这类高频符号会不够),`=0` 取消上限。不加这个,agent 看到的是"假完整"调用点列表 → 漏判根因。出处:[clangd FAQ](https://clangd.llvm.org/faq) | **开** |
+| `--limit-results=0` | 同理,`workspace/symbol` 默认也截断;取消上限 | **开** |
+| `--background-index` | 持久化索引到 `.cache/clangd/index`,二次启动快 | 开 |
+| `-j=<N>` | 索引并行度 | 4 |
+| `--compile-commands-dir=<path>` | 强制 compile_commands.json 位置(不填则 clangd 从源文件目录向上找) | 空(自动找) |
+| `--query-driver=<编译器路径>` | 交叉编译器识别(bluez/wpa 交叉编译场景) | 空 |
+| `--header-insertion=never` | 导航用不上自动插 include | 开 |
+| `--clang-tidy` | lint(**噪声大**,导航用不上) | **关** |
+
+#### 5.7 降级路径(生产级关键,绝不全静默返空)
+
+空结果会被 agent 误判「没人调用」→ 致命。故:
+
+- **clangd 二进制缺失** / **compile_commands.json 缺失** → `hyperion lsp health` 明确报告缺什么 + 怎么补(`bash scripts/setup.sh` 装 clangd+bear;`bear -- make` 或 `cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` 生成 compile_commands)。
+- 工具(`find_references` 等)在上述缺失时返**可操作错误串**(含上述指引),**不抛、不静默空**。
+- compile_commands 缺失但仍能起 clangd(heuristic 模式)→ 工具结果前加⚠️提示「无 compile_commands,references 质量降级」。
+
+#### 5.8 配置(`config.yaml`,新增 `code_index.lsp`)
+
+```yaml
+code_index:
+  lsp:
+    clangd_path: null          # null = shutil.which("clangd") 找;或写绝对路径
+    extra_args: []             # 追加 clangd flag(如 ["--query-driver=/usr/bin/arm-linux-gnueabihf-gcc*"])
+    start_timeout: 30          # 起 clangd + initialize 的超时(秒)
+    request_timeout: 15        # 单次 references/definition/hover 超时(秒)
+    index_retry: 1             # 结果为空/少时重试次数
+    index_retry_delay: 0.3     # 重试间隔(秒)
+    compile_commands_dir: null # null = 不强制,clangd 自动找;或写绝对路径
+```
+
+#### 5.9 CLI(`hyperion lsp ...`)
+
+- `hyperion lsp health` —— 自检:clangd 在否(版本号)、compile_commands.json 在否、(可选)起一个 clangd 跑一次 hover 看能不能通。绿/红 + 修复指引。
+- `hyperion lsp refs <file> <line> <col>` —— 冒烟:直接打一次 references,打印调用点。给"装好 clangd 后验证"用。
+
+#### 5.10 退出标准(可验证)
+
+1. `uv run hyperion lsp health` 在「装了 clangd + 有 compile_commands」的仓报**绿**;在缺 clangd 的机器报**红 + 修复指引**。
+2. 对自带 C fixture(`tests/fixtures/lsp_c/`:mini.c 调 lib.c 的函数,手写 compile_commands.json),`find_references` **精确返回全部调用点(零漏召)**——对比 L1 向量检索的同义 query,漏召显著降低。
+3. clangd 缺失时,三个 LSP 工具返**可操作错误串**(含 setup 指引),不抛、不静默空。
+4. `uv run ruff check .` clean;multilspy 导入 + 单例起停**不泄漏子进程**(`ps` 无残留 clangd)。
+5. `CodeChunk.callers/callees` 字段不再被任何代码回填(P1.4 留的空 tuple,本阶段确认无害或清理)。
+
+> **实测计划**:① 自带 C fixture(零依赖,装 clangd 即跑)验证 plumbing;② bluez / wpa 真实仓的 `bear -- make` 生成 compile_commands + 全仓 references 留到 **P2 Bug-RCA 首个真实任务**(需源码 + 干净 build 环境,P1.5 不强行)。
+
+> **实测结果(2026-07-28,自带 fixture `tests/fixtures/lsp_c/`,clangd 17.0.6)**:
+> - 退出标准 **①**✓:`hyperion lsp health` 报 ✓✓ 绿(clangd + compile_commands 就位);缺 clangd 的机器报 ✗ + 修复指引(降级路径验过)。
+> - 退出标准 **②**✓:`find_references(add @ lib.c:3)` 精确返回 **main.c:5 与 main.c:7 两处调用点,零漏召**(含 definition 精确跳 lib.c:3、hover 含 `int add(int a,int b)` 签名)。
+> - 退出标准 **③**✓:clangd 缺失时三工具返可操作错误串(`先跑 hyperion lsp health 自检` + setup 指引)。
+> - 退出标准 **④**✓:`ruff check .` clean;clangd 经 `atexit` 优雅 shutdown,无残留子进程。
+> - 退出标准 **⑤**:`CodeChunk.callers/callees` 默认空 tuple,L1 代码不读、LSP 不回填——无害(清理记 backlog)。
+> - ⚠️ **首次 references 冷启动会空**(后台索引未就绪)——单进程内带 1 次重试(`index_retry`)兜;**跨进程的 `hyperion lsp refs` CLI 不带重试**(冒烟用,首次可能空,再跑一次或用 agent 工具路径)。
+
+#### 5.11 借鉴对照(file:line 出处)
+
+| 决策/做法 | 出处 |
+|---|---|
+| `LanguageServer`/`SyncLanguageServer` 公开 API | multilspy `language_server.py:178/363/440/627/686/791` |
+| 「stdio+编译型」语言服务的 start_server 模板 | multilspy `language_servers/rust_analyzer/rust_analyzer.py`(`__init__`/`_get_initialize_params`/`start_server`) |
+| `ProcessLaunchInfo.cmd` 是 shell 字符串 → `shlex.join` 拼装 | multilspy `lsp_protocol_handler/server.py:54,217` |
+| 进程级单例 + 双检锁 + 锁内解析/锁外构造 + atexit | Hyperion `platform/sandbox/provider.py`(自洽,照搬) |
+| `file+line+symbol` 定位 + 索引重试 | 本项目 P1.4 `code_nav` 模式延续 + 设计原案 |
+| compile_commands 生成(bear / cmake / compiledb) | 业界惯例(bear=Build EAR;cmake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`;compiledb 干跑 `make -nw`) |
+
+#### 5.12 生产级补齐(记 backlog,不在 P1.5 做)
+
+- **get_callees 聚合**:对定义体里每个调用点逐一 `goto_definition` → 聚合成 callee 列表(P1.5 只做 callers/references)。
+- **严格 caller 列表(callHierarchy)**:multilspy 只暴露 `textDocument/references`,**不含** `textDocument/prepareCallHierarchy` + `callHierarchy/incomingCalls`(LSP 标准的"真·caller 树")。对 C 函数 references ≈ callers(够用),但 references 会混入"取地址/赋值"等非调用点;要严格调用树得绕过 multilspy 直接 `self.server.send.call_hierarchy_incoming(...)`。
+- **索引就绪信号**:用 clangd `$/progress` 的 background-indexing 完成通知(`N==M`)或 `experimental/serverStatus` 的 `quiescent==true` 替代固定 300ms(更准)。
+- **references 渲染给 LLM 的截断策略**(高价值):大仓 references 可能上百条 → ① 按 `(uri,line)` 去重(宏展开会多次命中同行)② 按文件分组、每文件只展首条 + `(N more in this file)` ③ 每条带 **caller 函数名**(对该 reference 反查所属函数定义)④ Top-N(10–20)+ `N more omitted, 用 depth=2 展开`。别 dump 原始 JSON。
+- **多语言**:rust/python/go LSP 直接复用 multilspy 自带 adapter(只需在 `get_lsp_server` 按 repo 语言分发)。
+- **`.clangd` 配置 / `--query-driver`**:交叉编译(bluez arm/wpa)的编译器识别;`.clangd` YAML 还能 `CompileFlags.Add`、对大目录 `Index: Background: Skip`(systemd 的 test/、vendor/)。真实仓落地时补。
+- **大仓离线索引(SCIP)**:systemd / Linux kernel 量级,实时 clangd 首次索引可能数分钟~数小时且内存膨胀。备选 [`scip-clang`](https://github.com/sourcegraph/scip-clang) 离线把全仓索引成 SCIP 文件再查询(Sourcegraph Cody 路线),稳定性/性能远胜实时 clangd,代价是增量更新麻烦。`.cache/clangd/index/` 须持久化(随仓分发 / Docker volume)。
+- **compile_commands 生成优选 compiledb**:autotools 项目(bluez/wpa)用 `compiledb --parse make -nW V=1`(解析 dry-run,不真编、不受 `LD_PRELOAD`/SELinux/CCACHE 干扰)比 `bear -- make V=1` 稳;bear 4.0.x 有"产出空 JSON"bug(#660/#656),出问题回退 3.1.6 或换 compiledb。setup.sh 两者都装。
+- **LSP 结果短期缓存**:同一 `(file,line,col)` 短期复用(镜像 `_symbols_for_file` 的 mtime 键)。
+- **业界印证**(方向校准):Cursor / Claude Code(v2.0.74 原生 9 个 LSP 工具)/ Continue 都用「LSP 符号图 + 向量」分层检索——正是本项目 L1(向量)+L2(LSP)设计;反方证据(SWE-bench 上纯 grep 偶尔胜过纯向量)恰好说明**向量必须配精确层**,不可单独用。
 
 > L3(DAP 调试器,attach/读栈/读变量)留 **P2** Bug-RCA(可复现 bug 现场深挖);TTSR 流式规则 / advisor 副驾 / Hashline 补丁等护栏也留 P2。详见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
@@ -482,7 +618,7 @@ src/hyperion/services/code_index/
 └── eval/            # [P1.3 已成]  scorer.py(指标)+ runner.py(harness)
 # 待做:
 ├── outline.py       # [P1.4 已成]  tree-sitter BFS 摘要 + elision footer(复用 parser,§4.4)
-└── (lsp)            # [P1.5]  src/hyperion/services/code_nav/lsp.py(暂定):clangd 经 multilspy
+└── lsp.py           # [P1.5 已成]  ClangdServer(multilspy 适配器)+ get_lsp_server 单例 + health(§5)
 ```
 
 P1.4 还涉及另两处(不在 services/code_index/ 下):
@@ -491,6 +627,11 @@ src/hyperion/tools/code_nav.py            # [P1.4 已成] grep_symbol / read_fun
 src/hyperion/tools/sandbox.py             # [P1.4 已成] read_file 升级(BFS 摘要)+ 新增 grep_tool
 src/hyperion/platform/sandbox/_search.py  # [P1.4 已成] 搜索内核(IGNORE_PATTERNS/is_probably_binary/find_grep_matches)
 src/hyperion/platform/sandbox/local.py    # [P1.4 已成] grep() 用 _search 内核;read_file() 加二进制守卫
+```
+P1.5 还涉及另两处(不在 services/code_index/ 下):
+```
+src/hyperion/tools/code_nav.py            # [P1.5 已成] find_references / goto_definition / hover + _do_lsp_request(§5)
+src/hyperion/cli.py                       # [P1.5 已成] `hyperion lsp health` / `hyperion lsp refs` 子命令
 ```
 
 > 注:`code_graph.py`(原 P1.5 计划)**不建**——caller/callee 由 LSP 提供(§5);`repo_map.py`(Aider 式)**延后**记 backlog。

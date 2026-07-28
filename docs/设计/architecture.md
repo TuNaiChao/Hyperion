@@ -343,7 +343,7 @@ class PatchedChatDeepSeek(ChatOpenAI):
 
 **L1 向量检索层(已成,P1.0–P1.3)**:`parser.py`(tree-sitter 抽符号,Python 起步、C 待加)→ `chunker.py`(按符号边界切块 + `fts_text` 标识符拆词)→ `embed.py`(远端 DashScope `text-embedding-v4` 默认 / 本地可选)→ `store.py`(LanceDB 嵌入式,table-per-repo)→ `retrieval.py`(BM25+向量+RRF 原生混合 + cross-encoder rerank,远端 `qwen3-rerank` 默认)。实测 **L2 recall@5 = 0.65 达标**(详见设计文档 §11)。embedding 模型选定后不能换,换需全量重嵌(由 `index_manifest.model_fingerprint` 检测触发)。`universal-ctags` 补宏表留作 C 场景增强;`repo_map`(Aider 式 PageRank"全仓最重要符号"地图)延后。
 
-**L2 精确导航层(P1.5,LSP/clangd)**:经 `multilspy`(Python LSP **client** 库,**不要用 pygls——那是写 server 的**)驱动 clangd,提供 `references`(精确调用点,带索引就绪重试)/ `definition`(跳定义,含系统头)/ `hover`(签名/宏展开)。硬前提 `compile_commands.json`(bluez `bear -- make`、systemd cmake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`)。`get_callers/get_callees` **由 LSP 提供,取代原计划的 code_graph 自建调用图**——clangd 有编译数据库,展开宏/消歧/重载,绕开 C 的 static 同名/宏包装/函数指针三墙(详见设计文档 §3 的转向说明)。
+**L2 精确导航层(P1.5 已成,LSP/clangd)**:经 `multilspy`(Python LSP **client** 库,**不要用 pygls——那是写 server 的**)驱动 clangd,提供 `find_references`(精确调用点 = callers,带索引就绪重试)/ `goto_definition`(跳定义,含系统头)/ `hover`(签名/宏展开)。硬前提 `compile_commands.json`(bluez `bear -- make`、systemd cmake `-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`)。`get_callers/get_callees` **由 LSP 提供,取代原计划的 code_graph 自建调用图**——clangd 有编译数据库,展开宏/消歧/重载,绕开 C 的 static 同名/宏包装/函数指针三墙(详见设计文档 §5 的转向说明)。**2026-07-28 实测**:自带 C fixture 上 `find_references` 零漏召(两处调用点全中)。
 
 **L3 运行时层(P2,DAP)**:手写轻量 DAP client 驱动 `lldb-dap`/`gdb -i dap`,`attach(pid)` + 断点 + `stack_trace/scopes/variables`(读栈、递归展开 `struct *` 字段),用于"可复现 bug 的现场深挖"(学术范式见 ChatDBG)。
 
@@ -644,7 +644,7 @@ my-agent/
 | 阶段 | 目标 | 关键交付 | 退出标准 |
 |---|---|---|---|
 | **P0 地基** (1–2w) | 平台骨架能跑 | LangGraph 骨架 + **模型工厂(多 provider)** + config + Langfuse + 本地沙箱 + demo agent(bash/read_file) | 给简单问题,agent 在沙箱里 ls/读文件/回答;切换 provider 只改配置 |
-| **P1 代码理解** (2–3w) | 共享地基(L1+L2)| **L1 向量检索**(parser/chunker/embed/store/index/retrieval/eval,**P1.0–P1.3 已成**,L2 recall@5=0.65)→ **P1.4 导航工具**(grep_symbol/read_function/search_code)→ **P1.5 LSP/clangd**(L2 精确导航,取代 code_graph) | P1.3:L2 recall@5≥0.55(已达标);P1.4:agent 能用导航工具定位;P1.5:精确 caller/callee 可查 |
+| **P1 代码理解** (2–3w) | 共享地基(L1+L2)| **L1 向量检索**(parser/chunker/embed/store/index/retrieval/eval,**P1.0–P1.3 已成**,L2 recall@5=0.65)→ **P1.4 导航工具**(grep_symbol/read_function/search_code)→ **P1.5 LSP/clangd**(**已成**,L2 精确导航 find_references/goto_definition/hover,取代 code_graph) | P1.3:L2 recall@5≥0.55(已达标);P1.4:agent 能用导航工具定位;**P1.5:精确 caller/callee 可查(已达标,fixture 零漏召)** |
 | **P2 Bug-RCA MVP** (3–4w) | 场景①跑通 | triage→locate→verify→report 图 + 三路径符号化 + 静态分析 + **L3 DAP 现场深挖** + Hashline 补丁(替 str_replace)+ TTSR/advisor 护栏 + 报告模板 | 真实 bluez/wpa bug 日志 → 定位到正确文件/函数并出报告 |
 | **P3 记忆+学习** (2–3w) | 内化闭环 | Memorize pipeline + Recall 注入 + 评测集;进阶 Graphiti 领域 KG | 同类 bug 第二次出现,Recall 召回首解;LongMemEval 指标达标 |
 | **P4 PR-Tracker** (2–3w) | 场景③跑通 | cron + GraphQL 增量 + Send 并行 review + 决策卡 + 冲突评估 | 定期产出 bluez/wpa 合入建议清单 |

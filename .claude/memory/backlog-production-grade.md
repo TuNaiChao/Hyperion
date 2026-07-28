@@ -170,3 +170,42 @@ metadata:
     - 现状:P1.4 二进制文件直接拒(指向 bash);grep 截断只给"收窄"提示,不能翻页;无 FS 缓存。
     - 对齐:omp read 的 `:raw` selector(绕过守卫读原始字节,[read.ts:2511](../../oh-my-pi/packages/coding-agent/src/tools/read.ts#L2511))+ grep 的 `skip` 文件级分页([grep.ts:1319](../../oh-my-pi/packages/coding-agent/src/tools/grep.ts#L1319))+ walker FS 缓存([pi-walker/cache.rs](../../oh-my-pi/crates/pi-walker/src/cache.rs),TTL 1s+空结果 200ms 重检+写后失效)。另含 #1 的 .gitignore 解析(`pathspec`)。
     - 目标阶段:**P1.4 补丁**(半天;二进制场景多/大仓慢时再做)。
+
+## P1.5 落地后遗留的生产级补齐项(#31–#37)
+
+> 来源:2026-07-28 P1.5 实现 L2 精确导航(clangd/multilspy)时,对照 multilspy 源码 + clangd FAQ + 调研报告识别出的、当期有意简化的点。详见 [docs/设计/p1-code-understanding-design.md §5.12](../../docs/设计/p1-code-understanding-design.md)。**P1.5 主体已成**(fixture 实测 find_references 零漏召)。
+
+31. **get_callees 聚合** — `tools/code_nav.py`。
+    - 现状:P1.5 只做 callers(`find_references`);callee(这个函数调了谁)没做。
+    - 对齐:对定义体里每个调用点逐一 `goto_definition` → 聚合成 callee 列表;或直接用 #32 的 callHierarchy/outgoingCalls。
+    - 目标阶段:**P2 Bug-RCA**(串调用链双向都要时)。
+
+32. **严格 caller/callee 树(LSP callHierarchy)** — `services/code_index/lsp.py`。
+    - 现状:P1.5 用 `textDocument/references` 当 callers——对 C 函数够,但会混入"取地址/赋值"等非调用点;multilspy 不暴露 `prepareCallHierarchy`/`incomingCalls`/`outgoingCalls`。
+    - 对齐:绕过 multilspy 直接 `self.server.send.call_hierarchy_incoming(...)`(raw JSON-RPC);或等 multilspy main 合入后升版。
+    - 目标阶段:**P2**(C 函数指针/回调多、references 噪声大时)。
+
+33. **索引就绪信号(替固定 300ms 重试)** — `services/code_index/lsp.py` `ClangdServer.start_server`。
+    - 现状:P1.5 用固定 `index_retry=1` + 300ms 兜冷启动;不准(大仓不够、小仓浪费)。
+    - 对齐:抓 clangd 的 `$/progress`(indexing N/M,M==N 即就绪)或 `experimental/serverStatus` 的 `quiescent==true`(main 的 ClangdLanguageServer 就等这个),起 server 时异步等、查询时按需等。
+    - 目标阶段:**P2 真实 C 仓**(bluez/systemd,首次索引秒~分钟级,固定重试不够)。
+
+34. **references 渲染给 LLM 的截断策略** — `tools/code_nav.py` `_render_locations`。
+    - 现状:P1.5 只做 `(file,line)` 去重 + max_results 截断;大仓 references 上百条会爆上下文。
+    - 对齐:按文件分组(每文件首条 + `N more in this file`)+ 每条带 **caller 函数名**(反查 reference 所属函数)+ Top-N(10–20)+ `N more omitted, depth=2 展开`。别 dump 原始 JSON。
+    - 目标阶段:**P2**(真实仓高频符号如 `g_dbus_proxy_new` 引用 >100)。
+
+35. **多语言 LSP(rust/python/go)** — `services/code_index/lsp.py` `get_lsp_server`。
+    - 现状:P1.5 写死 clangd(C/C++);Hyperion 自身是 Python,LSP 导航用不上 clangd。
+    - 对齐:multilspy 自带 python(rust-analyzer 也在 `main`)等 adapter;按 repo 语言分发(检测 majority language 或 config 声明)。
+    - 目标阶段:**P5 Deep-Research**(被研仓库非 C 时)。
+
+36. **大仓离线索引(SCIP)+ .cache 持久化 + `.clangd` 跳大目录** — `services/code_index/lsp.py` + 运维。
+    - 现状:P1.5 实时 clangd;systemd/kernel 量级首次索引数分钟~小时、内存膨胀。
+    - 对齐:[scip-clang](https://github.com/sourcegraph/scip-clang) 离线把全仓索引成 SCIP 再查(Sourcegraph Cody 路线);`.cache/clangd/index/` 持久化(随仓分发 / Docker volume);`.clangd` 配 `Index: Background: Skip` 跳 test//vendor/。
+    - 目标阶段:**P2/P6 生产化**(上 systemd/kernel 量级目标仓时)。
+
+37. **compiledb 优选(autotools)+ 交叉编译 `--query-driver`** — `scripts/`(bluez/wpa 落地时)。
+    - 现状:P1.5 fixture 手写 compile_commands;setup.sh 装了 bear+compiledb 但没用过真实 autotools 仓。
+    - 对齐:autotools 用 `compiledb --parse make -nW V=1`(解析 dry-run,不受 LD_PRELOAD/SELinux/CCACHE 干扰)比 `bear -- make V=1` 稳(bear 4.0.x 有空 JSON bug #660/#656);交叉编译(bluez arm/wpa)加 `--query-driver=/usr/bin/arm-linux-*` + `.clangd` `CompileFlags.Compiler`。`CodeChunk.callers/callees` 空字段清理(确认无害后删)。
+    - 目标阶段:**P2 首个真实 C 仓**(bluez/wpa build 环境就绪时)。

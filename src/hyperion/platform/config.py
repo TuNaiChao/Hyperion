@@ -92,6 +92,25 @@ class EmbedderConfig(BaseModel):
     query_instruction: str | None = "query"  # Qwen3 用 prompt_name="query";bge-m3 留 None
 
 
+class LSPConfig(BaseModel):
+    """L2 精确导航(clangd 经 multilspy)的配置(P1.5)。
+
+    面向小白:这是"精确查谁调用谁"那层的旋钮——用什么 clangd、起它时加什么参数、
+    超时多久、找不到结果重试几次。绝大多数情况用默认值即可,只在交叉编译/大仓时才调。
+    extra='allow' 给将来加的旋钮(如索引就绪信号)留口子。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    clangd_path: str | None = None  # null = shutil.which("clangd") 自动找;或写绝对路径
+    extra_args: list[str] = Field(default_factory=list)  # 追加 clangd flag(如交叉编译 --query-driver=...)
+    start_timeout: float = 30.0  # 起 clangd + initialize 握手超时(秒)
+    request_timeout: float = 15.0  # 单次 references/definition/hover 超时(秒)
+    index_retry: int = 1  # 结果为空/偏少时重试次数(防后台索引没建完)
+    index_retry_delay: float = 0.3  # 重试间隔(秒)
+    compile_commands_dir: str | None = None  # null = clangd 自动从源文件向上找;或强制指定目录
+
+
 class CodeIndexConfig(BaseModel):
     """代码理解服务配置(P1 分阶段搭建)。
 
@@ -102,6 +121,7 @@ class CodeIndexConfig(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     embedding: EmbedderConfig = Field(default_factory=EmbedderConfig)
+    lsp: LSPConfig = Field(default_factory=LSPConfig)  # P1.5:L2 精确导航(clangd)
 
 
 class AppConfig(BaseModel):

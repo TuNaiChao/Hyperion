@@ -16,6 +16,13 @@ build/
 # Runtime / sandbox data(agent 工作区、输出等运行时产物)
 data/
 
+# L2 导航 fixture 的 compile_commands.json(由 tests/fixtures/lsp_c/gen_compile_commands.sh 生成,
+# 绝对路径因机器而异,不提交)
+tests/fixtures/lsp_c/compile_commands.json
+
+# clangd 后台索引缓存(--background-index 生成,机器相关、可重建,不提交)
+.cache/
+
 # Reference implementations — clone separately on each machine(只读参考,各自 clone)
 #   git clone https://github.com/bytedance/deer-flow
 deer-flow/

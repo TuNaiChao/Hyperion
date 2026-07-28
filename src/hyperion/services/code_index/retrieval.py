@@ -167,7 +167,7 @@ class LocalReranker:
 
     def __init__(self, *, model: str = "BAAI/bge-reranker-v2-m3", device: str | None = None, hf_endpoint: str | None = "https://hf-mirror.com"):
         try:
-            from sentence_transformers import CrossEncoder
+            from sentence_transformers import CrossEncoder  # pyright: ignore[reportMissingImports]
         except ImportError as e:
             raise ImportError("本地 reranker 需要 sentence-transformers。装它:uv sync --extra embedding-local") from e
         if hf_endpoint:

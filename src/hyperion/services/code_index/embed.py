@@ -242,7 +242,7 @@ class LocalEmbedder:
         hf_endpoint: str | None = "https://hf-mirror.com",
     ):
         try:
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer  # pyright: ignore[reportMissingImports]
         except ImportError as e:  # 没装 optional 依赖时给清晰指引
             raise ImportError("本地 embedding 需要 sentence-transformers。装它: uv sync --extra embedding-local(会拉 torch ~800MB+)") from e
 
