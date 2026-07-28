@@ -121,13 +121,13 @@ metadata:
     - 对齐:omp [packages/coding-agent/src/advisor/](../../oh-my-pi/packages/coding-agent/src/advisor/)——独立 model+独立 Agent,主 turn 末送增量 delta(游标+wyhash 指纹);`advise({note,severity})` 三档(nit/concern/blocker);`<advisory guidance="weigh, don't blindly obey">`(主 agent prompt 不提 advisor);完全隔离 ToolSession;**失败永不阻塞主**。**⚠️三层 emission-guard 是 load-bearing**(omp 实测一 advisor 刷 309 次/114×"Stop.",抄 [emission-guard.ts](../../oh-my-pi/packages/coding-agent/src/advisor/emission-guard.ts));**别用比主 agent 更强的模型**。
     - 目标阶段:**P2**(Bug-RCA 配"反方假设"+"修复副作用"两 advisor,不同模型家族避同源盲区;成本警告:按需启用+便宜模型+增量 delta)。
 
-22. **read = tree-sitter BFS 摘要 + elision footer + 二进制守卫** — `src/hyperion/tools/sandbox.py:read_file_tool`。
-    - 现状:read 直 dump 全文,无摘要、无二进制守卫。
+22. ✅ **已成(P1.4, 2026-07-28)** read = tree-sitter BFS 摘要 + elision footer + 二进制守卫 — 落地 `tools/sandbox.py:read_file_tool` + `services/code_index/outline.py` + `platform/sandbox/_search.py:is_probably_binary`(6/6 验证绿)。语句级折叠→#28;:raw/skip→#30。
+    - 现状(已成):read 直 dump 全文,无摘要、无二进制守卫。
     - 对齐:omp [read.ts:2056-2192](../../oh-my-pi/packages/coding-agent/src/tools/read.ts#L2056-L2192)+[crates/pi-ast/src/summary.rs:108-160](../../oh-my-pi/crates/pi-ast/src/summary.rs#L108-L160)——**显式 selector(`:N`/`:N-M`)走 verbatim 绕过摘要,无 selector 才摘要**;BFS unfold 到可见行≥50(单次破100 跳过子树);**elision footer 必抄**(末尾给真实 selector 举例捞回正文,否则摘要=丢信息);非对称 padding leading=1/trailing=3。二进制守卫抄 [utils/binary.ts:29-37](../../oh-my-pi/packages/utils/src/binary.ts#L29-L37)(8192B sniff)。复用 P1.0 的 tree-sitter parser,Python ~30 行。
     - 目标阶段:**P1.4**(顺手,半天~1 天,ROI 高)。
 
-23. **grep 升级:正则 + ignore + 二进制守卫 + FS 缓存(具体化 #1)** — `src/hyperion/platform/sandbox/local.py`。
-    - 现状:#1(字面子串 grep、rglob 无忽略、无守卫)。
+23. ✅ **已成(P1.4, 2026-07-28)** grep 升级:正则 + ignore + 二进制守卫 — 落地 `platform/sandbox/_search.py`(内核)+ `tools/sandbox.py:grep_tool` + `local.py:grep()`。**FS 扫描缓存 + .gitignore 解析仍未做** → #30 / #1。
+    - 现状(已成):#1(字面子串 grep、rglob 无忽略、无守卫)。
     - 对齐 omp 策略(Python 落地,Rust 内嵌不现实):① 二进制守卫(8192B sniff,最高优先);② ignore 用 `pathspec`(GitWildMatchPattern)+内建 skip(`.git` 永远剪枝);③ FS 扫描缓存([crates/pi-walker/src/cache.rs:16-366](../../oh-my-pi/crates/pi-walker/src/cache.rs#L16-L366),键=`(root,hidden,gitignore,skip,detail)`+TTL 1s+空结果 200ms 重检+写后按路径前缀失效+rename 双侧);④ 正则替代字面子串(`re`+brace sanitize)。**最大延迟收益来自 FS 缓存命中**。
     - 目标阶段:**P1.4**(二进制守卫当天;其余 1-3 天)。
 
@@ -150,3 +150,23 @@ metadata:
     - 对齐:omp [packages/coding-agent/src/task/](../../oh-my-pi/packages/coding-agent/src/task/)——子 agent 调 `yield` 提交结构化数据**不写散文**;schema 三级优先([structured-subagent.ts:173-185](../../oh-my-pi/packages/coding-agent/src/task/structured-subagent.ts#L173-L185));校验+重试三态 valid/invalid/unavailable([executor.ts:548-678](../../oh-my-pi/packages/coding-agent/src/task/executor.ts#L548-L678));增量 yield(findings 累积)+终结 yield;fan-out `mapWithConcurrencyLimitAllSettled`(不 fail-fast);`AgentOutputManager` 落 `<id>.jsonl`+嵌套命名=`agent://` 可寻址。**别照搬 worktree 隔离**(研究不并发改码),留隔离思想(空白历史+显式 context 契约)。
     - 落地 LangGraph:yield+schema+retry→conditional edge;fan-out 用 superstep+typed reducer+显式 partial-failure。
     - 目标阶段:**P5**。
+
+## P1.4 落地后遗留的生产级补齐项(#28–#30)
+
+> 来源:2026-07-28 P1.4 实现时,对照 omp 边界处理识别出的、当期有意简化的点。详见 [docs/设计/p1-code-understanding-design.md §4.11](../../docs/设计/p1-code-understanding-design.md)。
+
+28. **ast-grep 式结构化 AST 搜索(替 grep_symbol 的名匹配)** — `tools/code_nav.py` 或新 `tools/ast_search.py`。
+    - 现状:P1.4 的 `grep_symbol` 只做名/子串匹配;模型要"找所有 `foo(bar)` 形态的调用"得自己揉正则,碰宏/重载易漏。
+    - 对齐:omp [ast-grep.ts](../../oh-my-pi/packages/coding-agent/src/tools/ast-grep.ts)+[crates/pi-ast/](../../oh-my-pi/crates/pi-ast/)——AST 模式 + 元变量(`$NAME`/`$$$NAME`),6 档 strictness 含 `signature`;parse 错误=查询失败而非无匹配。
+    - Python 落地:tree-sitter 的 `Language.query` 模式匹配(零新依赖)优先;或绑 `ast-grep` CLI(Rust)。
+    - 目标阶段:**P2+**(P1.4 名匹配够用;C 宏/函数指针多时再上)。
+
+29. **model 文本 vs display 双轨(给 LLM 的可被工具反向解析)** — `tools/`(read/grep 输出)+ P2 Hashline 一起做。
+    - 现状:P1.4 工具输出只有一路文本(给人看=给模型看)。
+    - 对齐:omp [grouped-file-output.ts](../../oh-my-pi/packages/coding-agent/src/tools/grouped-file-output.ts)+[match-line-format.ts](../../oh-my-pi/packages/coding-agent/src/tools/match-line-format.ts)——给 LLM 的 model 文本用可解析形状(`LINE:content`/`*LINE:content`),给人看的 display 走独立 gutter 渲染。
+    - 目标阶段:**P2**(和 Hashline 行锚一起;锚定编辑依赖可解析行格式)。
+
+30. **read `:raw` 逃生舱 + grep 结果分页 `skip` + FS 扫描缓存** — `tools/sandbox.py` + `platform/sandbox/_search.py`。
+    - 现状:P1.4 二进制文件直接拒(指向 bash);grep 截断只给"收窄"提示,不能翻页;无 FS 缓存。
+    - 对齐:omp read 的 `:raw` selector(绕过守卫读原始字节,[read.ts:2511](../../oh-my-pi/packages/coding-agent/src/tools/read.ts#L2511))+ grep 的 `skip` 文件级分页([grep.ts:1319](../../oh-my-pi/packages/coding-agent/src/tools/grep.ts#L1319))+ walker FS 缓存([pi-walker/cache.rs](../../oh-my-pi/crates/pi-walker/src/cache.rs),TTL 1s+空结果 200ms 重检+写后失效)。另含 #1 的 .gitignore 解析(`pathspec`)。
+    - 目标阶段:**P1.4 补丁**(半天;二进制场景多/大仓慢时再做)。

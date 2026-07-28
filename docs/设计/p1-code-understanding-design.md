@@ -1,6 +1,6 @@
 # P1 设计:代码理解服务(`services/code_index/`)
 
-> **状态**:P1.0–P1.3 已成(主退出标准 **L2 recall@5 = 0.65 达标**);P1.4 / P1.5 待做。本文档随进展更新。
+> **状态**:P1.0–P1.4 已成(P1.4 导航工具 6/6 验证通过,2026-07-28);P1.5 待做。本文档随进展更新。
 > **目标代码库**:bluez / wpa_supplicant 等 Linux C 组件(P1 以 Python/deer-flow 起步把管线跑通,C 专属难点留到 C 场景)。
 > **总纲**:[architecture.md §5.1](architecture.md#51-代码理解服务-servicescode_index);**演进依据**:[后续设计演进报告(oh-my-pi 与最佳实践)](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
@@ -25,7 +25,7 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 
 ### 退出标准
 - **P1.3(已成)**:L2(语义查询)recall@5 ≥ 0.55 —— 实测 **0.650 达标**(见 §3)。
-- P1.4:agent 能用导航工具(grep_symbol/read_function/search_code)定位函数。
+- **P1.4(已成)**:agent 能用导航工具(grep_symbol/read_function/search_code/grep)+ read BFS 摘要 + 二进制守卫 —— 6/6 验证通过(见 §4.9)。
 - P1.5:精确 caller/callee 经 LSP 可查。
 
 ### 选型一览(P1 基础全部建在外部 SOTA 上)
@@ -215,18 +215,193 @@ res = (tbl.search(query_type="hybrid", vector_column_name="vector", fts_columns=
 
 ---
 
-## 4. 待做 · P1.4:导航工具 + 平台护栏
+## 4. P1.4:导航工具 + 平台护栏
 
-> **面向小白**:L1 检索是个函数 `retrieve(query)`,但 agent 需要几个**工具**来用它(像 IDE 的"转到定义""查找引用")。同时把 P0 的 read/grep 升级一下(read 别 dump 全文、grep 支持正则)。这些都是半天到几天的小改,ROI 高,不卡阶段。
+> **状态**:**已成**(2026-07-28)。3 新文件(`platform/sandbox/_search.py`、`services/code_index/outline.py`、`tools/code_nav.py`)+ 2 升级(`tools/sandbox.py` 的 read_file/grep、`platform/sandbox/local.py`)+ config.yaml 接入 + `hyperion index`/`hyperion tools` CLI。6/6 退出标准绿(§4.9)。
+> **调研依据**:deer-flow `sandbox/search.py`(纯 Python 搜索内核)+ oh-my-pi `pi-ast/summary.rs`(tree-sitter BFS 摘要)+ `crates/pi-natives/grep.rs`(ripgrep 边界处理)。出处见 §4.10。
 
-| 子任务 | 目标 | 接口要点 | 退出标准 |
+### 4.0 这步要干什么(先讲大白话)
+
+> **面向小白的类比——给 agent 配一个"代码 IDE 的导航键盘":**
+
+L1 检索(P1.3)目前只是后台一个**函数** `retrieve(query)`,agent 自己调不到。P1.4 把它和几个常用动作包成 agent 能直接调的**工具**,像 IDE 里那几个高频键:
+
+| agent 想干的事 | IDE 里的键 | 本步给的工具 | 走哪一层 |
 |---|---|---|---|
-| **`code_nav` 三工具** | 把 L1 检索包成 agent 可调用的 @tool | `grep_symbol(name)`→`file:line` 列表;`read_function(symbol,file=None)`→代码+元数据;`search_code(query)`→top-k chunk | demo agent 能用导航工具定位函数 |
-| **read = tree-sitter 摘要** | read 不 dump 全文,折叠函数体 | 显式 selector(`:N`/`:N-M`)走 verbatim 绕过摘要;无 selector 才 BFS unfold 摘要(目标可见行 50,硬上限 100);**elision footer 必加**(末尾给真实 selector 举例捞回正文) | read 大文件信息密度提升、不丢可恢复性 |
-| **grep 升级** | 字面子串→正则 + ignore + 守卫 | 正则(`re`)+ ignore(`pathspec`+内建 skip)+ **二进制守卫**(8192B sniff)+ FS 扫描缓存(TTL 1s + 空结果 200ms 重检 + 写后失效) | grep 不被二进制/缓存拖累,对应 [backlog #1](../../.claude/memory/backlog-production-grade.md) |
-| **二进制守卫** | read/grep 共用,挡二进制文件 | `is_probably_binary(path)`:前 8192 字节含 NUL 或非 UTF-8 即判二进制,拒绝并提示 `:raw` | 二进制文件不再毁终端/烧 context |
+| "按名字找 `disconnect_cb` 定义在哪" | 转到符号(Cmd-Shift-O) | `grep_symbol` | tree-sitter 符号(parser) |
+| "把这个函数完整读出来" | 选中函数体 | `read_function` | tree-sitter 符号(parser) |
+| "找处理蓝牙断连的地方"(按**意思**) | 语义搜索 | `search_code` | L1 向量检索(P1.3) |
+| "找所有 `DBG(` 调用"(按**字面正则**) | 全局搜索(Cmd-Shift-F) | `grep` | 文件系统正则扫描 |
+| "看一眼这个大文件长啥样"(别 dump 全文) | 代码大纲(outline) | `read_file`(升级) | tree-sitter BFS 摘要 |
 
-**声明式接入**:`config.yaml -> tools` 加 3 条 `use: hyperion.tools.code_nav:xxx_tool`,registry 自动加载(P0 已验证)。借鉴 oh-my-pi read/grep + [backlog #1](../../.claude/memory/backlog-production-grade.md)。
+外加一道横切护栏:**二进制文件守卫**——读 `.o`/`.so`/图片这类文件会毁终端、烧 context,统一拦下。
+
+> **关键增量**:deer-flow **没有**符号工具、**没有** tree-sitter、**没有** read 摘要(它的 grep 纯文本);oh-my-pi 有 tree-sitter BFS 摘要和 ast-grep,但是 Rust。本步把 deer-flow 的搜索内核(Python 可移植)+ omp 的 BFS 摘要思想(Python 重写,复用已有 parser)**结合**到 Hyperion——这是两家都没有的、Python 栈的完整导航层。
+
+### 4.1 工具总览
+
+| 工具 | 文件 | 一句话 | 退出标准 |
+|---|---|---|---|
+| `grep_symbol` | `tools/code_nav.py`(新) | 按名/正则找符号定义 → `file:line` 列表 | 给名字能定位到定义 |
+| `read_function` | `tools/code_nav.py`(新) | 读一个符号的完整定义体 + 元数据 | 给符号+文件能拿到完整代码 |
+| `search_code` | `tools/code_nav.py`(新) | 语义混合检索 → top-k chunk(包 P1.3 `retrieve`) | demo agent 能用它定位模块 |
+| `grep` | `tools/sandbox.py`(新工具) | 正则搜索文件内容 → `path:line: content` | 正则/ignore/二进制不被拖累 |
+| `read_file`(升级) | `tools/sandbox.py`(改) | 无行范围→tree-sitter BFS 摘要+elision footer;有行范围→原文 | 大文件信息密度↑、可恢复性不丢 |
+| 二进制守卫 | `platform/sandbox/_search.py`(新) | `is_probably_binary(path)` 共用 | 二进制不再毁终端/烧 context |
+
+### 4.2 搜索内核 `platform/sandbox/_search.py`(新,纯算法零依赖)
+
+> **面向小白**:这是 `grep` 的发动机。给它一个目录 + 一个正则,它在目录里逐文件逐行找匹配,返回 `path:行号: 行内容` 列表。**核心是几道安全闸**(直接照搬 deer-flow `sandbox/search.py`,纯 Python、零新依赖、已验证):
+
+- **内建 ignore 黑名单**(`IGNORE_PATTERNS`):`.git`/`node_modules`/`__pycache__`/`.venv`/`dist`/`build`/`data`/`.pytest_cache` 等 ~50 项。**不是**解析 `.gitignore`(deer-flow 也没做;omp 用 Rust `ignore` crate,P1.4 不引新依赖,`.gitignore` 解析延后 [backlog #1](../../.claude/memory/backlog-production-grade.md))。
+  - 性能优化(借 deer-flow `should_ignore_name`):字面量名进 `_EXACT_IGNORE_NAMES` frozenset 做 O(1) 查;通配模式预编译成单条联合正则 `_GLOB_IGNORE_RE`。每个目录项只 1 次 set 查 + 1 次 regex。
+- **二进制守卫** `is_binary_file(path, sniff=8192)`:读前 8192 字节,**含 NUL(`\0`)** 或 **非 UTF-8**(fatal decode 失败)即判二进制(双保险,借 omp `binary.ts` + deer-flow `is_binary_file`);`OSError` 时 fail-closed(当二进制跳过)。
+- **大文件守卫** `DEFAULT_MAX_FILE_SIZE_BYTES = 1_000_000`(1MB,借 deer-flow):超限跳过该文件。
+- **ReDoS 守卫** `_max_line_chars = 2000`(借 deer-flow):超过的行直接 skip,防 minified/无换行文件把正则拖进灾难回溯。
+- **行截断** `truncate_line(line, limit=200)`:超长行尾部 `...`(借 deer-flow + omp `truncate_line`)。
+- **symlink 守卫**:跳过 symlink;`resolve()` 后必须仍在 root 下(`is_relative_to`),防符号链接逃逸(借 deer-flow)。
+- **正则回退链**(借 omp `grep.rs:987-1055` 的"搜索永不整次失败"思想):`re.compile(pattern)` → 失败则尝试未闭合括号自动转义重试 → 最终 `re.escape` 降级为字面匹配。**保证一条坏正则不会让整个搜索炸掉。**
+
+**核心循环** `find_grep_matches(root, pattern, *, glob, literal, case_sensitive, max_results)`(借 deer-flow `find_grep_matches`):`os.walk` 遍历 → 先 prune 黑名单目录(`dirs[:] = [...]`)→ 按 glob 过滤候选文件 → 跳过二进制/超大 → UTF-8 逐行正则搜 → 命中追加 `GrepMatch(path, lineno, line)` → 到 `max_results` 立即返回 `truncated=True`。
+
+**输出格式**(借 deer-flow `_format_grep_results`,LLM 友好):
+```
+Found 3 matches under /repo/src
+src/a.c:42:   disconnect_cb(dev);
+src/a.c:108:  register(DISCONNECT, disconnect_cb);
+src/b.c:7:    void disconnect_cb(struct device *d) {
+Results truncated. Narrow the path or add a glob filter.   ← 仅截断时
+```
+
+### 4.3 grep 升级(`Sandbox.grep` + `grep_tool`)
+
+> **面向小白**:P0 的 grep 是"字面子串、啥都扫、二进制也硬读"(local.py 现状:`pattern in line` + `errors="ignore"`)。升级成"正则、跳过垃圾目录/二进制/超大文件、有结果上限"。
+
+- **引擎层**:`Sandbox.grep()`(base.py 接口签名不变,local.py 改实现)改为调用 `_search.find_grep_matches`,从"字面子串"升级到"正则 + ignore + 二进制/大小/ReDoS 守卫 + max_results"。
+- **工具层** `grep_tool`(新增,暴露成 agent @tool,目前 grep 只能经 bash 调):
+```python
+@tool("grep", parse_docstring=True)
+def grep_tool(description, pattern, path, glob=None, literal=False,
+              case_sensitive=False, max_results=100) -> str:
+    """正则搜索文件内容(默认大小写不敏感、走内建 ignore)。literal=True 走字面。
+    返回 'path:line: content'。命中过多会截断并提示收窄 path/glob。"""
+```
+  - 参数三件套 `literal`/`case_sensitive`/`glob` 直对标 deer-flow `grep_tool`;`max_results` 双重 clamp(调用者 vs 硬上限 500,借 deer-flow `_MAX_GREP_MAX_RESULTS`)。
+- **FS 扫描缓存**(借 omp `pi-walker` cache):TTL 1s + 空结果 200ms 重检 + 写后失效。**P1.4 先做无缓存版**(correctness 优先),缓存记 [backlog #1](../../.claude/memory/backlog-production-grade.md)。
+
+### 4.4 read 升级:tree-sitter BFS 摘要 + elision footer
+
+> **面向小白**:让 agent 读一个大 `.c`/`.py` 时,默认**别把全文糊它脸上**——先给一张"大纲"(函数/类的签名 + docstring 留着,函数体折叠成一行省略号),末尾告诉它"第 42-80 行被折叠了,想看就用 `read_file(start_line=42, end_line=80)` 捞回来"。这就是 omp 的 `read` 无 selector 自动摘要。
+
+**触发规则**(分层,保可恢复性):
+1. 给了 `start_line`/`end_line` → **走原文 verbatim**(当前行为,绕过摘要)。
+2. 没给行范围 + 文件是**可解析代码** + 行数过阈值(如 >50 行)→ **BFS 摘要 + elision footer**。
+3. 散文(md/txt)/ 小文件 → 当前 head-truncate(50000 字符)。
+4. 二进制 → 守卫拦下(§4.7)。
+
+**BFS 摘要** `services/code_index/outline.py`(新,复用 P1.0 parser):
+- **elidable spans = 每个 Symbol 的函数/类/方法体**(直接拿 parser 的 `start_line/end_line`,**Symbol 粒度**;omp 是 AST 每 elidable 节点更细,语句级折叠记 [backlog #6](../../.claude/memory/backlog-production-grade.md))。模块级代码(import/全局/`if __name__`)留全文。
+- **BFS unfold**(借 omp `select_folded_spans`,summary.rs:118-162):初始所有符号体折叠 → 广度优先逐个展开,直到"可见行数 ≥ 目标 50"(硬上限 100)。**关键边界**:若展开某符号会让可见行超硬上限,**跳过它但继续处理兄弟**(借 omp summary.rs:150-152,防单个超大函数饿死整个大纲)。
+- **解析失败/无 grammar**:回退 head-truncate(借 omp `unparsed_result`)。
+
+**elision footer**(借 omp `formatSummaryElisionFooter`,issue #1046——没它模型会瞎猜或全文重读):
+```
+…[已折叠 128 行;如需细读用 read_file 取这些范围:start_line=42 end_line=80, start_line=108 end_line=160] …
+```
+**给真实被折叠的范围当例子**(取前 2 段),引导模型只捞需要的,而非全文重读。
+
+### 4.5 `grep_symbol` / `read_function`(借 parser,deer-flow/omp 没有的增量)
+
+> **面向小白**:这两个工具直接用 P1.0 的 parser(已经在抽符号了),不需要 LanceDB 索引——**就算没建索引也能用**,是纯结构导航。
+
+```python
+@tool("grep_symbol", parse_docstring=True)
+def grep_symbol_tool(description, name, path=None, regex=False, max_results=50) -> str:
+    """按名字(或正则)找符号定义——function/class/method 在哪个 file:line。
+    返回 'file:start_line  kind  qualified_name  signature'。"""
+
+@tool("read_function", parse_docstring=True)
+def read_function_tool(description, symbol, file) -> str:
+    """读一个符号(函数/类/方法)的完整定义体 + 元数据(签名/docstring/行范围/kind)。
+    file 用 grep_symbol 拿到的路径;symbol 给 qualified_name 精确匹配。"""
+```
+
+- **实现**:`grep_symbol` → parse 文件(带 mtime 缓存)→ 过滤 name 匹配的 Symbol → 输出 `file:line  kind  qualified  signature`。`read_function` → parse 那个文件 → 按 qualified_name 定位 Symbol → 切 `[start_line, end_line]` 原文 + 元数据头。**不依赖索引**,parse 慢则记 backlog 用 LanceDB FTS 加速。
+- **为什么 omp/deer-flow 没这俩**:omp 把它们折进 `read`(无 selector = 大纲,带 selector = 读体)和 `ast_grep`(结构搜);deer-flow 让模型自己用 grep + 正则 `def xxx`。Hyperion 单列两个工具**对 agent 更直白**(显式 > 隐式),且复用现成 parser,零额外成本。
+
+### 4.6 `search_code`(包 P1.3 `retrieve`,语义层)
+
+> **面向小白**:这是把 P1.3 的混合检索(BM25+向量+RRF+rerank)暴露成工具。agent 问"断连处理在哪",它返回最相关的几块代码。
+
+```python
+@tool("search_code", parse_docstring=True)
+def search_code_tool(description, query, top_k=5) -> str:
+    """语义搜索代码:自然语言查询 → 混合检索 → top-k 代码块(file:line + score + 代码片段)。"""
+```
+
+- **依赖装配**(`_retrieval_bundle()`,模块级 `lru_cache` 单例):从 `AppConfig.code_index` 建 `create_embedder` + `LanceDBStore(cfg.vector_store.path)` + `create_reranker`(可 None)——**懒构造、只建一次**(镜像 sandbox 工具的 `_sandbox()` 模式)。
+- **repo 解析**:新增 `code_index.repo` 配置字段(显式);缺省回退 `workspace` 目录名。必须与 `build_index` 用的 repo 名一致(否则查空表)。
+- **前置**:表必须已建(`uv run hyperion index <repo> <path>`,见 §4.9);未建 → 返回提示"先建索引"。
+- **降级**:reranker 失败 `retrieve` 已内置降级(§2.5);整表缺失 → 工具返回可操作错误,不抛异常(借 deer-flow "错误返串不抛")。
+
+### 4.7 二进制守卫(横切,read/grep 共用)
+
+> **面向小白**:防止 agent 一不小心 `read_file` 一个 `.o`/`.png`,把终端刷乱码、把几万字节二进制塞进 context。
+
+- `is_probably_binary(path, sniff=8192)`(放 `_search.py`):前 8192 字节含 NUL **或** fatal UTF-8 decode 失败 → 二进制;`OSError` → fail-closed 当二进制。
+- read 命中二进制 → 返回可操作错误(借 deer-flow `test_read_file_tool_binary.py` 锁定的文案,含 "binary" + 指向 bash):
+  `错误:'xxx.o' 是二进制文件,read_file 只支持 UTF-8 文本。用 bash 工具查看(如 xxd/file),或后续 :raw 逃生舱(backlog)。`
+- omp 的 `:raw` 逃生舱(绕过守卫读原始字节)记 backlog;P1.4 用 bash 兜底。
+
+### 4.8 声明式接入(`config.yaml`)
+
+`config.yaml -> tools` 追加 4 条(registry 反射加载,P0 已验证):
+```yaml
+  - { name: grep_symbol,  group: code,      use: hyperion.tools.code_nav:grep_symbol_tool }
+  - { name: read_function,group: code,      use: hyperion.tools.code_nav:read_function_tool }
+  - { name: search_code,  group: code,      use: hyperion.tools.code_nav:search_code_tool }
+  - { name: grep,         group: file:read, use: hyperion.tools.sandbox:grep_tool }
+```
+`code_index` 段加 `repo:` 字段(显式 repo 名);`read_file` 已在 tools 里(升级,不改 name)。
+
+### 4.9 退出标准 + 验证
+
+| # | 标准 | 验证方式 |
+|---|---|---|
+| 1 | `grep_symbol("retrieve")` 命中 `retrieval.py` 的定义 | `uv run hyperion tools` 列出工具 + demo 调用 |
+| 2 | `read_function("retrieve",".../retrieval.py")` 返回完整函数体 | demo 调用 |
+| 3 | `search_code("混合检索")` 返回 retrieval.py 相关 chunk | demo 调用(需先 `hyperion index`) |
+| 4 | `grep("disconnect_cb", src)` 正则生效、跳过 .git/二进制 | demo + 对比 P0 字面 grep |
+| 5 | `read_file` 大文件出 BFS 摘要 + 真实范围 footer;带行范围出原文 | demo 双路径 |
+| 6 | 二进制文件被守卫拦下,返回可操作错误 | `read_file` 一个 .pyc |
+
+**实测结果(2026-07-28,全绿)**:`hyperion tools` 列出 9 个工具全 ✓;`grep_symbol('retrieve')`→retrieval.py:236;`read_function` 出完整函数体+元数据;`search_code('混合检索 RRF')`→hybrid+rerank top-3(store.py hybrid_search, score 0.74);`grep` 正则命中 2 处且跳过 `__pycache__`;`read_file` 大文件出 BFS 摘要+真实范围 footer、带行范围出原文;二进制(`.pyc`)被守卫拦下。`hyperion index src/hyperion hyperion` 增量 58 chunk。
+
+**CLI(已成)**:`uv run hyperion index <repo_path> [repo_name] [--force]`(建/更新索引)、`uv run hyperion tools [--group X]`(列工具,✓/✗ 标加载结果)。
+
+### 4.10 借鉴对照(file:line 出处)
+
+| 设计点 | 借鉴源 | Hyperion 落点 |
+|---|---|---|
+| 搜索内核(IGNORE_PATTERNS/is_binary_file/max_size/ReDoS/truncate_line/symlink/os.walk+prune) | deer-flow `sandbox/search.py`(全文) | `_search.py` |
+| grep 工具参数(literal/case_sensitive/glob/max_results clamp)+ 输出格式 `path:line:` | deer-flow `sandbox/tools.py:grep_tool` + `_format_grep_results` | `grep_tool` |
+| read head-truncate + marker 内嵌下一步提示 | deer-flow `_truncate_read_file_output` | `read_file` verbatim 路径 |
+| 正则回退链(compile→括号修复→escape 字面,搜索永不失败) | omp `grep.rs:987-1055` | `_search._compile_pattern` |
+| 二进制双保险(NUL + fatal UTF-8,8192 sniff) | omp `binary.ts` + deer-flow `is_binary_file` | `is_probably_binary` |
+| BFS unfold(select_folded_spans,超限跳过继续兄弟) | omp `summary.rs:118-162` | `outline.summarize` |
+| elision footer 给真实范围(issue #1046) | omp `read.ts:385-399` | `read_file` 摘要路径 |
+| 错误返串不抛 + 可操作错误文案 | deer-flow `test_read_file_tool_binary.py` | 全部工具 |
+| grep_symbol / read_function(显式符号工具) | **Hyperion 增量**(复用 P1.0 parser;omp 折进 read/ast_grep,deer-flow 无) | `code_nav.py` |
+
+### 4.11 生产级补齐(记 backlog,不在 P1.4 做)
+
+- grep 用 ripgrep(`subprocess rg` 或 `pyre2`/`regex` 库)替纯 `re`:大仓性能 [backlog #1]。
+- `.gitignore`/`.hyperionignore` 解析(替硬编码黑名单):`pathspec` 库 [backlog #1]。
+- ast-grep 式**结构化 AST 搜索**(omp `signature` 档):替 `grep_symbol` 的名匹配 [backlog #28]。
+- 语句级折叠(omp 每 elidable 节点,非 Symbol 粒度) [backlog #6]。
+- FS 扫描缓存(TTL 1s + 空结果 200ms + 写后失效)+ `.gitignore` 解析 [backlog #1 / #30]。
+- model 文本 vs display 双轨(给 LLM 的可被工具反向解析) [backlog #29,P2 Hashline 一起]。
+- `:raw` 逃生舱 + 结果分页 `skip` [backlog #30]。
 
 ---
 
@@ -260,6 +435,7 @@ res = (tbl.search(query_type="hybrid", vector_column_name="vector", fts_columns=
 
 ```yaml
 code_index:
+  repo: hyperion                       # P1.4:search_code 查的表名(须与 build_index 一致;缺省回退 workspace 目录名)
   embedding:                           # embed.py(P1.2 已落地:远端 OpenAI 兼容默认)
     provider: openai_compatible        # 远端默认(免下载/免 torch);本地可选 sentence_transformers
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -283,10 +459,11 @@ code_index:
     model: qwen3-rerank
     rerank_top_n: 5
 
-tools:                                 # P1.4 追加 3 条导航工具
-  - { name: grep_symbol,  group: code, use: hyperion.tools.code_nav:grep_symbol_tool }
-  - { name: read_function, group: code, use: hyperion.tools.code_nav:read_function_tool }
-  - { name: search_code,  group: code, use: hyperion.tools.code_nav:search_code_tool }
+tools:                                 # P1.4 追加 4 条(grep_symbol/read_function/search_code + grep);read_file 已在(升级不改名)
+  - { name: grep_symbol,  group: code,      use: hyperion.tools.code_nav:grep_symbol_tool }
+  - { name: read_function,group: code,      use: hyperion.tools.code_nav:read_function_tool }
+  - { name: search_code,  group: code,      use: hyperion.tools.code_nav:search_code_tool }
+  - { name: grep,         group: file:read, use: hyperion.tools.sandbox:grep_tool }
 ```
 
 ---
@@ -304,8 +481,16 @@ src/hyperion/services/code_index/
 ├── retrieval.py     # [P1.3 已成]  混合检索(BM25+向量+RRF+rerank)
 └── eval/            # [P1.3 已成]  scorer.py(指标)+ runner.py(harness)
 # 待做:
-├── (code_nav 工具)  # [P1.4]  src/hyperion/tools/code_nav.py:grep_symbol/read_function/search_code
+├── outline.py       # [P1.4 已成]  tree-sitter BFS 摘要 + elision footer(复用 parser,§4.4)
 └── (lsp)            # [P1.5]  src/hyperion/services/code_nav/lsp.py(暂定):clangd 经 multilspy
+```
+
+P1.4 还涉及另两处(不在 services/code_index/ 下):
+```
+src/hyperion/tools/code_nav.py            # [P1.4 已成] grep_symbol / read_function / search_code + _retrieval_bundle
+src/hyperion/tools/sandbox.py             # [P1.4 已成] read_file 升级(BFS 摘要)+ 新增 grep_tool
+src/hyperion/platform/sandbox/_search.py  # [P1.4 已成] 搜索内核(IGNORE_PATTERNS/is_probably_binary/find_grep_matches)
+src/hyperion/platform/sandbox/local.py    # [P1.4 已成] grep() 用 _search 内核;read_file() 加二进制守卫
 ```
 
 > 注:`code_graph.py`(原 P1.5 计划)**不建**——caller/callee 由 LSP 提供(§5);`repo_map.py`(Aider 式)**延后**记 backlog。
@@ -341,6 +526,10 @@ src/hyperion/services/code_index/
 | 9 | 评测行级映射 + 多指标 + 难度分层,弃单指标 0.6 | 单指标偏进取;行级映射独立于检索系统 | §3 |
 | 10 | **P1.5 弃 code_graph,改 LSP/clangd** | clangd 取代自建调用图(绕开 C 三墙);图算法降级到 repo_map 延后 | §5 + [演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md) |
 | 11 | **三层栈**:vector(L1)→LSP(L2)→DAP(L3),叠加非替代 | L2/L3 建在 L1 上;ChatDBG/omp 学术+工业印证 | §0 + [演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md) |
+| 12 | **P1.4 搜索内核用纯 `re`**,不用 ripgrep | 零新系统依赖、Python 可移植、deer-flow `search.py` 已验证;大仓性能升级(rg subprocess)记 backlog | §4.2 + [backlog #1](../../.claude/memory/backlog-production-grade.md) |
+| 13 | **grep_symbol / read_function 单列显式工具**(不学 omp 折进 read/ast_grep) | 复用现成 parser 零成本;显式工具对 agent 更直白(不依赖模型记得"无 selector=大纲"隐式约定) | §4.5 |
+| 14 | **read BFS 摘要用 Symbol 粒度**(不学 omp 每 AST 节点) | 直接复用 P1.0 parser 的 start/end_line;语句级折叠更细但收益递减,记 backlog | §4.4 + [backlog #6](../../.claude/memory/backlog-production-grade.md) |
+| 15 | **二进制守卫双保险**(NUL + fatal UTF-8,8192B),`:raw` 延后 | omp `binary.ts` + deer-flow 双印证;P1.4 用 bash 兜底,`:raw` 逃生舱记 backlog | §4.7 |
 
 ---
 

@@ -186,6 +186,82 @@ def _create_indexes(tbl: Any) -> None:
 
 
 
+##  src/hyperion/tools/code_nav.py
+
+类型报错:`无法访问类「Sandbox」的属性「workspace」`
+
+> 场景:`code_nav.py` 的 `_workspace()` 里写 `get_sandbox_provider().get_sandbox().workspace`,Pylance 报红。
+
+1. 一句话总结
+
+`get_sandbox()` 的**返回类型标注是抽象基类 `Sandbox`**,而 `workspace` 只在**子类 `LocalSandbox`** 上才有;类型检查器只认"标注",不认"实际对象",所以报"属性未知"。**运行时不报错**,因为实际返回的就是 `LocalSandbox`。
+
+2. 前因:为什么会这样
+
+涉及的三层类(代码关系)
+
+```
+Sandbox            ← 抽象基类(ABC),base.py。只有 @abstractmethod
+  ↑ 继承
+LocalSandbox       ← 具体实现,local.py。__init__ 里 self.workspace = ...
+```
+
+- **`Sandbox`(抽象基类)** = 一份**「岗位招聘启事」**:只规定"干这岗必须会 `execute_command`/`read_file`/`grep`……"(那些 `@abstractmethod`)。**启事上没写**"这人带一个叫 `workspace` 的口袋"。
+- **`LocalSandbox`(具体实现)** = **真正上岗的人**,身上**确实**有个 `workspace` 口袋(`__init__` 里 `self.workspace = workspace` 装进去)。
+- **`get_sandbox()`** 的函数签名是 `def get_sandbox(self) -> Sandbox`——返回类型标的是**抽象基类**,意思是"我只按招聘启事保证他会那些技能"。
+
+报错链条
+
+`get_sandbox().workspace` → 检查器看 `get_sandbox()` 的返回类型 = `Sandbox` → 翻 `Sandbox` 的"启事",找不到 `workspace` → 报:**"属性未知"**。
+
+3. 后果:静态报错 ≠ 运行报错
+
+|                       | 看什么                            | 结果            |
+| --------------------- | --------------------------------- | --------------- |
+| **静态检查(Pylance)** | 纸面**标注**(返回类型 `Sandbox`)  | ❌ 报红          |
+| **运行时**            | 实际**对象**(`LocalSandbox` 实例) | ✅ 正常,口袋真在 |
+
+> **关键认知:静态检查看「说明书」,运行时看「实物」。说明书没写,静态就报警——哪怕实物真有。**
+>
+> 所以这条报错**不会让程序崩**,但会:(a) IDE 满眼红线、(b) 挡住"类型干净"的标准、(c) 若用 `get_sandbox_provider` 仅为拿 workspace,改完后这个 import 还会变 ruff 未使用导入(F401)。
+
+4. 两种修法对比
+
+✅ 方案 A(采用):从 config 读,不摸实例的口袋
+
+```python
+# 改前
+from hyperion.platform.sandbox import get_sandbox_provider
+def _workspace() -> Path:
+    return Path(get_sandbox_provider().get_sandbox().workspace)  # ← 报红
+
+# 改后
+from hyperion.platform.config import get_app_config
+def _workspace() -> Path:
+    return Path(get_app_config().sandbox.workspace)              # ← 干净
+```
+
+**为什么值一样**:`provider.py` 造 `LocalSandbox` 时,本来就是把 `cfg.sandbox.workspace` 塞进口袋的——读 config 拿到的是**同一个值**。
+
+❌ 方案 B(否决):在抽象基类补一条 `workspace: Path`
+
+```python
+class Sandbox(ABC):
+    workspace: Path   # 给基类加个声明
+```
+
+**为什么否决**:这样会把"沙箱一定有个本地工作区口袋"这个**本地假设**写进**通用契约**。将来 P6 的 Docker 沙箱别扭——它的"口袋"是容器里的虚拟路径(`/mnt/user-data`),跟宿主真实路径不是一回事(deer-flow 专门搞 `PathMapping` 虚拟路径就是为了这个)。**启事上写死"有个本地 workspace"反而碍事**。
+
+5. 提炼的知识点
+
+1. **抽象基类(ABC)** 是"契约/招聘启事",只规定子类**必须实现什么**;子类可以有自己的额外属性,但那是子类的私事,基类不背书。
+2. **函数返回类型标注** 决定了调用方"能看到什么"。标 `-> Sandbox`,调用方就只能看到 `Sandbox` 契约里的东西,**哪怕实际返回的是子类**。
+3. **静态 vs 运行时**:类型检查器只读标注(静态),不跑代码;所以"静态报警、运行正常"是常见现象,不能因为能跑就无视红线。
+4. **修类型问题的两条路**:① 改标注/加声明让契约诚实(方案 B);② 换一条不依赖该属性的路(方案 A)。**选哪条要看语义**——这里 `workspace` 本质是"配置层的宿主路径",不该赖在沙箱实例身上,所以 A 更准。
+5. **依赖方向**:工具层(`tools/`)拿工作区,应走**配置层**(`platform.config`),而不是去抠**沙箱实例**的内部属性——这也符合"配置是单一真相源"。
+
+
+
 # 项目框架
 
 ### **src/hyperion/services/code_index/parser.py**：拿着代码文件，用 Tree-sitter 解析出**符号卡片（Symbol）**。

@@ -170,13 +170,25 @@ class LocalSandbox(Sandbox):
         start_line: int | None = None,
         end_line: int | None = None,
     ) -> str:
+        from hyperion.platform.sandbox._search import is_probably_binary
+        # 二进制守卫:放最前,挡 .o/.so/.png 等(NUL 或非 UTF-8 即拒,指向 bash)
+        try:
+            if is_probably_binary(Path(path)):
+                return (f"错误:'{path}' 是二进制文件,read_file 只支持 UTF-8 文本。"
+                        f"用 bash 工具查看(如 `file {path}` 或 `xxd {path}`)。")
+        except FileNotFoundError:
+            return f"错误:文件不存在: {path}"
+        except OSError:
+            pass  # 守卫本身读不了 → 交给下面 open 的异常处理
+
         try:
             with open(path, encoding="utf-8") as f:
                 text = f.read()
         except FileNotFoundError:
             return f"错误:文件不存在: {path}"
         except UnicodeDecodeError:
-            return f"{path} 不是文本(可能是二进制/图片),请改用 bash 工具查看。"
+            return (f"错误:'{path}' 不是有效 UTF-8(可能是二进制),read_file 只支持文本。"
+                    f"用 bash 工具查看。")
 
         # 可选行范围(1-indexed,闭区间)
         if start_line is not None or end_line is not None:
@@ -231,16 +243,7 @@ class LocalSandbox(Sandbox):
         return results
 
     def grep(self, path: str, pattern: str, *, max_results: int = 100) -> list[str]:
-        base = Path(path)
-        results: list[str] = []
-        for p in _iter_files(base):
-            try:
-                with open(p, encoding="utf-8", errors="ignore") as f:
-                    for lineno, line in enumerate(f, 1):
-                        if pattern in line:  # 字面子串匹配(P0 不做正则)
-                            results.append(f"{p}:{lineno}: {line.rstrip()}")
-                            if len(results) >= max_results:
-                                return results
-            except OSError:
-                continue
-        return results
+        """在 path 下做行级搜索(正则 + 内建 ignore + 二进制/大小守卫)。返回 'path:line: content'。"""
+        from hyperion.platform.sandbox._search import find_grep_matches
+        res = find_grep_matches(Path(path), pattern, max_results=max_results)
+        return [f"{m.path}:{m.line}: {m.content}" for m in res.matches]

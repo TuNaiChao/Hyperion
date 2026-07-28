@@ -1,8 +1,10 @@
 """Hyperion CLI 入口(`uv run hyperion ...`)。
 
 子命令:
-  hyperion models            列出 config.yaml 中配置的模型
-  hyperion run "问题"        跑一次 demo agent(P0)
+  hyperion models                列出 config.yaml 中配置的模型
+  hyperion run "问题"            跑一次 demo agent(P0)
+  hyperion index <path> [name]   为一个代码仓库建/更新向量索引(P1)
+  hyperion tools [--group X]     列出已加载的 agent 工具(验证声明式加载)
 """
 
 from __future__ import annotations
@@ -62,6 +64,56 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_index(args) -> int:
+    """为一个代码仓库建/更新向量索引(P1 代码理解服务)。
+
+    用法:hyperion index <repo_path> [repo_name]
+    例:hyperion index src/hyperion hyperion
+       hyperion index ~/src/bluez bluez --force
+    没给 repo_name → 用 repo_path 的目录名。⚠️ repo_name 必须和 config.code_index.repo
+    (search_code 查的表名)一致,否则 search_code 会查空表。
+    """
+    from pathlib import Path
+
+    from hyperion.services.code_index.embed import create_embedder
+    from hyperion.services.code_index.index import build_index
+
+    cfg = get_app_config()
+    repo_path = Path(args.repo_path)
+    if not repo_path.exists():
+        print(f"错误:路径不存在: {repo_path}", file=sys.stderr)
+        return 1
+    repo_name = args.repo_name or repo_path.resolve().name
+    vs_path = getattr(getattr(cfg.code_index, "vector_store", None), "path", "data/code_index")
+
+    embedder = create_embedder(cfg.code_index.embedding)
+    stats = build_index(repo_path, repo_name, embedder, vs_path, force=args.force)
+    n = stats.get("indexed", stats.get("total_chunks", "?"))
+    print(f"索引完成 [{stats.get('mode')}]:{repo_name}  {n} chunk  "
+          f"commit={stats.get('repo_commit', '-')[:10]}")
+    return 0
+
+
+def cmd_tools(args) -> int:
+    """列出 config.yaml 声明、registry 实际加载的 agent 工具(✓ 加载成功 / ✗ 失败)。"""
+    from hyperion.tools.registry import get_available_tools
+
+    cfg = get_app_config()
+    try:
+        tools = get_available_tools()  # 触发反射加载,加载不了会在这抛
+    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
+        print(f"错误:工具加载失败: {e}", file=sys.stderr)
+        return 1
+    loaded = {t.name for t in tools}
+    rows = [tc for tc in cfg.tools if not args.group or tc.group == args.group]
+    if not rows:
+        print(f"(没有 group={args.group} 的工具)" if args.group else "(config.yaml 未声明工具)")
+        return 1
+    for tc in rows:
+        print(f"{'✓' if tc.name in loaded else '✗'} {tc.name:16} [{tc.group}]")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -77,6 +129,17 @@ def main(argv: list[str] | None = None) -> int:
     sub_run.add_argument("--model", default=None, help="指定模型名(默认走 role 路由)")
     sub_run.add_argument("--role", default="default", help="模型角色(默认 default)")
     sub_run.set_defaults(func=cmd_run)
+
+    sub_index = sub.add_parser("index", help="为一个仓库建/更新向量索引")
+    sub_index.add_argument("repo_path", help="仓库根目录路径")
+    sub_index.add_argument("repo_name", nargs="?", default=None,
+                           help="索引名(默认取目录名;须与 code_index.repo 一致)")
+    sub_index.add_argument("--force", action="store_true", help="强制全量重建")
+    sub_index.set_defaults(func=cmd_index)
+
+    sub_tools = sub.add_parser("tools", help="列出已加载的 agent 工具")
+    sub_tools.add_argument("--group", default=None, help="只看某 group(如 code / file:read / sandbox)")
+    sub_tools.set_defaults(func=cmd_tools)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

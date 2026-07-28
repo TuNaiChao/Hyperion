@@ -83,6 +83,19 @@ tools:
   - name: ls
     group: file:read
     use: hyperion.tools.sandbox:ls_tool
+  # —— P1.4 代码导航工具 ——
+  - name: grep_symbol
+    group: code
+    use: hyperion.tools.code_nav:grep_symbol_tool
+  - name: read_function
+    group: code
+    use: hyperion.tools.code_nav:read_function_tool
+  - name: search_code
+    group: code
+    use: hyperion.tools.code_nav:search_code_tool
+  - name: grep
+    group: file:read
+    use: hyperion.tools.sandbox:grep_tool
 
 # 沙箱 provider + 参数(P0 本地沙箱;P6 换 Docker 时只改 use 即可)。
 sandbox:
@@ -96,6 +109,7 @@ sandbox:
 # 代码理解服务(P1 分阶段搭建,见 docs/p1-code-understanding-design.md)。
 # P1.2 先配 embedding;vector_store / retrieval / repo_map 随对应阶段补。
 code_index:
+  repo: hyperion                       # P1.4: search_code 查的表名(须与 build_index 一致;缺省回退 workspace 目录名)
   embedding:
     # provider 抽象(像模型工厂):
     #   openai_compatible = 远端 OpenAI 兼容 API(默认;免下载、免 torch,和调 chat 一样配 key)
