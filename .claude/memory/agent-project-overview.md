@@ -1,8 +1,11 @@
 ---
 name: agent-project-overview
 description: Hyperion 项目的目标、架构决策与设计文档位置
-metadata:
+metadata: 
+  node_type: memory
   type: project
+  originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
+  modified: 2026-07-29T01:56:10.176Z
 ---
 
 **项目名:Hyperion**(GitHub `TuNaiChao/Hyperion`,本地目录 `/home/tnc/Desktop/Agent/Hyperion`,Python 包名 `hyperion`)。tagline:*Light on every root cause.* 两台机开发:Linux + macOS,uv 管 Python、`scripts/setup.sh` 装系统工具、`.claude/memory/` 随 git 同步记忆。
@@ -19,7 +22,9 @@ metadata:
 
 设计文档:**[architecture.md](../../docs/设计/architecture.md)**(v2 总纲)+ [memory-design.md](../../docs/设计/memory-design.md) / [bug-rca-design.md](../../docs/设计/bug-rca-design.md) / [deep-research-design.md](../../docs/设计/deep-research-design.md) + [p1-code-understanding-design.md](../../docs/设计/p1-code-understanding-design.md)(code_index 已成层)。计划文件:`~/.claude/plans/crystalline-dazzling-ladybug.md`。
 
-**路线 R0–R5**(见 architecture.md §8):R0 规划落地(文档/裁剪)→ R1 记忆核心 → R2 ★bug-RCA MVP(对照 demo2 金标准)→ R3 代码仓深度调研(Aider repomap + 架构文档)→ R4 团队/多库 + PR 跟踪 + opencode 后端 → R5 生产化。
+**路线 R0–R5**(见 architecture.md §8):R0 ✅规划落地 → **R1 ✅记忆核心(2026-07-29)** [MemoryService ABC + native 后端(SQLite+FTS5+向量,组合 code_index 语义 + code-review-graph 结构可选)+ memorize/recall/consolidate + mnemopi 式 Bayes 合并/bi-temporal 软删 + memory @tool + MCP server(反向:delegate 查 Hyperion)+ CLI `hyperion memory|mcp`;8 离线测试绿;DeepSeek 抽取+DashScope 向量/rerank 全链验通] → R2 ★bug-RCA MVP(对照 demo2 金标准)→ R3 代码仓深度调研(Aider repomap + 架构文档)→ R4 团队/多库 + PR 跟踪 + opencode 后端 → R5 生产化。
+
+**R1 deferred(记 backlog)**:CRG 结构路实测(待装 extra + tree-sitter-c 给 wpa/bluez,R3);Weibull 衰减(生产跑 exp halflife);CJK BM25 分词(jieba);本地 ONNX 向量档。
 
 核心约束(易忘、非代码可见):
 - **参考实现(只读,.gitignore,各自 clone)**:`deer-flow/`(架构主脊 + Reporter + MemoryManager ABC)、`oh-my-pi/`(委托目标 omp + mnemopi 记忆件)、`code-review-graph/`(结构图引擎,blast-radius/架构地图)。其它高星参考见 architecture.md §10(aider/agentless/swe-agent/openhands 等)。

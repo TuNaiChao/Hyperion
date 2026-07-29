@@ -33,10 +33,10 @@ Hyperion/
 │   ├── platform/     # ✅ Harness(已实现):模型工厂 / 配置 / 反射 / 沙箱 / 可观测 / demo agent
 │   ├── services/
 │   │   ├── code_index/  # ✅ 代码理解(已实现 P1.0–P1.5):parser/chunker/embed/store/retrieval/index/lsp/outline/eval
-│   │   └── memory/      # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
+│   │   └── memory/      # ✅ 记忆核心(R1 已实现):MemoryService 契约 + native 后端(SQLite+FTS5+向量)+ tools/mcp
 │   ├── workflows/    # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
-│   ├── tools/        # ✅ 导航/沙箱工具(已实现 12 个)+ 🆕 委托接口 delegate + memory 工具
-│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp 已实现;🆕 R1+ 加 memory/bug-rca/research)
+│   ├── tools/        # ✅ 导航/沙箱工具(12 个)+ memory 工具(R1)+ 🆕 委托 delegate(R2)
+│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp/memory/mcp 已实现;🆕 R2+ 加 bug-rca/research)
 ├── config/           # config.yaml(模型/工具/记忆/委托 声明式)+ extensions_config.json(MCP/skills)
 ├── docs/             # 已完成/ · 调研/ · 设计/(architecture + memory/bug-rca/deep-research + p1-code-understanding)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
@@ -76,6 +76,6 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 ## 路线(v2,2026-07-28 重规划)
 
-**R0** 规划落地(文档/裁剪)→ **R1** 记忆核心(MemoryService + native 后端 code_index+code-review-graph)→ **R2** ★bug-RCA MVP(委托 omp,对照 demo2 金标准)→ **R3** 代码仓深度调研(Aider repomap + 出架构文档)→ **R4** 团队/多库 + PR 跟踪 + opencode 后端 → **R5** 生产化。详见 [architecture.md §8](docs/设计/architecture.md)。
+**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ★bug-RCA MVP(委托 omp,对照 demo2 金标准)→ **R3** 代码仓深度调研(Aider repomap + 出架构文档)→ **R4** 团队/多库 + PR 跟踪 + opencode 后端 → **R5** 生产化。详见 [architecture.md §8](docs/设计/architecture.md)。
 
 **三锁定决策:** ① 记忆 = 自有 MemoryService 契约 + v1 native 后端(组合 code_index+code-review-graph),cognee/mem0 可换;② bug-RCA 委托给 coding agent,抽象 `CodingAgentDelegate`,v1 默认 omp,opencode 可换;③ MVP 先 bug-RCA。详见各设计文档。

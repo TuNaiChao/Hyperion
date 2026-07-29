@@ -199,7 +199,7 @@ def create_reranker(cfg) -> Reranker | None:
     if provider in _SHAPES:
         shape, default_url, default_model = _SHAPES[provider]
         return RemoteReranker(
-            base_url=get("base_url", default_url),
+            base_url=get("base_url") or default_url,
             api_key=get("api_key") or "",
             model=get("model", default_model),
             shape=shape,

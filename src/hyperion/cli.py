@@ -5,7 +5,11 @@
   hyperion run "问题"            跑一次 demo agent(P0)
   hyperion index <path> [name]   为一个代码仓库建/更新向量索引(P1)
   hyperion tools [--group X]     列出已加载的 agent 工具(验证声明式加载)
+  hyperion lsp health|refs ...   L2 精确导航(clangd)自检 / 冒烟(P1.5)
+  hyperion memory recall|add|list|consolidate|invalidate ...   记忆核心(R1)
+  hyperion mcp serve             MCP server(把记忆暴露给 delegate,R1)
 """
+
 
 from __future__ import annotations
 
@@ -162,6 +166,103 @@ def cmd_lsp(args) -> int:
     return 1
 
 
+def cmd_memory(args) -> int:
+    """记忆核心子命令(R1):recall 翻记忆 / add 记一条(或从报告抽)/ list / consolidate / invalidate。
+
+      hyperion memory recall "<query>" [--top-k N] [--repo X]
+      hyperion memory add --kind bug_lesson --summary "..." [--file F --line L] [--root-cause "..."]
+      hyperion memory add --from-report <报告.md> [--commit-sha SHA]
+      hyperion memory list [--kind K] [--include-invalid]
+      hyperion memory consolidate          # 巩固:升级 mental_model
+      hyperion memory invalidate <id>
+    """
+    import asyncio
+    from pathlib import Path
+
+    from hyperion.services.memory import get_memory_service
+    from hyperion.services.memory.schema import Scope
+
+    cfg = get_app_config()
+    repo = args.repo or getattr(cfg.code_index, "repo", None) or Path(cfg.sandbox.workspace).name
+    scope = Scope(owner="default", codebase=repo)
+    svc = get_memory_service()
+    sub = args.memory_cmd
+
+    if sub == "recall":
+        hits = asyncio.run(svc.recall(args.query, scope, top_k=args.top_k))
+        if not hits:
+            print(f"(记忆里没找到与 '{args.query}' 相关的历史教训/事实)")
+            return 0
+        print(f"检索到 {len(hits)} 条(按相关度降序):")
+        for h in hits:
+            print(h.render())
+        return 0
+
+    if sub == "add":
+        if args.from_report:
+            text = Path(args.from_report).read_text(encoding="utf-8")
+            try:
+                n = asyncio.run(svc.memorize_report(
+                    text, scope, repo=repo, commit_sha=args.commit_sha, source=args.from_report))
+            except NotImplementedError as e:
+                print(f"错误:当前 memory 后端不支持从报告抽取: {e}", file=sys.stderr)
+                return 2
+            print(f"从报告抽出并写入 {n} 条知识项(scope={repo})。")
+            return 0
+
+        from hyperion.services.memory.schema import Evidence, KnowledgeItem, SourceTier
+
+        if not args.summary:
+            print("错误:直接记一条需要 --summary(或用 --from-report 从报告抽)。", file=sys.stderr)
+            return 2
+        ev = [Evidence(file=args.file, line=args.line)] if args.file else []
+        item = KnowledgeItem(
+            kind=args.kind, repo=repo, scope=scope, summary=args.summary,
+            root_cause=args.root_cause or "", detail=args.detail or "", evidence=ev,
+            source="cli", source_tier=SourceTier.stated,
+        )
+        n = asyncio.run(svc.memorize([item], scope))
+        print(f"已记入(id={item.id}, kind={args.kind}, 合并/新增 {n} 条)。")
+        return 0
+
+    if sub == "list":
+        items = asyncio.run(svc.list_items(scope, kind=args.kind, include_invalid=args.include_invalid))
+        if not items:
+            print(f"(scope={repo} 无知识项)")
+            return 0
+        for it in items:
+            flag = "" if it.active else "  [失效]"
+            ev = f" @{it.evidence[0].file}:{it.evidence[0].line}" if it.evidence else ""
+            print(f"- [{it.kind}] {it.summary[:80]}{ev}  conf={it.confidence:.2f} acc={it.access_count}{flag}  ({it.id})")
+        return 0
+
+    if sub == "consolidate":
+        stats = asyncio.run(svc.consolidate(scope))
+        print(f"巩固完成:扫 {stats.get('scanned', 0)},升级 mental_model {stats.get('promoted', 0)}。")
+        return 0
+
+    if sub == "invalidate":
+        ok = asyncio.run(svc.invalidate(args.id, scope, reason=args.reason or ""))
+        print(f"{'已失效' if ok else '未找到/已失效'}: {args.id}")
+        return 0 if ok else 1
+
+    print(f"(未知 memory 子命令: {sub})", file=sys.stderr)
+    return 1
+
+
+def cmd_mcp(args) -> int:
+    """启动 MCP server(把记忆暴露给 delegate,stdio)。需 `uv sync --extra mcp`。"""
+    from hyperion.tools.mcp_memory import build_server
+
+    try:
+        server = build_server()
+    except ImportError as e:
+        print(f"错误:MCP 依赖未装。装它: uv sync --extra mcp\n  ({e})", file=sys.stderr)
+        return 2
+    server.run()  # 阻塞:stdio 循环,delegate 接入用
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -199,6 +300,39 @@ def main(argv: list[str] | None = None) -> int:
     sub_lsp_refs.add_argument("col", type=int, help="列号(1-based)")
     sub_lsp_refs.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
     sub_lsp.set_defaults(func=cmd_lsp)
+
+    sub_memory = sub.add_parser("memory", help="记忆核心:recall/add/list/consolidate/invalidate")
+    sub_memory_sub = sub_memory.add_subparsers(dest="memory_cmd", required=True)
+    m_recall = sub_memory_sub.add_parser("recall", help="翻记忆(多路召回)")
+    m_recall.add_argument("query", help="自然语言查询")
+    m_recall.add_argument("--top-k", type=int, default=5)
+    m_recall.add_argument("--repo", default=None, help="代码库(默认 config.code_index.repo)")
+    m_add = sub_memory_sub.add_parser("add", help="记一条(或 --from-report 从报告抽)")
+    m_add.add_argument("--kind", default="bug_lesson", choices=["bug_lesson", "codebase_fact"])
+    m_add.add_argument("--summary", default=None, help="一句话摘要(直接记时必填)")
+    m_add.add_argument("--root-cause", default="")
+    m_add.add_argument("--detail", default="")
+    m_add.add_argument("--file", default=None)
+    m_add.add_argument("--line", type=int, default=None)
+    m_add.add_argument("--from-report", default=None, help="从报告文件抽(走 LLM extract)")
+    m_add.add_argument("--commit-sha", default=None)
+    m_add.add_argument("--repo", default=None)
+    m_list = sub_memory_sub.add_parser("list", help="列知识项")
+    m_list.add_argument("--kind", default=None)
+    m_list.add_argument("--include-invalid", action="store_true")
+    m_list.add_argument("--repo", default=None)
+    m_consol = sub_memory_sub.add_parser("consolidate", help="巩固(升级 mental_model)")
+    m_consol.add_argument("--repo", default=None)
+    m_inv = sub_memory_sub.add_parser("invalidate", help="失效一条")
+    m_inv.add_argument("id")
+    m_inv.add_argument("--reason", default="")
+    m_inv.add_argument("--repo", default=None)
+    sub_memory.set_defaults(func=cmd_memory)
+
+    sub_mcp = sub.add_parser("mcp", help="MCP server(把记忆暴露给 delegate)")
+    sub_mcp_sub = sub_mcp.add_subparsers(dest="mcp_cmd", required=True)
+    sub_mcp_sub.add_parser("serve", help="启动 stdio MCP server")
+    sub_mcp.set_defaults(func=cmd_mcp)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

@@ -8,3 +8,5 @@
 - [注释面向小白](comment-style-beginner-friendly.md) — 注释/docstring 用大白话+类比讲清每个库的作用,别晦涩、别默认读者懂。
 - [Python语法.md 要提交](commit-python-syntax-notes.md) — 用户 2026-07-24 反转原约束,以后都随 git 提交(跨机同步优先)。
 - [oh-my-pi 调研与后续设计演进](oh-my-pi-research-and-design-evolution.md) — 2026-07-27 报告 + **v2 更正**:三层栈是用户心智模型(omp 三件未串成管线);记忆改自建 MemoryService(借 mnemopi 巩固),omp 同时是委托目标。
+- [DeepSeek 结构化产出踩坑](deepseek-structured-output-gotcha.md) — DeepSeek-v4-pro 思考模式不支持 tool_choice/response_format json_schema;结构化产出改"喂 Schema+直出 JSON+解析"(R2 委托契约同样适用)。embedding/rerank 走 DashScope 不是 DeepSeek。
+- [测试步骤+结果在窗口打印](show-test-steps-and-results-in-window.md) — 跑测试/验证时正文里写清"测了啥+期望+实际(绿/红)",不只甩 Bash 输出块。

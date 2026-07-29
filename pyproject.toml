@@ -40,6 +40,13 @@ providers = ["langchain-anthropic>=1.0", "langchain-ollama>=1.0"]
 mem0 = ["mem0ai>=0.1"]
 cognee = ["cognee>=0.1.20"]
 graphiti = ["graphiti-core>=0.10"]
+# MCP server(tools/mcp_memory.py):把记忆暴露给 delegate(omp/opencode)现场查。
+# 官方 mcp 包的 FastMCP(stdio)。`uv sync --extra mcp`。轻量(httpx/pydantic 已在核心依赖)。
+mcp = ["mcp>=1.2"]
+# code-review-graph(backends/native/structural.py):结构路 blast-radius。
+# 可选(structural: none 默认);重依赖(tree-sitter/networkx/igraph/watchdog)。
+# 只在要结构路时装:`uv sync --extra code-review-graph`。
+code-review-graph = ["code-review-graph[communities]>=2.3"]
 # 本地 embedding(P1.2 embed.py 的 LocalEmbedder):默认走远端 OpenAI 兼容 API
 # (DashScope / SiliconFlow,复用 langchain-openai,零新依赖、不装 torch);只有要离线 /
 # 数据不出本地时才装这套(会拉 torch ~800MB+)。`uv sync --extra embedding-local`。

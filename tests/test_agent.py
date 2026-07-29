@@ -8,6 +8,7 @@ from hyperion.platform.agent import build_demo_agent, build_middlewares
 def test_build_demo_agent_constructs_without_deprecation(monkeypatch):
     """构造出 CompiledStateGraph,且无 create_react_agent 弃用警告。"""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")  # 绕过构造期凭据校验
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")    # 默认模型 deepseek-v4-pro 用它
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         agent = build_demo_agent()

@@ -309,7 +309,7 @@ def create_embedder(cfg) -> Embedder:
 
     if provider == "openai_compatible":
         return RemoteEmbedder(
-            base_url=get("base_url", DEFAULT_BASE_URL),
+            base_url=get("base_url") or DEFAULT_BASE_URL,
             api_key=get("api_key") or "",
             model=get("model", DEFAULT_REMOTE_MODEL),
             dimensions=get("dimensions"),

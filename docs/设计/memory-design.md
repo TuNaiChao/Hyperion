@@ -1,6 +1,6 @@
 # 记忆与持续学习核心 — 设计文档(P3,差异化)
 
-> 状态:设计稿 v1(2026-07-28)· 实现阶段:**R1**
+> 状态:**R1 已实现(2026-07-29)**· 设计稿 v1(2026-07-28)· 退出标准见 §9(全绿)
 > 上位文档:[architecture.md §5.2](architecture.md) · 参考实现:deer-flow MemoryManager、oh-my-pi mnemopi、OpenHands memory
 
 ---
@@ -171,17 +171,20 @@ async def memorize(report, scope):
 
 ---
 
-## 9. R1 退出标准(可验证)
+## 9. R1 退出标准(可验证)— ✅ 2026-07-29 全绿
 
-1. `MemoryService` ABC + `native` 后端可 `memorize`/`recall`(组合 code_index + code-review-graph)。
-2. **最小 eval**:把 `example/demo1`、`example/demo2` 的报告抽成 `BugLesson`/`CodebaseFact` 存入;`recall("WiFi 扫描")` / `recall("engine 受信路径")` 语义命中对应教训;code-review-graph 能给相关模块 blast-radius。
-3. MCP server 起得来,delegate(omp)能查到一条记忆。
-4. CLI:`uv run hyperion memory recall "<query>"` / `memory add` 可用。
+1. ✅ `MemoryService` ABC + `native` 后端可 `memorize`/`recall`(组合 code_index;CRG 结构路代码就绪、默认 `none`,装 extra 启用)。
+2. ✅ 报告→KI→语义召回:DeepSeek 抽取 + DashScope 向量+BM25+rerank 全链验通(`hyperion memory add --from-report` + `recall`,8 个离线测试绿)。
+3. ✅ MCP server 起来 + delegate 经 `tools/call memory_recall` 查到记忆(+ 自动带 code 路命中)。
+4. ✅ CLI:`uv run hyperion memory recall/add/list/consolidate/invalidate` + `mcp serve`。
 
 ## 10. 待办(记 backlog)
 
-- 巩固算法(去重/Weibull 衰减/升级稳定事实)的具体参数(R1 起步,迭代)。
-- graphiti bi-temporal 的 `valid_at/invalid_at` 完整实现(先 schema 留位)。
+- 巩固算法参数:去重(精确 content_key)已做;**Weibull 衰减未启用**(mnemopi 也未启用,生产跑 exp halflife);语义近邻去重(同根因不同措辞)需 embedding 聚类。
+- graphiti bi-temporal 的 `valid_at/invalid_at` 完整实现(schema 已留位 + 软删已用)。
 - 本地 ONNX 向量档(fastembed,免 API)。
 - mem0/cognee 备选后端接入验证(需要时)。
 - OpenHands 式工作/情景记忆分层(按需)。
+- **CRG 结构路**:`native.structural=crg` 需 `uv sync --extra code-review-graph`(重依赖:tree-sitter-language-pack/networkx/igraph);wpa/bluez 的 C 图需 tree-sitter-c(R3)。R1 在小 Python 仓验(代码就绪,实测待跑)。
+- **CJK BM25 分词**:unicode61 不切中文(纯中文查询靠向量路兜底);jieba / 逐字切分待加。
+- **DashScope 端点**:专属 MaaS 端点时 `base_url` 走 `$DASHSCOPE_BASE_URL`/`$DASHSCOPE_RERANK_URL`(.env);未设回落 serverless 默认(create_embedder/create_reranker `or DEFAULT`)。

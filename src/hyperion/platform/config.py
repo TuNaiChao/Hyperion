@@ -124,6 +124,38 @@ class CodeIndexConfig(BaseModel):
     lsp: LSPConfig = Field(default_factory=LSPConfig)  # P1.5:L2 精确导航(clangd)
 
 
+class NativeMemoryConfig(BaseModel):
+    """native 后端的子旋钮(R1)。extra='allow' 给将来加的旋钮留口子。
+
+    面向小白:native 后端 = "组合已有两个引擎当记忆底座"。这几个旋钮控制它怎么组合——
+    要不要接结构图、要不要复用 code_index 的向量/重排、巩固参数多少。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    structural: str = "none"  # none(不接结构图)| crg(接 code-review-graph,需 --extra code-review-graph)
+    embed: str = "code_index"  # code_index(复用 embedder 给 KI summary 算向量)| off(只 BM25)
+    rerank: str = "code_index"  # code_index(复用 reranker 精排 recall)| off(只 RRF 融合)
+    recall_top_k: int = 5  # recall 默认返回条数
+    decay_halflife_days: float = 180.0  # 衰减半衰期(天):exp(-age/halflife);Weibull 留 backlog
+    promote_access_count: int = 3  # 被召回≥N 次 → 升级 mental_model(Letta 3+ 规则)
+    merge_step: float = 0.3  # 重提时 Bayes 置信度累加步长(mnemopi veracity)
+
+
+class MemoryConfig(BaseModel):
+    """记忆核心配置(R1,★P3 差异化)。对应 config.yaml 的 memory: 段。
+
+    后端可换(backend-swap):backend 名 = backends/<name>/ 文件夹名;也接受
+    'pkg.mod:Cls' 点路径。v1 只实现 native(组合 code_index + code-review-graph)。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    backend: str = "native"  # native | mem0 | cognee | 'pkg.mod:Cls'
+    store_path: str = "data/memory"  # native SQLite 落点
+    native: NativeMemoryConfig = Field(default_factory=NativeMemoryConfig)
+
+
 class AppConfig(BaseModel):
     """顶层配置(models / model_roles / tools / sandbox)。"""
 
@@ -134,6 +166,7 @@ class AppConfig(BaseModel):
     tools: list[ToolConfig] = Field(default_factory=list)  # 声明式工具列表
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)  # 沙箱 provider + 参数
     code_index: CodeIndexConfig = Field(default_factory=CodeIndexConfig)  # 代码理解服务(P1)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)  # 记忆核心(R1,P3 差异化)
 
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。
