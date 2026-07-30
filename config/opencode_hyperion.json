@@ -1,0 +1,33 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "hyperion-localize": {
+      "description": "Hyperion bug-RCA 定位阶段:只定位根因,禁补丁。到 steps 强制输出 JSON。",
+      "mode": "primary",
+      "steps": 12,
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "list": "allow"
+      },
+      "prompt": "你是 C/系统软件 bug 根因定位专家。用 read/grep/glob 工具读码,定位根因。**只定位,禁止写补丁、禁止改文件**。到步数限制时必须按 schema 输出 JSON(root_cause/trigger_chain/evidence/blast_radius_files),不要继续读文件。"
+    },
+    "hyperion-repair": {
+      "description": "Hyperion bug-RCA 修复阶段:根因已锁,写最小补丁。到 steps 强制输出 JSON。",
+      "mode": "primary",
+      "steps": 8,
+      "permission": {
+        "edit": "allow",
+        "bash": "deny",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "list": "allow"
+      },
+      "prompt": "你是 C/系统软件 bug 修复专家。根因已定位(直接信),基于根因 + 给定代码写最小补丁。禁止顺手重构、禁止无谓探索。到步数限制时必须按 schema 输出 JSON(patch)。"
+    }
+  }
+}

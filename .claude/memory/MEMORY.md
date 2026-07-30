@@ -10,3 +10,5 @@
 - [oh-my-pi 调研与后续设计演进](oh-my-pi-research-and-design-evolution.md) — 2026-07-27 报告 + **v2 更正**:三层栈是用户心智模型(omp 三件未串成管线);记忆改自建 MemoryService(借 mnemopi 巩固),omp 同时是委托目标。
 - [DeepSeek 结构化产出踩坑](deepseek-structured-output-gotcha.md) — DeepSeek-v4-pro 思考模式不支持 tool_choice/response_format json_schema;结构化产出改"喂 Schema+直出 JSON+解析"(R2 委托契约同样适用)。embedding/rerank 走 DashScope 不是 DeepSeek。
 - [测试步骤+结果在窗口打印](show-test-steps-and-results-in-window.md) — 跑测试/验证时正文里写清"测了啥+期望+实际(绿/红)",不只甩 Bash 输出块。
+- [workspace 设计决策](workspace-design-decision.md) — 2026-07-29 定稿:bug-RCA 每 bug 一个 workspace 目录(七段)+本地默认/Docker R5+大日志分层预筛(Hyperion粗筛+delegate深挖)+补丁6步验证+复用 deer-flow sandbox;R2末最简/R3完整/R5 Docker。
+- [多阶段委托决策](multi-stage-delegate-decision.md) — 2026-07-30 定稿:delegate 拆 localize→repair→verify→可选review(解 glm-5.2 单loop不收敛);Agentless 32%/$0.70 vs SWE-agent 18.3%/$2.53(分阶段又便宜又稳);验证分层(执行信号硬/对抗审弱);R2收尾两阶段/R3多候选+repro/R5对抗审。

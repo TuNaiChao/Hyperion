@@ -27,6 +27,19 @@ models:
     max_tokens: 8192
     temperature: 0.2
 
+  # —— DeepSeek Flash(非 reasoning,快;定位/摘要等轻任务用,省时省钱)——
+  # locator 三段漏斗(选文件/选函数/选行)是轻任务,用 flash 而非 pro:
+  # pro 是 reasoning 重模型,每次首 token 90~150s,7 次串行要 5~10min;
+  # flash 非推理,每次 2~5s,7 次 ≈ 30s,且定位够用(对标 Agentless 用 GPT-4o 级)。
+  - name: deepseek-v4-flash
+    display_name: DeepSeek Flash
+    use: langchain_openai:ChatOpenAI
+    model: deepseek-v4-flash
+    api_key: $DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com
+    max_tokens: 8192
+    temperature: 0.2
+
   # —— Anthropic(需 uv sync --extra providers)——
   # - name: claude-sonnet
   #   display_name: Claude Sonnet
@@ -53,7 +66,7 @@ models:
 model_roles:
   default: deepseek-v4-pro
   planner: deepseek-v4-pro
-  locator: deepseek-v4-pro
+  locator: deepseek-v4-pro   # R2 收尾回退 pro:flash localize 不稳(漏 events.c → delegate timeout);pro 相对稳命中金标准根因。方案A(检索预筛)R3 根治
   summarizer: deepseek-v4-pro
   verifier: deepseek-v4-pro
   memory_extractor: deepseek-v4-pro
@@ -197,3 +210,31 @@ memory:
     decay_halflife_days: 180.0   # 衰减半衰期(天)—— 简单 exp(-age/halflife);Weibull 留 backlog(mnemopi 也未启用)
     promote_access_count: 3      # 被召回≥N 次 → 升级 mental_model(Letta 3+ 规则)
     merge_step: 0.3              # 重提时 Bayes 置信度累加步长(mnemopi veracity 0.3)
+
+# 委托(R2,★P2 MVP):把 bug-RCA 的「读码 / 写补丁 / 给根因」重活委托给成熟 coding agent。
+# 抽象接口 CodingAgentDelegate(见 src/hyperion/tools/delegate.py);v1 默认 opencode。
+# 调研定稿(2026-07-29):本机 omp 未装(github 墙 + bun),opencode v1.18.3 已装、
+# run --format json 事件流天然绕开「DeepSeek 思考模式不支持结构化产出」坑。完整理由见
+# docs/调研/r2-bug-rca-research.md §1-2。
+# 流程:opencode run --format json --auto --dir <repo> "<prompt>" → 解析 NDJSON 事件流
+#       → 取最后一条 assistant 文本 → 喂 JSON Schema 抠对象(复用 memory/extract.py 方案)。
+# 反向:opencode 原生 MCP client 挂 `hyperion mcp serve`,外勤现场查 Hyperion 记忆(§6)。
+delegate:
+  backend: opencode             # opencode(v1 默认,本机已装)| omp(需 bun)| claude(需 claude CLI)
+  opencode:
+    bin: opencode               # 可执行文件名;或写绝对路径
+    model: uniontech-ai/glm-5.2  # flash 弱模型做复杂 RCA 收敛不了(600s timeout);换 glm-5.2 强档。格式 "provider/model"
+    agent: null                 # null = opencode 默认 agent(本机 Sisyphus);或指定子 agent 名
+    variant: null               # null = 默认;"high"|"max"|"minimal"(provider 推理档;对齐 T2L「Medium 最佳」)
+    auto_approve: true          # 无头必须(--auto):自动批准未显式拒绝的权限
+    format: json                # json(NDJSON 事件流,默认)| default(格式化文本)
+    timeout: 1200               # 委托总超时(秒);复杂 C RCA + 写补丁需久,600 不够 flash 收敛
+    config: config/opencode_hyperion.json  # Hyperion 自带 opencode 配置(hyperion-localize/repair agent + steps 限轮 + permission 工具白名单);env OPENCODE_CONFIG 注入
+  omp:                          # 备选(本机暂未装;网络/bun 通了切回 —— 其 strict schema 强校验是最大价值)
+    bin: omp
+    mode: rpc                   # rpc(NDJSON 流,推荐)| print(-p 纯文本兜底)
+    auto_approve: true          # 等价 --yolo
+    timeout: 600
+  claude:                       # 备选(需另装 claude CLI;可选高档后端)
+    bin: claude
+    timeout: 600

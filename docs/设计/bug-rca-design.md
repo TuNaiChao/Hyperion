@@ -3,6 +3,8 @@
 > 状态:设计稿 v1(2026-07-28)· 实现阶段:**R2(MVP)**
 > 上位文档:[architecture.md §6](architecture.md) · 金标准:`example/demo1`、`example/demo2`
 
+> ⚠️ **R2 调研后修正(2026-07-29):委托后端默认从 omp 改为 opencode。** 调研发现本机 omp 未装且装不上(github 墙 + bun),opencode v1.18.3 已装、子命令齐全、`run --format json` 事件流天然绕开"思考模式不支持结构化产出"坑。**`CodingAgentDelegate` 抽象接口不变**(后端本就可换),仅默认值改。完整调研见 [r2-bug-rca-research.md](../调研/r2-bug-rca-research.md)。下方 §3 的接口示例与选型表保留 omp 作可配置后端,但 **★ v1 默认 = opencode**。
+
 ---
 
 ## 0. 这是什么 / 为什么委托(面向小白)
@@ -18,6 +20,8 @@
 外勤回来后,Hyperion **验活**(可选二次委托:编译/apply)、**写报告**(按 demo 金标准骨架渲染中文报告)、**记笔记**(把这次根因+修法沉淀进记忆)。
 
 **为什么不自己干定位/补丁:** 那是成熟 coding agent 最擅长的通用能力,自建会烧光一人/数月预算。**Hyperion 的差异化在记忆 + 调度 + 团队知识。** 把通用能力外包,自己聚焦差异化。
+
+> 🆕 **workspace 演进(2026-07-29 定稿,见 [workspace-design.md](workspace-design.md))**:R2 MVP 先用「localize 锚点**内联进 prompt** + `--dir <repo>`」跑通;**R2 末起演进为 workspace 模型**——每 bug 一个专用目录(`<repo>__<bug-id>__<hash>/`,七段:code/triggers/delegate/artifacts/patch/report/docs),opencode `--dir` 指此,**读全量代码 + 日志**(非内联片段,解决"补丁易错位/日志没法结合");assemble 改**方式 B 指引 prompt**(给 file:line 嫌疑起点,不内联代码,opencode 自读);**大日志 Hyperion 粗筛(grep+时间窗+addr2line)+ opencode 深挖**;补丁走 **6 步验证**(`git apply --check`/revert/build/FAIL_TO_PASS/PASS_TO_PASS/rerank)。隔离默认本地(R2/R3)、Docker R5;沙箱抽象复用 deer-flow `Sandbox`/`SandboxProvider` + `workspace_changes`。
 
 ---
 
@@ -39,9 +43,25 @@ START → 1.ingest ─┐
             7.report + memorize► 渲染中文报告(§5)+ 抽 BugLesson 入记忆 → END
 ```
 
+**面向小白 ——「接案调度员(Hyperion)+ 外勤侦探(opencode)」类比:**
+
+| 步 | 中文名 | 干啥(大白话) |
+|---|---|---|
+| **1 ingest** | 立案 | 接案,给外勤搭独立工位(workspace),放全量代码 + 问题描述 + 契约,不污染原仓库 |
+| **2 recall** | 翻笔记本 | "这库以前有没有类似 bug?当时怎么修的?"命中就复用经验,省推导 |
+| **3 localize** | 画范围 | 不让外勤整库乱翻,先用确定性漏斗圈出"嫌疑大概在这几个函数" |
+| **4 assemble** | 组卷宗 | 把案卷递给外勤:症状 + 嫌疑起点指引 + 历史教训 + 产出契约 |
+| **5 delegate** | 派外勤 | opencode 在 workspace 自己读码、定位根因、改文件修 bug |
+| **6 verify** | 验活 | 检查补丁:改对没、能不能打上 |
+| **7 report+memorize** | 写报告+记笔记 | 按金标准骨架写中文报告;把根因+修法沉淀进记忆(下次复用) |
+
+> 一句话:**立案 → 翻笔记本 → 画范围 → 组卷宗 → 派外勤 → 验活 → 写报告+记笔记**。Hyperion 全程是调度员(组装精确上下文 + 调度 + 沉淀),重活(读码/改码)委托给 opencode;记忆贯穿始终(接案 recall 复用、结案 memorize 沉淀)。
+
+**技术细节:**
+
 | 步 | 动作 | 关键点 |
 |---|---|---|
-| **1 ingest** | 确保源码已索引(code_index + code-review-graph);读 trigger(日志/漏洞报告) | 日志:文本行;漏洞报告:PDF/文本(抽关键句) |
+| **1 ingest** | 确保源码已索引;**读问题描述**(文本/txt/md/pdf,ingest 解析成统一文本)→ **抽关键字**(错误码/函数名/符号/症状,写 `triggers/keywords.json`)→ 关键字**驱动日志预筛 + 代码 localize**(见 [workspace-design.md](workspace-design.md) §5) | 日志:文本行;问题描述:文本/txt/md/pdf |
 | **2 recall** | 记忆召回该库相关历史 bug/教训;code-review-graph 取 trigger 指向模块的 blast-radius | 命中"见过"→ 直接走首解路径,省推导 |
 | **3 localize** | **Agentless 分层定位漏斗**:file→class→function→line(embedding + LLM rerank) | 确定性预筛,产 `file:line` 锚点;不靠 agent 自由探索 |
 | **4 assemble** | 组装提示词 = 症状 + 精确代码片段(blast-radius 内)+ 相关历史教训 + **严格产出契约**(§4 JSON) | 手术刀级——只喂相关片段,不整库 dump(省 token) |
@@ -78,13 +98,14 @@ class CodingAgentDelegate(abc.ABC):
     @abc.abstractmethod
     async def run(self, prompt: str, cwd: str, output_schema: dict) -> StructuredResult: ...
 
-class OmpDelegate(CodingAgentDelegate):       # ★ v1 默认
-    # omp -p "<prompt>"  在 cwd;或 omp --mode rpc 走 NDJSON 流式
+class OpencodeDelegate(CodingAgentDelegate):  # ★ v1 默认(2026-07-29 调研后定)
+    # opencode run --format json --auto --dir <repo> "<prompt>"
+    # → 解析 NDJSON 事件流 → 取最后 assistant 文本 → 喂 Schema 抠 JSON
     ...
-class OpencodeDelegate(CodingAgentDelegate):  # 团队分发后端(R4)
-    # opencode run "<prompt>" 在 cwd
+class OmpDelegate(CodingAgentDelegate):       # 可配置后端(本机暂未装)
+    # omp -p --yolo --no-session --cwd <repo>  或 omp --mode rpc 走 NDJSON 流式
     ...
-class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端
+class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端(需另装 claude CLI)
     # claude -p  或  claude-agent-sdk
     ...
 ```
@@ -102,9 +123,9 @@ class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端
 | 安装/分发 | Bun+TS+Rust(本地已装);团队分发重 | **Go 单二进制**,团队最省事 | 需 Anthropic 账号 |
 | bug-RCA 内建 | LSP + **DAP 调试** + `/review` P0-P3 判级 + hindsight 记忆 | LSP + plan/build 子 agent | 强推理 |
 
-**v1 默认 omp** 的理由:本地已装零摩擦;结构化子 agent 结果正好对上 Hyperion 要的 JSON 契约(无脆弱 prose 解析);`/review` 的 P0-P3 判级是现成 RCA 骨架;`--mode rpc` 给干净的可编排控制。**opencode** 单二进制 + 社区大,是 R4 团队分发的更好默认。
+**v1 默认 opencode(2026-07-29 调研后修正)** 的理由:**本机已装 v1.18.3**(omp 因 github 墙 + bun 装不上);`run --format json` 事件流是 **harness 强制、与模型思考模式无关**的结构化回执载体,直接绕开"DeepSeek 思考模式不支持结构化产出"坑(见记忆 `deepseek-structured-output-gotcha`);Go 单二进制 + 原生 MCP client(挂 `hyperion mcp serve` 即可反向查记忆);`--variant` 给 provider 特定推理档(对齐 T2L"Medium 思考档最佳")。**omp** 待本机网络/装好后切回(其 strict schema 强校验是最大价值);**claude** 需另装 CLI。
 
-> 精确无头参数 / `--mode rpc` 与 `serve` 的 API 契约,留 R2 实现时实测核实(README 级证据已足以下决策)。
+> 精确无头参数已实测(`opencode run/serve --help`,见 [r2-bug-rca-research.md §1-2](../调研/r2-bug-rca-research.md))。MVP 用 `run --format json` 一次性;`serve` 长连 + `acp` 标准协议委托通道记 backlog。
 
 ---
 
@@ -163,10 +184,54 @@ delegate(omp/opencode)干活时,经 MCP 查 Hyperion 的:`memory_recall`(查历�
 
 ## 7. v1 取舍(用户:第一版别太复杂)
 
-**做:** 单委托、单轮、结构化 JSON 契约、直出报告、记忆沉淀。
-**不做(放 R5):** 多轮 refine、多 candidate 补丁对比、自动 PoC 生成、对抗式红队二次验证、多委托后端并发。
+**做(R2 MVP):** 结构化 JSON 契约、直出报告、记忆沉淀。
+**多阶段(2026-07-30 修正,见 §7.5):** R2 末起 delegate 拆 localize + repair 两阶段(解 glm-5.2 单 loop 不收敛);R3 多 candidate;R5 对抗式红队。
+**不做(放 R5):** 自动 PoC 生成、多委托后端并发。
 
 **L3/DAP(ChatDBG 式 reproduce-then-debug):** 仅当有**可复现 bug / core dump** 时才接(借 [chatdbg](https://github.com/plasma-umass/chatdbg));**事后日志分析不适用**(不能调试过去)。放 R2 末/P3。
+
+---
+
+## 7.5 多阶段委托(2026-07-30 演进,解 glm-5.2 单 loop 不收敛)
+
+> R2 MVP 是单次复合委托(opencode 单 agent loop 定位+补丁+报告一次产)。实测 glm-5.2 在单 loop 跑 97K token 全工具调用,最后 prose「让我阅读...」**不收敛**,无 JSON 产出。**2026-07-30 改多阶段委托**(调研 Agentless + MASAI + 补丁审核两路)。
+
+### 为什么(调研铁证)
+- **Agentless**(arXiv 2407.01489)同模型 GPT-4o:**分阶段 32%/$0.70/78K token** vs SWE-agent 单 loop 18.3%/$2.53/**498K**。分阶段质量/成本/token 三项全胜 —— 不是「贵但稳」,是「又便宜又稳又准」。
+- 消融:**skeleton(698 行,58% 命中)完胜整文件(778 行,53.7%)** = lost-in-the-middle(arXiv 2307.03172)。glm-5.2 内联大片代码(±15 行×多锚点)过载 = 不收敛根因(手动测 15 锚点碰巧收敛、端到端 17 锚点更多反不收敛)。
+- Agentless 论文列 agent loop 三大失败(复杂工具/决策失控/自我反思有限)精准命中 glm-5.2 症状(97K token 全工具 + 最后 prose 不总结)。
+
+### 设计(对齐 Agentless 三阶段 + MASAI ⟨Input,Strategy,Output⟩ 子 agent)
+```
+①localize_delegate(有工具,只定位 root_cause/evidence,禁补丁)→ JSON
+     ↓ state["localization_json"]
+②repair_delegate(根因已锁,只改局部,采 N 候选)→ patch
+     ↓ N 候选 → artifacts/candidate_patches/
+③verify(Hyperion 自跑,无 LLM:Tier 0 apply--check/编译/apply-revert + Tier 1 repro test rerank)→ 选 top-1
+④review_delegate(可选,Tier 2 跨家族对抗审,reviewer 先判 intervene)→ verdict
+⑤report+memorize
+```
+**MASAI 式「子 agent 不对话,靠 input/output 串接」**(走 workspace 文件),比自由对话稳得多。
+
+### 每阶段产出契约(短、目标单一)
+- **① localize**:`{root_cause, trigger_chain[], evidence[{file,line,snippet,why}], blast_radius_files[]}` —— **无 patch 字段**(禁补丁,glm-5.2 不用纠结 diff 格式)。
+- **② repair**:`{patches[{id,summary,diff}], confidence}` —— 根因锁死,只改局部(glm-5.2 最擅长的「照着改几行」)。
+- **③ verify**:`{verified, patch, validate_log}` —— Hyperion 自跑,无 LLM,零不收敛风险。
+- **④ review(可选)**:`{intervene:bool, risks[], fix_diff?}` —— 先判要不要介入,默认保留作者结构。
+
+### 验证分层(补丁正确性)
+- **Tier 0 确定性**(零 LLM):`git apply --check` + 编译 + apply-revert(证必要)+ PASS_TO_PASS(无回归)。
+- **Tier 1 执行信号**(核心):repro test(F2P)+ majority voting。MASAI 证「LLM 单独选不准 patch,加测试执行才能 rank」;1→5 sample 命中率 23%→35%。
+- **Tier 2 对抗审查**(无测试时):跨家族模型审(cross-model 数据:reviewer ≥ writer 才涨点 —— Codex 自审 +12.9pp、Claude 自审 +0、弱审强 **-8.6pp 退化**);reviewer「先判 intervene」防重写。
+- SWE-bench 有 7.8% overfit(测试过≠对),二次审核拦这批。
+
+### 落地分档
+- **R2 收尾**:`node_delegate` 拆 `node_delegate_localize` + `node_delegate_repair`(中间 state 传 `localization_json`);localize prompt 用**指引**(file:line,不内联大片,避 lost-in-the-middle);verify Tier 0(tolerant apply,已有)。**`CodingAgentDelegate` 接口不改**(`run` 调多次,每次不同 schema)。
+- **R3**:多候选采样(N=3)+ repro test rerank(workspace §6 六步验证)+ workspace_changes 生成 diff(根治格式)。
+- **R5**:Tier 2 跨模型对抗审 + 2 轮反馈循环 + 退化熔断。
+
+### 关键参考
+[Agentless](https://github.com/openautocoder/agentless)(arXiv 2407.01489)· [MASAI](https://masai-dev-agent.github.io/)(arXiv 2406.11638)· [Lost in the Middle](https://arxiv.org/abs/2307.03172)· [Cross-Model Code Review](https://arxiv.org/html/2607.21656v1)。
 
 ---
 

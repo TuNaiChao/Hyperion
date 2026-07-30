@@ -156,6 +156,61 @@ class MemoryConfig(BaseModel):
     native: NativeMemoryConfig = Field(default_factory=NativeMemoryConfig)
 
 
+class OpencodeDelegateConfig(BaseModel):
+    """opencode 委托后端子配置(v1 默认,本机已装 v1.18.3)。
+
+    面向小白:opencode 是被委托的"外勤侦探"。这几个旋钮控制怎么请它——用哪个可执行文件、
+    指定哪个模型/子 agent、推理多卖力(variant)、要不要自动批准工具、超时多久。
+    对应 config.yaml 的 delegate.opencode 段。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    bin: str = "opencode"  # 可执行文件名;或绝对路径
+    model: str | None = None  # null = opencode 自带默认 provider;或 "provider/model"
+    agent: str | None = None  # null = opencode 默认 agent;或指定子 agent 名
+    variant: str | None = None  # null = 默认;"high"|"max"|"minimal"(provider 推理档,对齐 T2L Medium)
+    auto_approve: bool = True  # 无头必须(--auto):自动批准未显式拒绝的权限
+    format: str = "json"  # json(NDJSON 事件流)| default(格式化文本)
+    timeout: float = 600.0  # 委托总超时(秒)
+    config: str | None = "config/opencode_hyperion.json"  # Hyperion 自带 opencode 配置(agent+steps+permission);env OPENCODE_CONFIG 注入,与用户全局 provider/key 合并
+
+
+class OmpDelegateConfig(BaseModel):
+    """omp 委托后端子配置(备选,本机暂未装)。对应 delegate.omp 段。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    bin: str = "omp"
+    mode: str = "rpc"  # rpc(NDJSON 流)| print(-p 纯文本兜底)
+    auto_approve: bool = True  # 等价 --yolo
+    timeout: float = 600.0
+
+
+class ClaudeDelegateConfig(BaseModel):
+    """claude code 委托后端子配置(备选,需另装 claude CLI)。对应 delegate.claude 段。"""
+
+    model_config = ConfigDict(extra="allow")
+
+    bin: str = "claude"
+    timeout: float = 600.0
+
+
+class DelegateConfig(BaseModel):
+    """委托层配置(R2,★P2 MVP)。对应 config.yaml 的 delegate: 段。
+
+    面向小白:这一层控制"把 coding 活外包给谁"。backend 选 opencode(v1 默认)/omp/claude;
+    下面三块是各自的旋钮。抽象接口 CodingAgentDelegate 从第一天起支持后端可换(三锁定决策 #2)。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    backend: str = "opencode"  # opencode(v1 默认)| omp | claude | 'pkg.mod:Cls'
+    opencode: OpencodeDelegateConfig = Field(default_factory=OpencodeDelegateConfig)
+    omp: OmpDelegateConfig = Field(default_factory=OmpDelegateConfig)
+    claude: ClaudeDelegateConfig = Field(default_factory=ClaudeDelegateConfig)
+
+
 class AppConfig(BaseModel):
     """顶层配置(models / model_roles / tools / sandbox)。"""
 
@@ -167,6 +222,7 @@ class AppConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)  # 沙箱 provider + 参数
     code_index: CodeIndexConfig = Field(default_factory=CodeIndexConfig)  # 代码理解服务(P1)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # 记忆核心(R1,P3 差异化)
+    delegate: DelegateConfig = Field(default_factory=DelegateConfig)  # 委托层(R2,P2 MVP)
 
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。
@@ -219,6 +275,11 @@ def _default_config_path() -> Path:
 def load_config(path: str | Path | None = None) -> AppConfig:
     """Load and parse config.yaml into AppConfig (with $ENV resolved)."""
     global _CONFIG_CACHE
+    # 加载 .env 到 os.environ —— $ENV 解析依赖它。放这里(而不只 cli.main)保证所有走
+    # config 的入口(CLI / MCP / 测试 / 直接调用 / workflow)都有 env,不漏 key。
+    from dotenv import load_dotenv
+
+    load_dotenv()
     p = Path(path) if path else _default_config_path()
     if not p.exists():
         raise FileNotFoundError(f"config not found: {p}")

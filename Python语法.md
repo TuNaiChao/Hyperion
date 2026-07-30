@@ -328,3 +328,10 @@ class Sandbox(ABC):
 
 ### src/hyperion/services/code_index/eval/runner.py
 
+
+
+
+
+经验教训：
+
+1. 在委托opencode定位问题时，不要只提供一次prompt让agent一次性完成所有任务，会有概率不收敛，要分阶段逐步提供prompt

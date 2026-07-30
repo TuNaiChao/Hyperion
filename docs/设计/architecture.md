@@ -29,7 +29,7 @@
 | **D2** | **平台 + 三工作流 + 共享服务** 三层分离(沿用 v0.1 骨架) | 代码理解/记忆/沙箱/检索三流共用,避免三套实现 |
 | **D3** | bug-RCA v1 **单委托、单轮、结构化 JSON 契约、直出报告** | 用户要求"第一版别太复杂";多轮/多 candidate/自动 PoC 放 R5 |
 | **D4** | **记忆底座 = 自有 `MemoryService` 契约**(deer-flow MemoryManager ABC + oh-my-pi backend-swap 形状);v1 后端组合 code_index+code-review-graph;cognee/mem0 可换 | 组合已有两个引擎(语义+结构)避免第三套重叠检索栈;差异化(持续学习闭环)必须自己握住;零锁死 |
-| **D5** | **委托抽象 `CodingAgentDelegate`**;v1 默认 omp,opencode 团队分发,配置可换 | omp 本地已装 + 结构化子 agent 产出 + `/review` 判级 + `--mode rpc`;opencode 单二进制便于团队分发 |
+| **D5** | **委托抽象 `CodingAgentDelegate`**;v1 默认 opencode(2026-07-29 调研修正:omp 本机装不上 github 墙+bun),omp/claude 可换 | opencode 已装 v1.18.3 + `run --format json` 事件流绕结构化坑 + 原生 MCP client 反向查记忆;omp 的 strict schema 强校验是最大价值(待本机可用切入) |
 | **D6** | MVP 先 **bug-RCA**(有 demo1/demo2 金标准可对照) | 一次验证记忆+委托+省 token+流水线四个痛点 |
 | **D7** | LLM provider **反射 + 配置声明**,不硬编码厂家(沿用 v0.1) | 直接移植 deer-flow `use: module:ClassName`,加厂家零代码(见 §4.1,**已实现**) |
 
@@ -134,6 +134,16 @@ Pydantic-v2 + YAML;`$ENV` 解析(放 API key);`get_app_config()` 缓存 + 内容
 
 Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread_id`、`langfuse_user_id=owner`。指南见 [langfuse.md](../已完成/langfuse.md)。
 
+### 4.6 ⚠️ 平台 harness ≠ agent 运行时 harness(2026-07-29 决策修正)
+
+本节 §4 是**平台 harness**(模型/配置/工具/沙箱/可观测),已实现。但**还有一层 agent 运行时 harness**(跑长 agent 的上下文管理:压历史/token 预算/截工具输出/并行子任务/断点续跑),对标 deer-flow 的中间件链 + OpenHands 3 层记忆。
+
+**边界(关键,别搅混)**:① **coding 动作**(读写/命令/补丁)→ **委托** opencode/omp(§6);② **agent 运行时**(Hyperion 自己跑长 agent,如深度调研)→ **Hyperion 自建**(本节)。
+
+**为什么必须自建**:深度调研(R3)是 Hyperion 自己的长 agent(读几千文件、多轮检索),不是 coding 任务、没法委托,上下文必爆——必须有运行时上下文管理压住它。v2 初版一度以为"重活全外包、runtime 也不做",**2026-07-29 用户修正:coding 外包,但 runtime 必须自建**。
+
+**实现**:见独立设计文档 [runtime-harness-design.md](runtime-harness-design.md)(含对标文件:行号、`platform/runtime/` 目录、R2末骨架→R3上场→R5补齐 分档)。对标调研 [deer-flow-runtime-参考.md](../调研/deer-flow-runtime-参考.md)。
+
 ---
 
 ## 5. 共享服务层
@@ -200,10 +210,10 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 |---|---|---|---|
 | **R0** | 本规划落地 | 重写 architecture.md v2 + 新建 memory/bug-rca/deep-research 设计文档;裁剪占位;更新 CLAUDE.md/记忆 | 文档自洽、断链修完;`uv run hyperion models/tools/lsp health` 仍绿 |
 | **R1** | 记忆核心 v1 | `MemoryService` ABC + native 后端(code_index+code-review-graph)+ memorize/recall + MCP 暴露 + CLI `memory recall/add` | demo 报告抽成知识项存入、按语义+结构召回命中 |
-| **R2** ★MVP | bug-RCA 端到端 | `CodingAgentDelegate`(默认 omp)+ workflow 七步 + 报告渲染 | **输入 `example/demo2` 的 wpa+日志,产出形如 demo2 的报告+补丁**(金标准对照) |
-| **R3** | 代码仓深度调研 | 补 C parser、接 code-review-graph、Aider repomap、出架构/模块文档;闭环(调研→CodebaseFact) | 对 wpa/bluez 出达标架构文档,知识入库可复用 |
+| **R2** ✅MVP | bug-RCA 端到端 | `CodingAgentDelegate`(opencode **glm-5.2**)**多阶段委托**(localize→repair 两 delegate,见 [bug-rca-design.md](bug-rca-design.md) §7.5)+ **A+C**:`config/opencode_hyperion.json` 自定义 agent(hyperion-localize/repair)+ `steps` 强制收敛(解 glm-5.2 单 loop 发散)+ `--continue` session 续接 + tolerant apply;localize 用 pro(稳命中金标准);workflow 九步 + 报告 + 记忆闭环 | **2026-07-30 达标**:端到端 delegate 收敛,产出报告+补丁+BugLesson 入记忆(recall 命中);**patch apply + 根因准确性留 R3**(workspace_changes #51 + 多候选/repro #54) |
+| **R3** | 代码仓深度调研 | **开场搭 runtime 最小骨架**(5 件,见 [runtime-harness-design.md](runtime-harness-design.md))+ runtime 正式上场(summarization 压历史+loop 检测+并行子 agent);**workspace 七段完整 + 方式B 契约打磨 + log_preprocess + 补丁验证 6 步 + 方案A 检索预筛**(见 [workspace-design.md](workspace-design.md));补 C parser、接 code-review-graph、Aider repomap、出架构/模块文档;闭环(调研→CodebaseFact) | 对 wpa/bluez 出达标架构文档,知识入库可复用 |
 | **R4** | 团队/多代码库 + PR 跟踪 | 租户隔离、文档统一管理、PR tracker workflow、opencode 后端(团队分发) | 多 owner/多库互不串;PR 跟踪出合入建议 |
-| **R5** | 生产化 | 对齐 deer-flow 边界处理、多轮/多 candidate 委托、自动 PoC、仿真验证、可观测、backlog 逐条 | 按 backlog-production-grade 清单收敛 |
+| **R5** | 生产化 | 对齐 deer-flow 边界处理、多轮/多 candidate 委托、自动 PoC、仿真验证、可观测、backlog 逐条;**runtime 生产化**(checkpoint patches/双层记忆/sandbox ownership) | 按 backlog-production-grade 清单收敛 |
 
 > **路线逻辑**:R1 记忆是 R2/R3 共同地基;R2 用 demo 金标准一次验证四痛点;R3 复用 R1 记忆 + R2 委托;R4/R5 扩展。**不 day-1 全上**——每阶段一个可验证场景。
 
@@ -250,16 +260,19 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 ```
 Hyperion/
 ├── src/hyperion/
-│   ├── platform/         # ✅ Harness(已实现):models/config/reflection/sandbox/tracing/agent
+│   ├── platform/         # ✅ 平台 Harness(已实现):models/config/reflection/sandbox/tracing/agent
+│   │   └── runtime/      # 🆕 agent 运行时 Harness(R2末起):中间件链/上下文管理/子agent/checkpointer → runtime-harness-design.md
 │   ├── services/
 │   │   ├── code_index/   # ✅ 代码理解(已实现 P1.0–P1.5):L1 向量+L2 LSP+outline+eval
-│   │   └── memory/       # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
+│   │   ├── memory/       # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
+│   │   ├── workspace/    # 🆕 bug workspace(R3):每 bug 一个专用目录七段 + LocalWorkspaceProvider → workspace-design.md
+│   │   └── log_preprocess/ # 🆕 大日志预筛(R3):grep+时间窗+addr2line+折叠 → delegate/context.md
 │   ├── workflows/        # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
 │   ├── tools/            # ✅ 导航/沙箱工具(已实现)+ 🆕 CodingAgentDelegate + memory 工具
 │   └── cli.py            # ✅ 入口(已实现 models/run/index/tools/lsp;🆕 R1+ 加 memory/bug-rca/research)
 ├── config/               # config.yaml(声明式)+ extensions_config.json
 ├── docs/                 # 已完成/· 调研/· 设计/(本文件在此)
 ├── example/              # demo1/demo2 金标准(输入+补丁+报告)
-├── deer-flow/ · oh-my-pi/ · code-review-graph/   # 只读参考(各自 clone,.gitignore)
+├── deer-flow/ · oh-my-pi/ · code-review-graph/ · agentless/ · opencode/   # 只读参考(各自 clone,.gitignore)
 └── .claude/memory/       # 项目记忆(随 git)
 ```

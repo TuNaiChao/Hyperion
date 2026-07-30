@@ -8,6 +8,7 @@
   hyperion lsp health|refs ...   L2 精确导航(clangd)自检 / 冒烟(P1.5)
   hyperion memory recall|add|list|consolidate|invalidate ...   记忆核心(R1)
   hyperion mcp serve             MCP server(把记忆暴露给 delegate,R1)
+  hyperion bug-rca --repo X --trigger "..."   bug 根因定位 workflow(R2 ★MVP)
 """
 
 
@@ -263,6 +264,28 @@ def cmd_mcp(args) -> int:
     return 0
 
 
+def cmd_bug_rca(args) -> int:
+    """bug-RCA workflow(R2 ★MVP):输入 repo + trigger → 报告 + 补丁。
+
+      hyperion bug-rca --repo <path> --trigger "<线索>"
+    七步:ingest→recall→localize→assemble→delegate(opencode)→verify→report+memorize。
+    真调 LLM(localize 三段)+ opencode(delegate),较慢(数分钟)。
+    """
+    import asyncio
+
+    from hyperion.workflows.bug_rca.graph import run
+
+    try:
+        final = asyncio.run(run(args.repo, args.trigger))
+    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
+        print(f"bug-RCA 运行出错:{e}", file=sys.stderr)
+        return 1
+    print(f"报告:{final.get('report_path', '-')}")
+    print(f"补丁:{final.get('patch_path', '-')}")
+    print(f"验证:{final.get('verified', False)}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -333,6 +356,11 @@ def main(argv: list[str] | None = None) -> int:
     sub_mcp_sub = sub_mcp.add_subparsers(dest="mcp_cmd", required=True)
     sub_mcp_sub.add_parser("serve", help="启动 stdio MCP server")
     sub_mcp.set_defaults(func=cmd_mcp)
+
+    sub_bug = sub.add_parser("bug-rca", help="bug 根因定位 workflow(★MVP,委托 opencode)")
+    sub_bug.add_argument("--repo", required=True, help="仓库根目录")
+    sub_bug.add_argument("--trigger", required=True, help="bug 线索(日志摘要/问题描述/漏洞关键句)")
+    sub_bug.set_defaults(func=cmd_bug_rca)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

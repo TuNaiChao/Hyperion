@@ -16,6 +16,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "httpx>=0.27",
+    "jsonschema>=4.21",  # R2:校验 delegate(opencode)返回的结构化产出契约 JSON(不依赖模型思考模式)
     "markdownify>=0.13",
     "rich>=13.7",
     # code understanding (coding-agent core)
@@ -23,7 +24,8 @@ dependencies = [
     # 不用 tree-sitter-language-pack 1.x —— 它运行时按需从 GitHub releases 下载语法,国内网络被墙(已实测 timeout)。
     # 加新语言 = 加一个 tree-sitter-<lang> 依赖 + 在 parser.py 的 GRAMMARS 注册一条。
     "tree-sitter>=0.25",
-    "tree-sitter-python>=0.25",  # P1.0 先 Python(deer-flow 首测);C(bluez)落地时加 tree-sitter-c
+    "tree-sitter-python>=0.25",  # Python(deer-flow 首测)
+    "tree-sitter-c>=0.21",       # R2:C 语法(wpa_supplicant/bluez 是 C;demo2 金标准 = wpa)
     "lancedb>=0.34,<0.36",  # P1.3:hybrid/Reranker API 已对照 0.34 核实;锁上限避破坏性变更(见设计文档 §6 决策 #8)
     "rank-bm25>=0.2.2",
     # L2 精确导航(P1.5):multilspy = 微软 Python LSP client 库,管 JSON-RPC/initialize 握手/文件同步/同步包装。

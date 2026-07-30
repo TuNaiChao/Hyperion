@@ -96,6 +96,10 @@ class LanguageGrammar:
     params_field: str # 形参所在字段(类无此字段可留 "() 占位,但 Python class 不走这里)
     extract_docstring: Callable[[Any, bytes], str | None] | None = None
     # 从函数/类 AST 节点抽 docstring(去引号文本);Python 传实现,C 场景留 None
+    extract_name: Callable[[Any, bytes], str | None] | None = None
+    # 自定义符号名提取。None(默认)= 直接用 name_field 取名(Python 走这条);
+    # 非 None = 用它取名 —— C 的函数名不在 function_definition 直接字段,嵌在 declarator 链里,
+    # 必须用它。设计上对齐 extract_docstring(都是"用 Callable 抽象语言差异")。
 
 
 def _load_python() -> Language:
@@ -141,6 +145,40 @@ def _extract_python_docstring(node, source: bytes) -> str | None:
     return _node_text(string_node, source).strip()
 
 
+def _load_c() -> Language:
+    """装载 C 的 tree-sitter grammar(离线,grammar 已打进 wheel)。
+
+    和 _load_python 同理:tree_sitter_c.language() 返回 capsule 指针,
+    Language(...) 包一层得到可用的 Language 对象。R2 引入 —— wpa_supplicant /
+    bluez 都是 C,demo2 金标准就是 wpa。
+    """
+    import tree_sitter_c  # 懒导入:未装该 grammar 包时,其余语言仍可用
+
+    return Language(tree_sitter_c.language())
+
+
+def _extract_c_function_name(node, source: bytes) -> str | None:
+    """抽 C 函数名 —— 名字不在 function_definition 的直接字段,而嵌在 declarator 链里:
+    function_definition.declarator(function_declarator) → .declarator(identifier)。
+
+    打个比方:Python 写 `def foo():` 名字 foo 直接挂在函数节点上;C 写
+    `void foo(void) {}` 时,语法树先把 `foo(void)` 包成一个「函数声明符」
+    (function_declarator),foo 是这个声明符里的名字。所以要沿 declarator 字段
+    逐级下钻(可能穿过 function_declarator / pointer_declarator,如函数指针),
+    取最内层标识符的文本。找不到返回 None(无名定义跳过)。
+    """
+    decl = node.child_by_field_name("declarator")
+    while decl is not None:
+        inner = decl.child_by_field_name("declarator")
+        if inner is None:
+            break
+        decl = inner
+    # 最内层应是 identifier(普通名)/ field_identifier(结构体字段名)/ type_identifier
+    if decl is not None and decl.type in ("identifier", "field_identifier", "type_identifier"):
+        return _node_text(decl, source)
+    return None
+
+
 # 注册表:加 C 时在此追加一条,并 `uv add tree-sitter-c`。
 #   "c": LanguageGrammar(
 #       name="c", suffixes=(".c", ".h"),
@@ -158,6 +196,20 @@ GRAMMARS: dict[str, LanguageGrammar] = {
         name_field="name",
         params_field="parameters",
         extract_docstring=_extract_python_docstring,
+    ),
+        "c": LanguageGrammar(
+        name="c",
+        suffixes=(".c", ".h"),
+        load=_load_c,
+        function_node="function_definition",
+        # struct_specifier 节点匹配过宽 —— 每处 `struct wpa_supplicant *` 参数/声明都是它,
+        # 抽出来全是类型引用噪声(实测 28370 个,几乎没真定义)。用 "_none_" 这种语法树里
+        # 绝不会出现的节点名,让 C 永不抽 class。demo2 根因在函数,struct 非必需;
+        # 真要抽 struct 定义,按「有无 body 字段」过滤即可,留 backlog。
+        class_node="_none_",
+        name_field="name",          # C 不抽 class 了,此字段对 C 实际不触发(函数名走 extract_name)
+        params_field="declarator",  # signature = 完整声明符(含函数名,如 scan_only_handler(struct ...)),报告引用正合适
+        extract_name=_extract_c_function_name,
     ),
 }
 
@@ -218,9 +270,13 @@ def _extract_symbols(
     def visit(node) -> None:
         # —— 函数节点:记录后继续下钻(抓嵌套定义:函数内的函数 / 类)——
         if node.type == grammar.function_node:
-            name_node = node.child_by_field_name(grammar.name_field)
-            if name_node is not None:  # 无名定义(lambda 等)跳过
-                simple = _node_text(name_node, source)
+            # 取名:有 extract_name(C 的函数名嵌在 declarator 链)用它;否则直接取 name 字段(Python)。
+            if grammar.extract_name is not None:
+                simple = grammar.extract_name(node, source)
+            else:
+                name_node = node.child_by_field_name(grammar.name_field)
+                simple = _node_text(name_node, source) if name_node else None
+            if simple is not None:  # 无名定义(lambda 等)跳过
                 params_node = node.child_by_field_name(grammar.params_field)
                 docstring = (
                     grammar.extract_docstring(node, source)

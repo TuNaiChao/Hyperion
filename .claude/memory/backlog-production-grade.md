@@ -248,3 +248,92 @@ metadata:
     - **T2L-Agent**(arXiv 2510.02389):runtime-trace-guided 漏洞定位 module→file→line,**直接在 bluez & wpa_supplicant 上评估**——正是 Hyperion 目标。提炼其 trace 解析 + 模块收敛作为 eval 方法论。
     - **Code Researcher**(arXiv 2506.11060,MSR):deep-research agent 对 C/C++ 系统代码做多步推理 + **commit-log 因果推理**,48% crash 解决率。提炼 commit-log 作 RCA 先验 + 假设-证据报告结构。
     - 目标阶段:**R2/R3**(bug-RCA 与深度调研的 eval/方法论参考;无代码,读论文)。
+
+## ★ runtime harness 自建(2026-07-29 决策修正,系统项)
+
+45. **agent 运行时上下文管理 harness** — 新增 `src/hyperion/platform/runtime/`。
+    - 决策来源(用户 2026-07-29):「Hyperion 要有 deer-flow 同等的运行时上下文管理,自己能跑长 agent;但 coding 能力仍委托 opencode/omp」。**边界**:coding 动作(读写/命令/补丁)→ 委托;agent 运行时(压历史/token 预算/截工具输出/并行子任务/断点续跑)→ **Hyperion 自建**。深度调研(R3)是 Hyperion 自己的长 agent、没法委托、上下文必爆,故 runtime 必须自建。
+    - 对标:① deer-flow `backend/packages/harness/deerflow/` —— **不自造中间件 ABC**,直接继承 `langchain.agents.middleware.AgentMiddleware[State]`,override `before_model/after_model/wrap_model_call/wrap_tool_call`;`SummarizationMiddleware`(LLM 摘要+`REMOVE_ALL_MESSAGES`+独立 `summary_text` channel+多模型 fallback)、`TokenBudgetMiddleware`(累加 diff+warn+hard_stop 剥 tool_calls+BoundedDict)、`ToolOutputBudgetMiddleware`+`tool_output_synopsis`(阈值外化磁盘+纯函数 synopsis+5MB DoS 守门)、`SubagentExecutor`(持久 isolated loop+`SubagentResult.try_set_terminal` 锁+`MAX_CONCURRENT=3`);复用 LangGraph `SqliteSaver` checkpointer;不自造 ReAct,直接 `create_agent`。② OpenHands `Condenser→View→ConversationMemory` 3 层(R5 双层记忆参考)。
+    - 完整对标(带文件:行号):[deer-flow-runtime-参考.md](../../docs/调研/deer-flow-runtime-参考.md) + 设计 [runtime-harness-design.md](../../docs/设计/runtime-harness-design.md)。
+    - 分档:**R3 开场**搭最小骨架 5 件(`create_hyperion_agent` factory + `TokenBudgetMiddleware` 移植 + `ToolOutputBudget`+synopsis 整文件搬 + `HyperionState` schema + `SqliteSaver` checkpointer)—— runtime 的真实场景是 R3 深度调研(跑长 agent),R2 bug-RCA 七步不依赖、不验,故从 R2 末挪到 R3 开场边搭边验(用户 2026-07-30 决策);**R3 中**深度调研上场(Summarization + LoopDetection + DynamicContext + SubagentExecutor 并行查多模块);**R5** 生产化(checkpoint_patches 模式 + OpenHands 双层记忆 + 跨进程 sandbox ownership + alembic hybrid bootstrap)。
+    - 与现有项关系:**吸收** #3(中间件链)、#20(TTSR)、#24(snapcompact 序列化预算)为 runtime 子能力;#43 委托的 ToolOutputBudget 是委托前置(omp 大输出召回前截断)。
+    - 目标阶段:**R3开场骨架 → R3中上场 → R5补齐**(2026-07-30 从 R2 末挪到 R3:R2 不依赖/不验,边搭边验更踏实)。
+
+46. **bug-RCA 报告渲染精修(对齐 demo2 金标准完整骨架)** — `src/hyperion/workflows/bug_rca/report.py`。
+    - 现状(R2 MVP):简化骨架(元数据表 → TL;DR → 线索 → 定位与根因(trigger_chain+evidence)→ 补丁 → 附录)。证据纪律已是签名(evidence 锚 file:line)。
+    - 对齐:demo2 金标准 271 行完整骨架 —— 补:环境与影响表(组件/驱动/单 PHY 约束)、故障现象表、**日志时间线表**(时刻→日志行号→事件→含义,日志驱动必备)、修复方案对比表(minimal/medium/v4)、**补丁分析表**(正确性/TOCTOU/覆盖率/兼容性)、验证(编译/apply-revert/**日志回放覆盖率%**)、风险评估与选型、复现&回归用例、附录(代码位置表/日志行号表/术语表/交付清单)。
+    - 用户定(2026-07-29):报告格式"后续再讨论",先按简化骨架跑通,按用验调。
+    - 目标阶段:**R2 后 / R3**(金标准对照达标后精修)。
+
+47. **bug-RCA workflow R5 编排增强(并行/分支/循环)** — `src/hyperion/workflows/bug_rca/graph.py`。
+    - 现状(R2):线性七步 StateGraph。**调研定稿(2026-07-29):R2 线性正确** —— Agentless 基线背书(线性拿 SWE-bench Lite 32%/$0.70)、deer-flow ReAct 不适用专用流水线、LangGraph "start simple"、delegate 节点已嵌 ReAct(opencode)。
+    - R5 四增强(蓝图见 [workflow-orchestration-参考.md](../../docs/调研/workflow-orchestration-参考.md) §4.2):
+      (a) **superstep 并行** recall ∥ localize_pre(localize 拆粗+细后,任务数固定用 superstep 非 Send);
+      (b) **localize T2L 式 refinement 循环**(`add_conditional_edges` 自指,`MAX_LOCALIZE_ITER=3`,对齐 T2L arXiv 2510.02389 evidence-guided);
+      (c) **delegate multi-candidate**(`Send` 动态 fan-out N 候补丁 + `vote` 投票,N 运行时由 assemble 决定);
+      (d) **verify 失败条件分支**(`Command(update={verify_feedback})` 回 assemble/localize,`MAX_VERIFY_RETRY`,产 `failure_type` 字段)。
+    - 前提:localize/verify 节点本身成熟(localize 多轮、verify 真跑编译/测试)后再加;**每加一条分支/循环先加测试**。
+    - 排雷:不要外层换 ReAct lead、R2 不引入 interrupt、delegate 内部不用 Send(multi-candidate 是 R5 外层的事)、不混用 create_agent 与手写 StateGraph。
+    - 目标阶段:**R5**(生产化)。
+
+48. **反向 MCP(delegate 经 opencode 主动查 Hyperion 记忆)** — opencode 配置 + `nodes.py`。
+    - 现状(R2):通路① **assemble 注入 recalled**(已实现,`nodes.py` 的 `node_assemble` 把 recall 结果塞进 delegate prompt,delegate 被动看到记忆)——「记忆→委托」闭环已通。
+    - 待接:通路② **opencode 主动查** —— `opencode mcp add hyperion -- uv run hyperion mcp serve`(opencode 原生 MCP client 挂 R1 的 hyperion mcp serve,stdio)+ assemble prompt 提示 `memory_recall` 工具。delegate 干活时按需查更多(通路① 是 Hyperion 一次查,通路② 是 delegate 按需多次查)。
+    - 用户定(2026-07-29):R2 不接(通路① 够),留 R2 末 / R3。
+    - 目标阶段:**R2 末 / R3**。
+
+## ★ workspace(R3 落地,2026-07-29 定稿)
+
+49. **bug workspace 模块(每 bug 一个专用目录七段)** — 新增 `src/hyperion/services/workspace/`。
+    - 决策(用户 2026-07-29 认可):bug-RCA 演进为「每 bug 一个 workspace 目录」(`<repo>__<bug-id>__<hash6>/`,七段:code/triggers/delegate/artifacts/patch/report/docs),opencode `--dir` 指此,**读全量代码 + 日志**(非内联片段)。解 R2 内联三痛点(opencode 被动/补丁易错位/日志没法结合)+ 补丁能 quilt apply。
+    - 对标:deer-flow per-thread per-user sandbox + Agentless 多候选 + SWE-bench 每实例一容器。
+    - 复用 deer-flow:`Sandbox`/`SandboxProvider` ABC + `LocalSandbox`(path mapping+pipe drain+进程组 timeout)+ `env_policy`(scrub key)+ `workspace_changes/{scanner,diff}.py`(前后扫描生成 unified diff)。
+    - 隔离:默认本地目录(R2/R3),Docker 作 R5 可选(`AioSandboxProvider`)。Hyperion 场景(本地优先/一人/代码非完全不可信)本地够。
+    - 完整设计:[workspace-design.md](../../docs/设计/workspace-design.md)。
+    - 分档:**R2 末**最简形态(workspace + AGENTS.md 契约 + 方式B 指引,delegate cwd=workspace,可能同时解 delegate timeout);**R3** 完整七段 + candidate_patches + validate + LocalSandbox;**R5** Docker(AioSandbox + warm pool + 多架构镜像)。
+    - 目标阶段:**R2末最简 → R3完整 → R5 Docker**。
+
+50. **大日志分层预筛(journalctl/btmon 几 MB~GB)** — 新增 `src/hyperion/services/log_preprocess/`(R3)。
+    - 痛点:大日志不能全喂 opencode(爆 token);opencode 自己 grep 多轮也烧 token。
+    - 分层(和代码 localize 同模式):**Hyperion 粗筛**(确定性 grep 关键字 panic/OOPS/BUG/Warning/错误码/trigger 符号 + 故障时间窗 + addr2line 符号化 + 堆栈折叠 + LLM 摘要 → 写 `delegate/context.md`)+ **opencode 深挖**(拿预筛关键行后用 grep/read 按需查原始日志)。
+    - 复用:原 v0.1 `log_symbolizer`(addr2line/btmon)思路;符号化部分可委托 omp 或系统 addr2line。
+    - AGENTS.md 提示「已预筛在 context.md,可自行 grep 深挖」。
+    - 目标阶段:**R3**(workspace 完整落地时)。
+
+51. **补丁可 apply 验证 6 步(SWE-bench/Agentless 标准)** — `src/hyperion/services/workspace/validate.py`(R3)。
+    - 6 步:clean checkout(`git checkout base && git clean -xfd`)→ `git apply --check`(失败降级 --3way/`patch -p1`)→ revert 验证(应 fail)→ 编译 → FAIL_TO_PASS/PASS_TO_PASS 测试回归 → 多候选 rerank(Agentless)。
+    - quilt 场景:`final.diff` → `debian/patches/fix-N.diff` + 更新 `series` + `quilt push -a`。
+    - diff 生成:复用 deer-flow `workspace_changes`(观察 code/ 前后改动 + `difflib.unified_diff`),不依赖 opencode 吐格式正确的 diff。
+    - 现状(R2):只 `bool(patch)` 非空检查(`nodes.py` node_verify);R3 补完整 6 步。
+    - 目标阶段:**R3**。
+
+52. **opencode.json key 安全(env 替换)** — `~/.config/opencode/opencode.json`(即时 / 跨机前必做)。
+    - 现状:本机 opencode.json **明文存 uniontech-ai apiKey**(2026-07-29 调研 `opencode debug config` 发现)。
+    - 修:`"apiKey": "{env:UNIONTECH_AI_API_KEY}"`,key 放 `~/.zshrc`/`.env`(gitignore)。
+    - 跨机/dotfiles 同步前必做(否则 key 进 git 泄露)。delegate 子进程用 deer-flow `env_policy` scrub 防 key 泄 trace。
+    - 目标阶段:**即时**(跨机同步前)。
+
+53. **问题描述多格式解析 + 关键字抽取(预筛源头)** — 新增 `src/hyperion/services/trigger_parser/`(R3)。
+    - 输入:`triggers/issue.{md,txt,pdf}` 或直接 prompt(cli/API)。txt/md 直读;**PDF 用 pypdf/pdfplumber**(demo1 是 PDF 漏洞报告驱动);统一写 `triggers/issue.md`。
+    - 关键字抽取(→ `triggers/keywords.json`):规则(错误码/函数名 `[a-z_]+\(\)`/文件路径/内核符号/panic·OOPS 正则)+ LLM 抽(role=locator,「涉及哪些符号/错误码/症状/模块」)。
+    - **关键字统一驱动**:① 日志预筛(grep,见 #50)② 代码 localize file-level 检索(方案A,BM25/embedding,替代喂全树 518 文件)。
+    - 关键字是 trigger_parser + log_preprocess + localize 的统一纽带 —— 问题描述是 bug-RCA 起点 + 关键字源头。
+    - 现状(R2):trigger 是 cli `--trigger` 预摘要字符串,无文件解析/关键字抽取。
+    - 目标阶段:**R3**(workspace + log_preprocess 落地时)。
+
+## ★ 多阶段委托(2026-07-30 决策,解 glm-5.2 单 loop 不收敛)
+
+54. **delegate 拆多阶段(localize → repair → verify → 可选 review)** — `nodes.py` + `delegate.py`。
+    - 痛点:R2 单次 delegate(opencode 单 agent loop,定位+补丁+报告一次产)→ glm-5.2 跑 97K token 全工具调用,最后 prose「让我阅读...」**不收敛**,无 JSON 产出。= SWE-agent 单 loop 失败形态。
+    - 调研铁证(Agentless arXiv 2407.01489):同模型 GPT-4o,**分阶段 32%/$0.70/78K token** vs **单 loop 18.3%/$2.53/498K** —— 分阶段质量/成本/token 三项全胜(不是「贵但稳」,是「又便宜又稳又准」)。消融:**skeleton(698 行,58% 命中)完胜整文件(778 行,53.7%)** = lost-in-the-middle;glm-5.2 内联大片代码过载是不收敛根因。
+    - 设计(对齐 Agentless 三阶段 + MASAI 子 agent 元组):
+      ① `localize_delegate`(有工具,只定位 root_cause/evidence,**禁补丁**)→ JSON;
+      ② `repair_delegate`(根因已锁,只改局部,采 N 候选)→ patch;
+      ③ `verify`(Hyperion 自跑,无 LLM:Tier 0 `git apply --check`/编译/apply-revert + Tier 1 repro test rerank);
+      ④ `review_delegate`(可选,Tier 2 跨家族对抗审,reviewer 先判 intervene 防重写退化);
+      ⑤ report+memorize。阶段间走文件(workspace delegate/artifacts,MASAI「不对话只 input/output 串接」)。
+    - 验证分层(路 2 调研):执行信号(repro test F2P)是唯一硬信号(MASAI 证 LLM 单独选不准 patch);LLM judge 弱(偏 gold-like + SWE-bench 7.8% overfit);对抗审 cross-model 数据:reviewer ≥ writer 才涨点(Codex 自审 +12.9pp、Claude 自审 +0、弱审强 **-8.6pp 退化**)。
+    - `CodingAgentDelegate` 接口不用改(`run` 调多次,每次不同 schema),符合三锁定决策 #2。
+    - 完整设计:bug-rca-design.md §多阶段委托。
+    - 分档:**R2 收尾**拆 `node_delegate` → localize + repair 两阶段 + verify Tier 0(tolerant apply);**R3** 加多候选采样(N=3)+ repro test rerank(workspace 6 步);**R5** 加跨模型对抗审 + 2 轮反馈循环 + 退化熔断。
+    - 目标阶段:**R2收尾两阶段 → R3多候选+repro → R5对抗审**。
