@@ -171,7 +171,12 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 
 **quilt 场景**(系统包/Debian):`final.diff` → `debian/patches/fix-bug-N.diff` + 更新 `series` → `quilt push -a`。
 
-**生成 diff 的机制**(复用 deer-flow `workspace_changes/{scanner,diff}.py`):runtime 在 opencode 跑前后各扫一次 `code/`,`compare_snapshots` + `difflib.unified_diff` 生成 patch —— 比"让 LLM 直接吐 diff 文本"更准(观察实际文件改动)。scanner 有保护:排除 `.git/.venv/node_modules`、二进制识别、敏感文件(`.env/.key/*credential*` 只存元数据)、大小上限。
+**生成 diff 的机制 —— 双观察通道(2026-07-30 审核增强 F5)**:不依赖 LLM 吐格式正确的 diff,用**两路观察交叉校验**:
+1. **流内 filediff**(即时):opencode `--format json` 流里,每次 `edit`/`write`/`apply_patch` 完成时,opencode 已从真实前后内容算好 `tool_use.part.metadata.filediff = {file, patch, additions, deletions}`(`opencode/.../tool/edit.ts`)。`delegate.py:_parse_stream` 分类这些事件 → `DelegateResult.edits`。
+2. **跑后 git diff**(ground truth):复用 deer-flow `workspace_changes/{scanner,diff}.py`,opencode 跑前后各扫一次 `code/`,`compare_snapshots` + `difflib.unified_diff`。scanner 有保护:排除 `.git/.venv/node_modules`、二进制识别、敏感文件(`.env/.key/*credential*` 只存元数据)、大小上限。
+3. **交叉校验**:sum(流内 filediff) vs 跑后 git diff 不一致 → 记告警(有工具改了文件 opencode 未报,或反之)。两路任一可用即产出 `patch/final.diff`,根治 R2「LLM 吐 diff off-by-one」通病。
+
+> ⚠️ **verify 范围(2026-07-30 审核纠正 F3)**:wpa_supplicant(autotools+libnl/dbus/elogind/openssl…)、bluez(ell/dbus/glib/udev…)的**构建环境是未落实硬前提**,且多无测试套件。**R3 默认只做 Tier 0**(上列步骤 1-3:clean checkout / apply --check / apply-revert 证必要);**步骤 4-5(编译 / F2P / P2P)门控于「构建环境就绪」**(独立子任务,可能并 R5 Docker 容器)。无测试套件时,repro 用**日志符号化替代**(见 [bug-rca-design.md §7.5](bug-rca-design.md) F4),不强凑 F2P/P2P。
 
 ---
 

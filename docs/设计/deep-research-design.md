@@ -1,7 +1,9 @@
 # 代码仓深度调研工作流 — 设计文档(P1)
 
 > 状态:设计稿 v1(2026-07-28)· 实现阶段:**R3**(PR 跟踪子项 **R4**)
-> 上位文档:[architecture.md §3/§7](architecture.md) · 参考:deer-flow Reporter、code-review-graph、Aider repo-map、gpt-researcher、storm
+> 上位文档:[architecture.md §3/§7](architecture.md) · 参考:**DocAgent**(多 agent 代码文档生成)+ gpt-researcher(行内引用)+ code-review-graph(结构图)+ Aider repo-map + storm(多视角提问)
+>
+> ⚠️ **2026-07-30 审核纠正**:旧版引用「deer-flow Reporter(cited Markdown)」作 cited-reporting 借鉴源。实测本地 deer-flow(`bytedance/deer-flow` harness 版)经全仓 grep 确认**无 Reporter/Researcher/Planner/Coordinator 任何类、无 `src/graph/`** —— 经典 Coordinator→Planner→Researcher→Reporter 管线已被重构成单 agent + 中间件链,只剩 prompt skill `skills/public/deep-research/SKILL.md`(且其 research 是 web 检索,非代码仓溯源)。**故 cited-reporter 由 Hyperion 自建**,借鉴源改用更贴合的 DocAgent(代码域 + 对代码库 fact-check)。
 
 ---
 
@@ -75,7 +77,7 @@ parser.py(已抽 defs)→ + tags.scm 抽 refs → networkx 建图 → PageRank
 
 | 借鉴 | 来源 | 用在哪 |
 |---|---|---|
-| Orchestrator→Planner→Researcher→Reporter 主脊 | [deer-flow](https://github.com/bytedance/deer-flow) Reporter | 整体流程(cited Markdown) |
+| **多 agent 代码文档生成(Reader/Searcher/Writer/Verifier + 对代码库 fact-check)** | [DocAgent](https://arxiv.org/abs/2504.08725)(ACL 2025)+ gpt-researcher 行内引用 | report 步:cited MD + 每结论锚 file:line + 写完对代码库核验(deer-flow harness 无 Reporter,见文首纠正) |
 | **行内引用纪律** + 并行执行 | [gpt-researcher](https://github.com/assafelovic/gpt-researcher) | 每结论 → source file:line |
 | **多视角提问**生成大纲 | [storm](https://github.com/stanford-oval/storm) | plan 步:模拟 安全/性能/维护者 视角问"这模块该深挖啥" |
 | **图驱动架构地图** | code-review-graph | report 的"系统架构"章节 |

@@ -224,6 +224,7 @@ delegate(omp/opencode)干活时,经 MCP 查 Hyperion 的:`memory_recall`(查历�
 - **Tier 1 执行信号**(核心):repro test(F2P)+ majority voting。MASAI 证「LLM 单独选不准 patch,加测试执行才能 rank」;1→5 sample 命中率 23%→35%。
 - **Tier 2 对抗审查**(无测试时):跨家族模型审(cross-model 数据:reviewer ≥ writer 才涨点 —— Codex 自审 +12.9pp、Claude 自审 +0、弱审强 **-8.6pp 退化**);reviewer「先判 intervene」防重写。
 - SWE-bench 有 7.8% overfit(测试过≠对),二次审核拦这批。
+- ⚠️ **无测试套件的 C 仓(wpa/bluez 多数情况,2026-07-30 审核纠正 F4)**:Tier 1 repro test 落不了地 → 改用**日志/堆栈符号化 repro 替代**(`log_preprocess`+addr2line:patch 后 panic 条件/症状行是否不再可达)+ **LLM Selector**(Trae 式多 selector 投票,SWE-bench Verified #1 70.6%);SBFL 纯谱对无测试 C 不现实跳过。**诚实准确率**:report 必标 **METR 警示**([metr.org 2026-03-10](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/):~半数 test-passing PR 不会被合 → 测试是必要非充分,根因准确性靠证据纪律 + LLM Selector + 人工终审,不单靠 test-pass)。
 
 ### 落地分档
 - **R2 收尾**:`node_delegate` 拆 `node_delegate_localize` + `node_delegate_repair`(中间 state 传 `localization_json`);localize prompt 用**指引**(file:line,不内联大片,避 lost-in-the-middle);verify Tier 0(tolerant apply,已有)。**`CodingAgentDelegate` 接口不改**(`run` 调多次,每次不同 schema)。

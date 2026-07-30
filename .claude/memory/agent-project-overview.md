@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-07-29T03:36:06.203Z
+  modified: 2026-07-30T06:53:12.210Z
 ---
 
 **项目名:Hyperion**(GitHub `TuNaiChao/Hyperion`,本地目录 `/home/tnc/Desktop/Agent/Hyperion`,Python 包名 `hyperion`)。tagline:*Light on every root cause.* 两台机开发:Linux + macOS,uv 管 Python、`scripts/setup.sh` 装系统工具、`.claude/memory/` 随 git 同步记忆。
@@ -29,7 +29,7 @@ metadata:
 **R1 deferred(记 backlog)**:CRG 结构路实测(待装 extra + tree-sitter-c 给 wpa/bluez,R3);Weibull 衰减(生产跑 exp halflife);CJK BM25 分词(jieba);本地 ONNX 向量档。
 
 核心约束(易忘、非代码可见):
-- **参考实现(只读,.gitignore,各自 clone)**:`deer-flow/`(架构主脊 + Reporter + MemoryManager ABC)、`oh-my-pi/`(委托目标 omp + mnemopi 记忆件)、`code-review-graph/`(结构图引擎,blast-radius/架构地图)。其它高星参考见 architecture.md §10(aider/agentless/swe-agent/openhands 等)。
+- **参考实现(只读,.gitignore,各自 clone)**:`deer-flow/`(架构主脊 = 单 agent + 中间件链 + MemoryManager ABC;⚠️**harness 版无经典 Reporter/研究图/Coordinator→Planner→Researcher→Reporter 管线** —— 已被重构成单 agent+中间件,只剩 prompt skill,cited-reporter 须自建、借 DocAgent arXiv 2504.08725)、`oh-my-pi/`(委托目标 omp + mnemopi 记忆件)、`code-review-graph/`(**可进程内 import** `from code_review_graph.graph import GraphStore`,社区检测需 `[communities]` extra 否则降级文件聚类)、`aider/`(`repomap.py` PageRank,本地可移植)、`agentless/`(`repair/rerank.py` majority_voting + `normalize_patch`,本地可移植)。其它高星参考见 architecture.md §10。
 - 模型工厂用**反射 + 配置声明**(`use: module:ClassName`)多 provider 自适应,加厂家零代码只改 config(`src/hyperion/platform/models.py`)——**已实现**。默认 DeepSeek,可换。
 - **.py 源码**:在窗口展示含中文注释、用户手敲;我不 Write/Edit .py 逻辑(例外:ruff --fix/format、我错误注释清理、显式委托 test)。config.yaml/pyproject/uv sync/验证/IDE 配置我直接做。注释面向小白。
 - v1 裁掉:`log_symbolizer`/`static_analysis`(委托给 omp/opencode 做),记 backlog;域工具(bluez/wpa plugins)暂缓。

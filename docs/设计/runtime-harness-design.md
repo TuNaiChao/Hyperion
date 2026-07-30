@@ -1,6 +1,8 @@
 # 运行时上下文管理 harness — 设计文档
 
-> 状态:设计稿 v1(2026-07-29)· 实现阶段:**R2 末搭骨架 → R3 深度调研上场 → R5 生产化补齐**
+> 状态:设计稿 v1(2026-07-29,R3-审核修订 2026-07-30)· 实现阶段:**R3 开场搭骨架 → R3 深度调研上场 → R5 生产化补齐**
+>
+> 📌 **2026-07-30 审核修订(F6/F7/F11)**:① 原「R2 末搭骨架」**整体挪到 R3 开场**(R2 九步不依赖 runtime、不验,R3 深度调研边搭边验)——文中残余「R2 末」字样均按「R3 开场」理解。② **factory 瘦身**:R3 中间件仅 ~5 个,用**普通有序 list**,不移植 deer-flow `_insert_extra`/`@Next/@Prev` 锚点机制(那是给 30+ 中间件排序的,R5 再上)。③ langchain **1.3.14 / langgraph 1.2.9**(`AgentMiddleware` 已实测可用);langgraph 1.2.9 的 delta-checkpoint 有上游 bug(deer-flow `checkpoint_patches.py` 正补它),**R3 用默认 full 模式避开**,delta 模式 + patches 推 R5。
 > 上位文档:[architecture.md](architecture.md) · 对标调研:[deer-flow-runtime-参考.md](../调研/deer-flow-runtime-参考.md)
 > 决策来源(用户 2026-07-29):「Hyperion 要有 deer-flow 同等的运行时上下文管理,自己能跑长 agent;但 coding 能力仍委托 opencode/omp」
 
@@ -113,7 +115,7 @@ src/hyperion/platform/runtime/        # 🆕 新增(对标 deer-flow harness 包
 
 ### 4.1 中间件框架 + factory(R2末)
 - 继承 `langchain.agents.middleware.AgentMiddleware[HyperionState]`,override `before_model` 等。
-- `create_hyperion_agent(features, extra_middleware, checkpointer, state_schema)`:`features` 声明式 flag 组主干中间件链,`extra_middleware` 支持 `@Next/@Prev` 锚点插入(照抄 deer-flow `_insert_extra`,`factory.py:357-430`)。
+- `create_hyperion_agent(features, extra_middleware, checkpointer, state_schema)`:`features` 声明式 flag 组主干中间件链。**R3 简化(F6)**:中间件仅 ~5 个 → 用**普通有序 list** 装配;`extra_middleware` 暂不支持 `@Next/@Prev` 锚点(照抄 deer-flow `_insert_extra`,`factory.py:357-430` —— 那是给 30+ 中间件链排序用的,R3 用不上,**推 R5**)。
 - **最终调 langchain `create_agent(model, tools, middleware, system_prompt, state_schema, checkpointer)`**——不自造 ReAct 循环(langgraph 内置 ModelNode→ToolNode)。
 
 ### 4.2 TokenBudget(R2末)— 几乎原样移植
@@ -142,7 +144,7 @@ src/hyperion/platform/runtime/        # 🆕 新增(对标 deer-flow harness 包
 ### 4.6 checkpointer(R2末)
 - 复用 LangGraph 官方 `SqliteSaver`(本地文件,零依赖),不自造后端。
 - `create_hyperion_agent(checkpointer=SqliteSaver(...))`,长任务可断点续跑。
-- full/delta channel 模式、checkpoint_patches(上游 bug 补丁)→ **R5 生产化再评估**。
+- full/delta channel 模式、checkpoint_patches(上游 bug 补丁)→ **R5 生产化再评估**。**R3 用默认 full 模式**(F11:langgraph 1.2.9 的 delta 模式有上游 bug —— InMemorySaver delta-history 丢 pending writes + Overwrite first-write 存 wrapper,d deer-flow `checkpoint_patches.py` 正补这两个;本机正是 1.2.9,full 模式不踩坑)。
 
 ### 4.7 HyperionState(R2末)
 ```python
