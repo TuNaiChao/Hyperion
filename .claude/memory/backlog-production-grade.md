@@ -337,3 +337,15 @@ metadata:
     - 完整设计:bug-rca-design.md §多阶段委托。
     - 分档:**R2 收尾**拆 `node_delegate` → localize + repair 两阶段 + verify Tier 0(tolerant apply);**R3** 加多候选采样(N=3)+ repro test rerank(workspace 6 步);**R5** 加跨模型对抗审 + 2 轮反馈循环 + 退化熔断。
     - 目标阶段:**R2收尾两阶段 → R3多候选+repro → R5对抗审**。
+
+55. **opencode serve persistent(B 档,session 续接精确化)** — `delegate.py` + opencode serve。
+    - 现状(R2):每次 `delegate.run` 新起 `opencode run` 进程,`--continue` 续**最近** session(粗糙,非精确 session_id);每次冷启动 opencode 二进制 + 加载 session。
+    - 演进:**起一个 `opencode serve`(长驻 HTTP server)**,Hyperion 用 `run --attach <url>` / SDK 喂多阶段 prompt 到**同 persistent session**(免冷启动 + 免 re-bootstrap + 精确 session_id 续);官方 multi-turn best practice(Critique.sh「avoids re-bootstrap on every turn」;Reddit /r/ollama 三 agent 用 serve 共享 session)。
+    - 价值:多 agent(localize/repair/review)共享同 session state;R5 multi-agent attach + 跨机(Tailscale/mdns)。
+    - 调研依据:WebSearch(opencode.ai/docs/server + critique.sh/coding-agent-api-persistent-sessions)。
+    - 目标阶段:**R3**(serve persistent 替代每次 run + 精确 session_id,配合 workspace_changes/多候选)+ **R5**(multi-agent attach)。
+
+56. **delegate 可观测性(timeout 存 stdout + 流式 + delegate_log 落盘)** — `delegate.py`。
+    - 现状(R2):`subprocess.run` capture_output 跑完拿全部;**timeout 时 `except TimeoutExpired` 丢 stdout**(`delegate.py` 不存,看不到 opencode 跑到哪);`--format json` **块缓冲**(流式观察失败,诊断脚本收不到中间事件);`/tmp/delegate_debug.txt` 是临时诊断(非正式,且 A+C 达标后可删)。
+    - 改:① **timeout 也存已收 stdout**(`TimeoutExpired` 前的 proc.stdout 部分落盘);② **流式读 stdout**(`Popen` + 逐行读,实时观察 step/text/tool 事件,不再块缓冲盲等);③ **`delegate/delegate_log/` 落盘**(workspace-design §2 已留目录)+ step_events 持久化(对标 deer-flow `subagents/step_events.py`,供可观测回放)。
+    - 目标阶段:**R3**(workspace 完整时 delegate_log 落盘 + 流式)+ **R5**(可观测生产化,Langfuse 串 thread_id)。
