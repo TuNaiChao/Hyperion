@@ -211,6 +211,53 @@ class DelegateConfig(BaseModel):
     claude: ClaudeDelegateConfig = Field(default_factory=ClaudeDelegateConfig)
 
 
+class RuntimeTokenBudgetConfig(BaseModel):
+    """runtime token 预算子配置(对应 token_budget.py 的 TokenBudgetConfig,R3.0 默认值同)。
+
+    面向小白:控制 lead agent(深度调研那种长 agent)一轮跑下来最多烧多少 token——
+    超软警告阈值给模型塞「快收尾」提示;超硬停阈值剥 tool_calls 让它自然停(不抛异常)。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    max_tokens: int = 1_000_000  # 总 token 上限(input+output)
+    max_input_tokens: int | None = None  # 可选:单限 input
+    max_output_tokens: int | None = None  # 可选:单限 output
+    warn_threshold: float = 0.7  # 软警告占比
+    hard_stop_threshold: float = 1.0  # 硬停占比
+
+
+class RuntimeToolOutputConfig(BaseModel):
+    """runtime 工具输出预算子配置(对应 tool_output.py 的 ToolOutputBudgetConfig)。
+
+    面向小白:agent 调工具(grep/bash/read)返回几万行不能全塞上下文。超过 externalize_min_chars
+    就把全文写到 outputs_dir,模型只看摘要 + 文件路径(需要细节自己 read_file 取)。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    externalize_min_chars: int = 30_000  # 超过 → 外化到磁盘 + synopsis 摘要
+    outputs_dir: str = "data/runtime/tool-outputs"  # 外化落盘根目录
+
+
+class RuntimeConfig(BaseModel):
+    """agent 运行时 harness 配置(R3,对标 deer-flow harness)。对应 config.yaml 的 runtime: 段。
+
+    面向小白:这一层控制 Hyperion 自己的 lead agent(长 agent)怎么跑——断点续跑用 sqlite/内存、
+    token 预算上限、工具输出外化阈值。R3.0 只驱动 checkpointer(checkpoint.py 读 checkpoint_backend/path);
+    token_budget/tool_output 子配置是声明式(R3.0 中间件用 dataclass 默认值,CLI/runtime 启动时再 wire)。
+    设计见 docs/设计/runtime-harness-design.md。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    enabled: bool = True  # runtime 总开关(R3.0 默认开)
+    checkpoint_backend: str = "sqlite"  # memory(内存,测)| sqlite(持久,默认)| postgres(R5)
+    checkpoint_path: str | None = None  # None → checkpoint.py 默认 data/runtime/checkpoint.sqlite
+    token_budget: RuntimeTokenBudgetConfig = Field(default_factory=RuntimeTokenBudgetConfig)
+    tool_output: RuntimeToolOutputConfig = Field(default_factory=RuntimeToolOutputConfig)
+
+
 class AppConfig(BaseModel):
     """顶层配置(models / model_roles / tools / sandbox)。"""
 
@@ -223,6 +270,7 @@ class AppConfig(BaseModel):
     code_index: CodeIndexConfig = Field(default_factory=CodeIndexConfig)  # 代码理解服务(P1)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # 记忆核心(R1,P3 差异化)
     delegate: DelegateConfig = Field(default_factory=DelegateConfig)  # 委托层(R2,P2 MVP)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)  # agent 运行时 harness(R3)
 
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。

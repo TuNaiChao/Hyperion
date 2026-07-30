@@ -12,3 +12,4 @@
 - [测试步骤+结果在窗口打印](show-test-steps-and-results-in-window.md) — 跑测试/验证时正文里写清"测了啥+期望+实际(绿/红)",不只甩 Bash 输出块。
 - [workspace 设计决策](workspace-design-decision.md) — 2026-07-29 定稿:bug-RCA 每 bug 一个 workspace 目录(七段)+本地默认/Docker R5+大日志分层预筛(Hyperion粗筛+delegate深挖)+补丁6步验证+复用 deer-flow sandbox;R2末最简/R3完整/R5 Docker。
 - [多阶段委托决策](multi-stage-delegate-decision.md) — 2026-07-30 定稿:delegate 拆 localize→repair→verify→可选review(解 glm-5.2 单loop不收敛);Agentless 32%/$0.70 vs SWE-agent 18.3%/$2.53(分阶段又便宜又稳);验证分层(执行信号硬/对抗审弱);R2收尾两阶段/R3多候选+repro/R5对抗审。
+- [runtime 中间件策略](runtime-middleware-policy.md) — 2026-07-30:不抄 deer-flow 30+,pull-by-need 加(R3.0=2/R3.2=5-8/R5选配);扩展口已留(middleware 列表+state_schema 自动合并+TypedDict+tool_output 沙箱钩子);将来 skills/MCP/鉴权/沙箱/artifacts/前端 R4/R5 加而不改;@Next/@Prev 链>7 再移植;记忆自建不抄。

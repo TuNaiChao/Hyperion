@@ -238,3 +238,23 @@ delegate:
   claude:                       # 备选(需另装 claude CLI;可选高档后端)
     bin: claude
     timeout: 600
+
+# ── agent 运行时 harness(R3)─────────────────────────────────────────
+# 面向小白:Hyperion 自己的 lead agent(深度调研那种长 agent)跑起来的护栏——
+# 断点续跑(checkpointer)+ token 预算闸(防烧爆)+ 工具输出外化(防单次工具返回撑爆上下文)。
+# 对标 deer-flow harness(自建 runtime,coding 活仍委托 opencode)。设计见 docs/设计/runtime-harness-design.md。
+# R3.0:runtime 只驱动 checkpointer(checkpoint.py 读 checkpoint_backend/path);
+#       token_budget/tool_output 子配置是声明式(中间件 R3.0 用默认值,CLI 启动时再 wire)。
+runtime:
+  enabled: true                 # runtime 总开关
+  checkpoint_backend: sqlite    # memory(内存,仅测)| sqlite(持久,默认,断点续跑)| postgres(R5)
+  checkpoint_path: null         # null → 默认 data/runtime/checkpoint.sqlite
+  token_budget:                 # 每 run token 预算(超软警告→塞「快收尾」;超硬停→剥 tool_calls 自然停)
+    max_tokens: 1000000         # 总 token 上限(input+output)
+    max_input_tokens: null      # 可选:单限 input
+    max_output_tokens: null     # 可选:单限 output
+    warn_threshold: 0.7
+    hard_stop_threshold: 1.0
+  tool_output:                  # 工具输出外化(超阈值写盘 + synopsis 摘要;模型需要细节 read_file 取)
+    externalize_min_chars: 30000
+    outputs_dir: data/runtime/tool-outputs

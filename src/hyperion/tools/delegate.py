@@ -40,8 +40,9 @@ import asyncio
 import json
 import os
 import re
-import subprocess
+import signal
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -119,8 +120,8 @@ class CodingAgentDelegate(abc.ABC):
         output_schema: dict | None = None,
         *,
         timeout: float | None = None,
-        agent: str | None = None,           # 指定 delegate agent(hyperion-localize/repair)
-        continue_session: bool = False,     # 多阶段同会话续接(A:--continue 续最近 session)
+        agent: str | None = None,  # 指定 delegate agent(hyperion-localize/repair)
+        continue_session: bool = False,  # 多阶段同会话续接(A:--continue 续最近 session)
     ) -> DelegateResult:
         """跑一次委托。
 
@@ -159,16 +160,19 @@ class CodingAgentDelegate(abc.ABC):
 class OpencodeDelegate(CodingAgentDelegate):
     """opencode 后端。
 
-    流程:subprocess 跑 `opencode run --format json --auto --dir <cwd> "<prompt>"`
-    → 拿全部 stdout(NDJSON 事件流)→ 逐行 json.loads → 聚 type=="text" 的
-    part.text(按 messageID 分组保序)→ 最后一条消息的拼接 = final_text → 抠 JSON。
-
-    async 实现:用 asyncio.to_thread 把同步 subprocess.run 包成异步(最小实现,
-    跑完拿全部输出再解析;流式观察留 backlog)。
+    流程:流式跑 `opencode run --format json --auto --dir <cwd> "<prompt>"`(R3.0 #56:
+    asyncio.create_subprocess_exec + 逐行 drain stdout/stderr)→ 逐行 json.loads
+    → 聚 type=="text" 的 part.text(按 messageID 分组保序)→ 最后一条消息的拼接
+    = final_text → 抠 JSON。超时 kill 进程组 + 存已收 stdout;delegate_log 落盘。
     """
 
     async def run(self, prompt, cwd, output_schema=None, *, timeout=None, agent=None, continue_session=False):
-        """跑一次委托。agent=指定 opencode agent(hyperion-localize/repair);continue_session=True 续同 cwd 最近 session(A)。"""
+        """跑一次委托。agent=指定 opencode agent(hyperion-localize/repair);continue_session=True 续同 cwd 最近 session。
+
+        R3.0 #56 可观测增强:① 流式逐行读 stdout/stderr(弃 R2 的块缓冲盲等,实时可见);
+        ② 超时 kill 整个进程组 + 存已收 stdout(R2 timeout 会丢 stdout,无法诊断跑到哪);
+        ③ 正式 delegate_log 落盘(替 /tmp/delegate_debug.txt)。
+        """
         cfg = get_app_config().delegate.opencode
         cmd = self._build_cmd(cfg, prompt, cwd, agent, continue_session)
         timeout = timeout or cfg.timeout
@@ -181,43 +185,69 @@ class OpencodeDelegate(CodingAgentDelegate):
             _cp = _cp if _cp.is_absolute() else _HYPERION_ROOT / _cp
             env["OPENCODE_CONFIG"] = str(_cp)
 
-        # 用 to_thread 在后台线程跑同步 subprocess,不阻塞事件循环(workflow 是 async 的)
+        # 流式跑:start_new_session=True 让 opencode 独立成进程组(超时可 killpg 整组,防子进程残留)
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,  # noqa: S603 —— 跑 config 配的 opencode 二进制,非 shell
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd),
+            env=env,
+            start_new_session=True,
+        )
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+
+        async def _drain(stream, sink: list[bytes]) -> None:
+            """逐行流式读(弃块缓冲);并发 drain stdout+stderr 防 stderr 管道写满阻塞 opencode。"""
+            if stream is None:
+                return
+            async for line in stream:
+                sink.append(line)
+
         try:
-            proc = await asyncio.to_thread(
-                subprocess.run,  # noqa: S603 —— 跑用户在 config 里配的 opencode 二进制,非 shell
-                cmd,
-                capture_output=True,
-                text=True,
+            await asyncio.wait_for(
+                asyncio.gather(_drain(proc.stdout, stdout_chunks), _drain(proc.stderr, stderr_chunks)),
                 timeout=timeout,
-                cwd=str(cwd),
-                env=env,
             )
-        except subprocess.TimeoutExpired:
+        except TimeoutError:
+            # 超时:kill 进程组 + 存已收 stdout(R2 块缓冲 timeout 会丢 stdout,看不到跑到哪)
+            self._kill_proc_group(proc)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)  # 收尸,防僵尸
+            except TimeoutError:
+                pass
+            partial = b"".join(stdout_chunks).decode("utf-8", "replace")
+            stderr_tail = b"".join(stderr_chunks).decode("utf-8", "replace")[-2000:]
+            self._write_delegate_log(cwd, partial, stderr_tail, status="timeout")
             return DelegateResult(
                 final_text="",
                 status=DelegateStatus.TIMEOUT,
-                error=f"opencode 超时({timeout}s)",
+                error=f"opencode 超时({timeout}s);已收 {len(partial)} 字节 stdout(见 delegate_log)",
             )
 
+        await proc.wait()  # 正常收尸
+        stdout = b"".join(stdout_chunks).decode("utf-8", "replace")
+        stderr = b"".join(stderr_chunks).decode("utf-8", "replace")
+
         if proc.returncode != 0:
+            self._write_delegate_log(cwd, stdout, stderr[-2000:], status="error")
             return DelegateResult(
                 final_text="",
                 status=DelegateStatus.ERROR,
-                error=f"opencode 退出码 {proc.returncode};stderr 尾: {(proc.stderr or '')[-2000:]}",
+                error=f"opencode 退出码 {proc.returncode};stderr 尾: {stderr[-2000:]}",
             )
 
-        final_text, tokens, events, all_text = self._parse_stream(proc.stdout)
+        final_text, tokens, events, all_text = self._parse_stream(stdout)
         result = DelegateResult(final_text=final_text, tokens=tokens, events=events)
-
-        # 诊断日志:看 JSON 到底在哪条消息(schema 时排查用;达标后可删)
-        try:
-            Path("/tmp/delegate_debug.txt").write_text(
-                f"=== final_text (last msg, {len(final_text)} chars) ===\n{final_text[:6000]}\n\n"
-                f"=== all_text ({len(all_text)} chars, head 8000) ===\n{all_text[:8000]}\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
+        self._write_delegate_log(
+            cwd,
+            stdout,
+            stderr[-2000:] if stderr else "",
+            status="ok",
+            final_text=final_text,
+            all_text=all_text,
+        )
 
         if output_schema is not None:
             data = _extract_json(all_text)  # ← 从所有 message 找 JSON(不只最后一条)
@@ -227,6 +257,64 @@ class OpencodeDelegate(CodingAgentDelegate):
             else:
                 result.data = data
         return result
+
+    # ── R3.0 #56 可观测辅助 ──────────────────────────────────────────
+    @staticmethod
+    def _kill_proc_group(proc) -> None:
+        """kill 整个 opencode 进程组(start_new_session 下 proc.pid 是 group leader),兜底单杀。
+
+        为什么 killpg 不 kill:opencode 可能 spawn 子进程(grep/tool),单杀 opencode 留孤儿;
+        killpg 整组连子进程一起清(复用 platform/sandbox/local.py:_kill_process_group 同款)。
+        """
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+
+    @staticmethod
+    def _delegate_log_dir(cwd) -> Path:
+        """delegate_log 落盘目录:优先 <cwd>/delegate/delegate_log(workspace 场景);否则 data/runtime/delegate_log/。
+
+        workspace 场景(bug-RCA):cwd 是 workspace 根,有 delegate/ 目录 → 日志跟 bug 一起归档。
+        非 workspace(临时):落到 Hyperion 的 data/runtime/delegate_log/(gitignore)。
+        """
+        ws_log = Path(cwd) / "delegate" / "delegate_log"
+        if ws_log.parent.exists():  # workspace 有 delegate/ 目录才往那写
+            return ws_log
+        return _HYPERION_ROOT / "data" / "runtime" / "delegate_log"
+
+    @staticmethod
+    def _write_delegate_log(
+        cwd,
+        stdout: str,
+        stderr_tail: str,
+        *,
+        status: str,
+        final_text: str = "",
+        all_text: str = "",
+    ) -> None:
+        """把本次 delegate 的 stdout(全量)+ 摘要落盘(可观测回放;替 /tmp/delegate_debug.txt)。
+
+        两个文件:<ts>-<status>.stdout.log(原始 NDJSON 流,供 _parse_stream 复盘)+
+                  <ts>-<status>.summary.md(摘要:stderr 尾 + final_text + all_text 头)。
+        """
+        try:
+            log_dir = OpencodeDelegate._delegate_log_dir(cwd)
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            (log_dir / f"{ts}-{status}.stdout.log").write_text(stdout, encoding="utf-8")
+            (log_dir / f"{ts}-{status}.summary.md").write_text(
+                f"# delegate log {ts} [{status}]\n\n- stdout: {len(stdout)} 字节\n"
+                f"- stderr 尾:\n```\n{stderr_tail}\n```\n\n"
+                f"## final_text ({len(final_text)} chars)\n{final_text[:6000]}\n\n"
+                f"## all_text ({len(all_text)} chars, head 8000)\n{all_text[:8000]}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     @staticmethod
     def _build_cmd(cfg, prompt: str, cwd, agent=None, continue_session=False) -> list[str]:
@@ -320,7 +408,6 @@ def _extract_json(text: str) -> dict | None:
     return best
 
 
-
 # ──────────────────────────────────────────────────────────────────────────
 # §5 备选后端(占位,待本机可用时实现)
 # ──────────────────────────────────────────────────────────────────────────
@@ -335,16 +422,11 @@ class OmpDelegate(CodingAgentDelegate):
     """
 
     async def run(self, prompt, cwd, output_schema=None, *, timeout=None):
-        raise NotImplementedError(
-            "OmpDelegate 未实现(本机 omp 未装)。config delegate.backend 改 opencode,"
-            "或待 omp 装好后实现。"
-        )
+        raise NotImplementedError("OmpDelegate 未实现(本机 omp 未装)。config delegate.backend 改 opencode,或待 omp 装好后实现。")
 
 
 class ClaudeDelegate(CodingAgentDelegate):
     """claude code 后端(占位 —— 需另装 claude CLI)。可选高档后端(R4+)。"""
 
     async def run(self, prompt, cwd, output_schema=None, *, timeout=None):
-        raise NotImplementedError(
-            "ClaudeDelegate 未实现(本机 claude CLI 未装)。"
-        )
+        raise NotImplementedError("ClaudeDelegate 未实现(本机 claude CLI 未装)。")

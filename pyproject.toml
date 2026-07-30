@@ -32,6 +32,8 @@ dependencies = [
     # 只用它的通用机制 + 自写 ClangdServer 适配器(multilspy 0.0.15 无 clangd、main 未发版且 cmd 不带 flag,见设计文档 §5.1)。
     # 依赖轻(pygls/lsprotocol/requests/jedi),无 torch/node。
     "multilspy>=0.0.15,<0.1",
+    "langgraph-checkpoint-sqlite>=3.1.0",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
