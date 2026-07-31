@@ -1,8 +1,8 @@
 """R3.1 #54-rework B 迭代 verify-refine 双循环 · 离线逻辑测试。
 
 不真跑 opencode / git:scripted delegate(按序吐 DelegateResult)+ mock _observe_patch /
-validate_patch / get_app_config / _rerank_fallback。验 loop 决策逻辑 ——
-localize(confirmed / visit / max-loop / infra-error)+ repair(verified / visit / max-loop+rerank关 / 兜底开)。
+validate_patch / get_app_config。验 loop 决策逻辑 ——
+localize(confirmed / visit / max-loop / infra-error)+ repair(verified / visit / max-loop)。
 """
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def _patch_delegate(monkeypatch, delegate):
     monkeypatch.setattr(CodingAgentDelegate, "from_config", classmethod(lambda cls: delegate), raising=False)
 
 
-def _fake_cfg(max_localize=2, max_repair=2, rerank_enabled=False, sample_count=3):
-    """够 loop 用的假 config(只 delegate.max_*_loops + delegate.rerank.*)。
+def _fake_cfg(max_localize=2, max_repair=2):
+    """够 loop 用的假 config(只 delegate.max_*_loops)。
 
     用 SimpleNamespace 而非嵌套 class:Python 类作用域不参与闭包(class body 里引用外层
     函数参数会 NameError),SimpleNamespace 没这坑。
@@ -47,7 +47,6 @@ def _fake_cfg(max_localize=2, max_repair=2, rerank_enabled=False, sample_count=3
         delegate=SimpleNamespace(
             max_localize_loops=max_localize,
             max_repair_loops=max_repair,
-            rerank=SimpleNamespace(enabled=rerank_enabled, sample_count=sample_count),
         )
     )
 
@@ -170,11 +169,11 @@ def test_repair_revisit_then_verified(monkeypatch):
     assert d.calls[1]["continue"] is True
 
 
-def test_repair_max_loop_rerank_disabled(monkeypatch):
-    """K2=2 都没过 + rerank 关(默认)→ verified=False、patch=末次、不 fan-out。"""
+def test_repair_max_loop_exhausted(monkeypatch):
+    """K2=2 都没过 → verified=False、patch=末次(rerank 已移除,无 fan-out)。"""
     d = _ScriptedDelegate([_rep("needs_fix"), _rep("needs_fix")])
     _patch_delegate(monkeypatch, d)
-    _cfg(monkeypatch, max_repair=2, rerank_enabled=False)
+    _cfg(monkeypatch, max_repair=2)
     _patch_observe_validate(
         monkeypatch,
         ["P1", "P2"],
@@ -185,29 +184,4 @@ def test_repair_max_loop_rerank_disabled(monkeypatch):
     assert out["verified"] is False
     assert out["repair_loops"] == 2
     assert out["patch"] == "P2"
-    assert out["rerank_summary"] is None  # 没触发兜底
     assert len(d.calls) == 2  # 没 fan-out
-
-
-def test_repair_rerank_fallback_fires(monkeypatch):
-    """K2=2 都没过 + rerank 开 → fan-out 兜底(这里 mock _rerank_fallback 验接线)。"""
-    d = _ScriptedDelegate([_rep("needs_fix"), _rep("needs_fix")])
-    _patch_delegate(monkeypatch, d)
-    _cfg(monkeypatch, max_repair=2, rerank_enabled=True, sample_count=2)
-    _patch_observe_validate(
-        monkeypatch, ["P1", "P2"],
-        [{"verified": False, "forward_method": "failed", "log": "x"},
-         {"verified": False, "forward_method": "failed", "log": "y"}],
-    )
-
-    async def fake_fallback(state, n, repo_root, code_dir, schema):
-        return ([], "P_RERANK", True, {"reason": "majority", "n_candidates": 2})
-
-    monkeypatch.setattr(nodes, "_rerank_fallback", fake_fallback)
-
-    out = asyncio.run(node_delegate_repair_loop(_state(prompt="修它", output_schema=REPAIR_SCHEMA)))
-    assert out["verified"] is True
-    assert out["patch"] == "P_RERANK"
-    assert out["rerank_summary"]["reason"] == "majority"
-    assert out["verdict_chain"][-1].startswith("rerank:")
-    assert out["repair_loops"] == 2  # 不含 rerank 那次

@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-07-31T01:33:33.693Z
+  modified: 2026-07-31T03:10:54.406Z
 ---
 
 2026-07-30 定稿:bug-RCA delegate 从「单次复合委托」(opencode 单 agent loop,定位+补丁+报告一次产)改为**多阶段委托**(对齐 Agentless 三阶段 + MASAI 子 agent 元组):
@@ -21,4 +21,4 @@ metadata:
 
 ---
 
-**2026-07-31 反转(#54-rework → B):** R3 原「多候选采样 N=3 + majority voting」**弃用**,改**迭代 verify-refine(B)**:同一个 opencode session 贯穿 localize/repair 两阶段(`--continue` 链;已核查 opencode `run.ts:492`+`prompt.ts:1092/672-689` —— `--continue` 与 `--agent` 正交,session 内中途换 agent 支持;两 agent 须 `mode: primary`),verdict 由 opencode 证伪式自审产出(confirmed/needs_revisit、verified/needs_fix)+ `validate_patch` 执行硬门控(非 LLM),max-loop 兜底。**Why:** 投票前提 wpa/bluez 全缺(无测试 oracle + C 补丁形态发散 + glm-5.2 近确定性 → N 样本雷同 → 投票平凡 + N× token 白烧);K 轮 refine 复用 KV 比冷启动采样省 70-96% token;self-verify 偏差(Stechly/Kamoi/Huang)→ 必叠证伪自审 + 执行门控。**majority_vote 降为兜底**(`delegate.rerank.enabled` 默认关;仅 loop 耗尽 + enabled 才 fan-out),换领域用:localize 文件投票(R3.1 方案A)/ 深度调研事实一致性(R3.2)/ 有 oracle 的 patch(R5)。config:`delegate.max_localize_loops`/`max_repair_loops`(默认 2)。落地:`node_delegate_localize_loop`/`node_delegate_repair_loop`(8 测试绿)。关联 [[rerank-mechanism-where-it-shines]]。
+**2026-07-31 反转(#54-rework → B):** R3 原「多候选采样 N=3 + majority voting」**弃用**,改**迭代 verify-refine(B)**:同一个 opencode session 贯穿 localize/repair 两阶段(`--continue` 链;已核查 opencode `run.ts:492`+`prompt.ts:1092/672-689` —— `--continue` 与 `--agent` 正交,session 内中途换 agent 支持;两 agent 须 `mode: primary`),verdict 由 opencode 证伪式自审产出(confirmed/needs_revisit、verified/needs_fix)+ `validate_patch` 执行硬门控(非 LLM),max-loop 兜底。**Why:** 投票前提 wpa/bluez 全缺(无测试 oracle + C 补丁形态发散 + glm-5.2 近确定性 → N 样本雷同 → 投票平凡 + N× token 白烧);K 轮 refine 复用 KV 比冷启动采样省 70-96% token;self-verify 偏差(Stechly/Kamoi/Huang)→ 必叠证伪自审 + 执行门控。**2026-07-31 进一步:patch 投票 rerank 整体移除**(连"默认关"兜底都删 —— 无 oracle 时投票平凡白烧 token + 和主路径哲学矛盾,见 [[rerank-mechanism-where-it-shines]]);`rerank.py`/`RerankConfig`/`_rerank_fallback` 全删。未来 R3.2 调研事实一致性 / R5 有 oracle 的 patch 若需投票,到时再写,不预建。config:`delegate.max_localize_loops`/`max_repair_loops`(默认 2)。落地:`node_delegate_localize_loop`/`node_delegate_repair_loop`(8 测试绿)。关联 [[rerank-mechanism-where-it-shines]]。

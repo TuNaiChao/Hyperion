@@ -301,7 +301,7 @@ metadata:
     - 目标阶段:**R3**(workspace 完整落地时)。
 
 51. **补丁可 apply 验证 6 步(SWE-bench/Agentless 标准)** — `src/hyperion/services/workspace/validate.py`(R3)。
-    - 6 步:clean checkout(`git checkout base && git clean -xfd`)→ `git apply --check`(失败降级 --3way/`patch -p1`)→ revert 验证(应 fail)→ 编译 → FAIL_TO_PASS/PASS_TO_PASS 测试回归 → 多候选 rerank(Agentless)。
+    - 6 步:clean checkout(`git checkout base && git clean -xfd`)→ `git apply --check`(失败降级 --3way/`patch -p1`)→ revert 验证(应 fail)→ 编译 → FAIL_TO_PASS/PASS_TO_PASS 测试回归 → ~~多候选 rerank(Agentless)~~(已于 2026-07-31 移除,见 bug-rca-design.md §7.6;有 oracle 再评估)。
     - quilt 场景:`final.diff` → `debian/patches/fix-N.diff` + 更新 `series` + `quilt push -a`。
     - diff 生成:复用 deer-flow `workspace_changes`(观察 code/ 前后改动 + `difflib.unified_diff`),不依赖 opencode 吐格式正确的 diff。
     - 现状(R2):只 `bool(patch)` 非空检查(`nodes.py` node_verify);R3 补完整 6 步。
@@ -335,15 +335,15 @@ metadata:
     - 验证分层(路 2 调研):执行信号(repro test F2P)是唯一硬信号(MASAI 证 LLM 单独选不准 patch);LLM judge 弱(偏 gold-like + SWE-bench 7.8% overfit);对抗审 cross-model 数据:reviewer ≥ writer 才涨点(Codex 自审 +12.9pp、Claude 自审 +0、弱审强 **-8.6pp 退化**)。
     - `CodingAgentDelegate` 接口不用改(`run` 调多次,每次不同 schema),符合三锁定决策 #2。
     - 完整设计:bug-rca-design.md §多阶段委托。
-    - 分档:**R2 收尾**拆 `node_delegate` → localize + repair 两阶段 + verify Tier 0(tolerant apply);**R3** 加多候选采样(N=3)+ repro test rerank(workspace 6 步);**R5** 加跨模型对抗审 + 2 轮反馈循环 + 退化熔断。
-    - 目标阶段:**R2收尾两阶段 → R3多候选+repro → R5对抗审**。
+    - 分档:**R2 收尾**拆 `node_delegate` → localize + repair 两阶段 + verify Tier 0(tolerant apply);**R3.1** 改迭代 verify-refine(B)(同会话双循环);多候选采样投票 + rerank 已于 **2026-07-31 整体移除**(无 oracle 时平凡白烧 token,见 bug-rca-design.md §7.6);**R5** 加跨模型对抗审 + 2 轮反馈循环 + 退化熔断(有 oracle 再评估 filter+vote)。
+    - 目标阶段:**R2收尾两阶段 → R3.1 verify-refine(B) → R5对抗审**。
 
 55. **opencode serve persistent(B 档,session 续接精确化)** — `delegate.py` + opencode serve。
     - 现状(R2):每次 `delegate.run` 新起 `opencode run` 进程,`--continue` 续**最近** session(粗糙,非精确 session_id);每次冷启动 opencode 二进制 + 加载 session。
     - 演进:**起一个 `opencode serve`(长驻 HTTP server)**,Hyperion 用 `run --attach <url>` / SDK 喂多阶段 prompt 到**同 persistent session**(免冷启动 + 免 re-bootstrap + 精确 session_id 续);官方 multi-turn best practice(Critique.sh「avoids re-bootstrap on every turn」;Reddit /r/ollama 三 agent 用 serve 共享 session)。
     - 价值:多 agent(localize/repair/review)共享同 session state;R5 multi-agent attach + 跨机(Tailscale/mdns)。
     - 调研依据:WebSearch(opencode.ai/docs/server + critique.sh/coding-agent-api-persistent-sessions)。
-    - 目标阶段:**R3**(serve persistent 替代每次 run + 精确 session_id,配合 workspace_changes/多候选)+ **R5**(multi-agent attach)。
+    - 目标阶段:**R3**(serve persistent 替代每次 run + 精确 session_id,配合 workspace_changes/verify-refine)+ **R5**(multi-agent attach)。
 
 56. **delegate 可观测性(timeout 存 stdout + 流式 + delegate_log 落盘)** — `delegate.py`。
     - 现状(R2):`subprocess.run` capture_output 跑完拿全部;**timeout 时 `except TimeoutExpired` 丢 stdout**(`delegate.py` 不存,看不到 opencode 跑到哪);`--format json` **块缓冲**(流式观察失败,诊断脚本收不到中间事件);`/tmp/delegate_debug.txt` 是临时诊断(非正式,且 A+C 达标后可删)。

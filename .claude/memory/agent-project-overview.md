@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-07-30T06:53:12.210Z
+  modified: 2026-07-31T03:13:23.295Z
 ---
 
 **项目名:Hyperion**(GitHub `TuNaiChao/Hyperion`,本地目录 `/home/tnc/Desktop/Agent/Hyperion`,Python 包名 `hyperion`)。tagline:*Light on every root cause.* 两台机开发:Linux + macOS,uv 管 Python、`scripts/setup.sh` 装系统工具、`.claude/memory/` 随 git 同步记忆。
@@ -24,12 +24,12 @@ metadata:
 
 设计文档:**[architecture.md](../../docs/设计/architecture.md)**(v2 总纲)+ [memory-design.md](../../docs/设计/memory-design.md) / [bug-rca-design.md](../../docs/设计/bug-rca-design.md) / [deep-research-design.md](../../docs/设计/deep-research-design.md) + [p1-code-understanding-design.md](../../docs/设计/p1-code-understanding-design.md)(code_index 已成层)。计划文件:`~/.claude/plans/crystalline-dazzling-ladybug.md`。
 
-**路线 R0–R5**(见 architecture.md §8):R0 ✅规划落地 → **R1 ✅记忆核心(2026-07-29)** [MemoryService ABC + native 后端(SQLite+FTS5+向量,组合 code_index 语义 + code-review-graph 结构可选)+ memorize/recall/consolidate + mnemopi 式 Bayes 合并/bi-temporal 软删 + memory @tool + MCP server(反向:delegate 查 Hyperion)+ CLI `hyperion memory|mcp`;8 离线测试绿;DeepSeek 抽取+DashScope 向量/rerank 全链验通] → **R2 ✅bug-RCA MVP(2026-07-30 达标)**(委托 opencode **多阶段** localize→repair 两 delegate + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;端到端 delegate 收敛、产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ R3 代码仓深度调研(**workspace_changes** patch 根治 + 多候选/repro 根因准确性 + runtime 骨架 + CRG)→ R4 团队/多库 + PR 跟踪 → R5 生产化。
+**路线 R0–R5**(见 architecture.md §8):R0 ✅规划落地 → **R1 ✅记忆核心(2026-07-29)** [MemoryService ABC + native 后端(SQLite+FTS5+向量,组合 code_index 语义 + code-review-graph 结构可选)+ memorize/recall/consolidate + mnemopi 式 Bayes 合并/bi-temporal 软删 + memory @tool + MCP server(反向:delegate 查 Hyperion)+ CLI `hyperion memory|mcp`;8 离线测试绿;DeepSeek 抽取+DashScope 向量/rerank 全链验通] → **R2 ✅bug-RCA MVP(2026-07-30 达标)**(委托 opencode **多阶段** localize→repair 两 delegate + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;端到端 delegate 收敛、产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ R3 代码仓深度调研(**workspace_changes** patch 根治 + verify-refine/repro 根因准确性(rerank 2026-07-31 移除)+ runtime 骨架 + CRG)→ R4 团队/多库 + PR 跟踪 → R5 生产化。
 
 **R1 deferred(记 backlog)**:CRG 结构路实测(待装 extra + tree-sitter-c 给 wpa/bluez,R3);Weibull 衰减(生产跑 exp halflife);CJK BM25 分词(jieba);本地 ONNX 向量档。
 
 核心约束(易忘、非代码可见):
-- **参考实现(只读,.gitignore,各自 clone)**:`deer-flow/`(架构主脊 = 单 agent + 中间件链 + MemoryManager ABC;⚠️**harness 版无经典 Reporter/研究图/Coordinator→Planner→Researcher→Reporter 管线** —— 已被重构成单 agent+中间件,只剩 prompt skill,cited-reporter 须自建、借 DocAgent arXiv 2504.08725)、`oh-my-pi/`(委托目标 omp + mnemopi 记忆件)、`code-review-graph/`(**可进程内 import** `from code_review_graph.graph import GraphStore`,社区检测需 `[communities]` extra 否则降级文件聚类)、`aider/`(`repomap.py` PageRank,本地可移植)、`agentless/`(`repair/rerank.py` majority_voting + `normalize_patch`,本地可移植)。其它高星参考见 architecture.md §10。
+- **参考实现(只读,.gitignore,各自 clone)**:`deer-flow/`(架构主脊 = 单 agent + 中间件链 + MemoryManager ABC;⚠️**harness 版无经典 Reporter/研究图/Coordinator→Planner→Researcher→Reporter 管线** —— 已被重构成单 agent+中间件,只剩 prompt skill,cited-reporter 须自建、借 DocAgent arXiv 2504.08725)、`oh-my-pi/`(委托目标 omp + mnemopi 记忆件)、`code-review-graph/`(**可进程内 import** `from code_review_graph.graph import GraphStore`,社区检测需 `[communities]` extra 否则降级文件聚类)、`aider/`(`repomap.py` PageRank,本地可移植)、`agentless/`(`repair/rerank.py` majority_voting + `normalize_patch`;⚠️ 曾考虑移植,2026-07-31 决定**不移植** —— 无 oracle 时投票平凡,见 [[rerank-mechanism-where-it-shines]])。其它高星参考见 architecture.md §10。
 - 模型工厂用**反射 + 配置声明**(`use: module:ClassName`)多 provider 自适应,加厂家零代码只改 config(`src/hyperion/platform/models.py`)——**已实现**。默认 DeepSeek,可换。
 - **.py 源码**:在窗口展示含中文注释、用户手敲;我不 Write/Edit .py 逻辑(例外:ruff --fix/format、我错误注释清理、显式委托 test)。config.yaml/pyproject/uv sync/验证/IDE 配置我直接做。注释面向小白。
 - v1 裁掉:`log_symbolizer`/`static_analysis`(委托给 omp/opencode 做),记 backlog;域工具(bluez/wpa plugins)暂缓。

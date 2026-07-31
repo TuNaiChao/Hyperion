@@ -42,7 +42,7 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
 │   ├── contract.json          #   机器可读契约(输出格式/工具白名单/超时)
 │   └── delegate_log/          #   opencode 执行日志(事件流 step_events,供可观测回放)
 ├── artifacts/                 # opencode 写:中间产物
-│   ├── candidate_patches/     #   多候选补丁(001.diff/002.diff …,Agentless 做法)
+│   ├── candidate_patches/     #   (多候选补丁位;patch 投票 rerank 已于 2026-07-31 移除,不再产出)
 │   └── validate/              #   每候选的验证日志(apply/build/test)
 ├── patch/
 │   └── final.diff             # Hyperion 选定的最终补丁(必须 git apply --check 可过)
@@ -69,8 +69,8 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
 | `code/` / `triggers/issue.md` / `AGENTS.md` | Hyperion | 建 workspace 时:copytree + `.gitignore` + `git init`/base commit + 复制 issue |
 | `delegate/{prompt,context}.md` | Hyperion | 召回记忆 + code_index + **预筛日志** → 组装;prompt 是「线索 + 嫌疑起点指引 + JSON schema」(方式 B,非内联代码) |
 | `delegate/delegate_log/` | Hyperion(#56 可观测) | opencode stdout 流 + 摘要持久化(替 `/tmp` 诊断) |
-| `artifacts/candidate_patches/` | opencode | 多候选(Agentless)—— **兜底,`delegate.rerank.enabled` 默认关** |
-| `patch/final.diff` | Hyperion | git diff 观察 code/ 改动(主路径)+ 可选 rerank 兜底选 top-1 |
+| `artifacts/candidate_patches/` | (不产出) | 多候选(Agentless);patch 投票 rerank 已于 2026-07-31 **整体移除**(无 oracle 时平凡,见 [bug-rca-design.md §7.6](bug-rca-design.md)) |
+| `patch/final.diff` | Hyperion | git diff 观察 code/ 改动(repair loop 选定;rerank 已移除) |
 | `report/` / `docs/` | Hyperion | 综合产物生成报告;`docs/summary.md` 沉淀进 MemoryService |
 
 ### 多 bug 隔离
@@ -155,7 +155,7 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 
 ### 5.4 代码 localize file-level 预筛(关键字驱动,= 方案A)
 - 现状(R3.1):LLM 三层漏斗(file→function→line)已跑通;file-level 仍是 LLM 看目录树选(未接 code_index 检索)。
-- 改(方案A,R3.2+):用 keywords 对 `code_index` 做 BM25/embedding 检索取 top-20 文件 → LLM rerank top-5(输入从整棵树 → 20 行,快 + 准,对标 Agentless 正路)+ 可选 **localize 文件投票**(rerank A,复用 majority_vote)。
+- 改(方案A,R3.2+):用 keywords 对 `code_index` 做 BM25/embedding 检索取 top-20 文件 → LLM rerank top-5(输入从整棵树 → 20 行,快 + 准,对标 Agentless 正路)。(localize 文件多采样投票曾考虑,2026-07-31 随 patch rerank 一并移除 —— 现有单次 localize 准确度已够,多采样白烧 token。)
 
 ### 实现
 `services/trigger_parser/`(多格式解析 + 关键字抽取,R3)+ `services/log_preprocess/`(日志预筛,见 #50)+ localize file-level 改检索(方案A)。**关键字是三者的统一纽带**。
@@ -174,7 +174,7 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 3. clean checkout(`git checkout <base> && git clean -xfd`)。
 4. 编译(`make -j`,log → `artifacts/validate/build.log`)。
 5. 测试回归:FAIL_TO_PASS(patch 后必 pass)+ PASS_TO_PASS(无回归)。
-6. 多候选 rerank(Agentless)—— **兜底,`delegate.rerank.enabled` 默认关**(无测试 oracle 时投票平凡,见 [bug-rca-design.md §7.6](bug-rca-design.md))。
+6. ~~多候选 rerank(Agentless)~~ —— **已于 2026-07-31 移除**(无测试 oracle 时投票平凡,见 [bug-rca-design.md §7.6](bug-rca-design.md));有 oracle 时(R5)再评估。
 
 **quilt 场景**(系统包/Debian):`final.diff` → `debian/patches/fix-bug-N.diff` + 更新 `series` → `quilt push -a`。
 
@@ -211,7 +211,7 @@ opencode debug config && opencode models uniontech-ai      # 4. 验证
 |---|---|---|---|---|
 | **R2 末(最简)** | 本地目录 + 7 段 lite;delegate cwd=workspace | 本地 | 跳过(trigger 预摘要) | 步骤 1-3(apply/revert) |
 | **R3.1(已落最简)** | code/triggers/delegate/patch/report + AGENTS.md + `.gitignore` + git base | 本地 | 跳过(trigger 摘要) | Tier0(apply/revert)+ git diff 观察 |
-| **R3.2+(完整)** | 完整 7 段 + META + artifacts | 本地(`LocalSandbox`) | 完整粗筛 5 步 | 双通道 + (rerank 兜底默认关) |
+| **R3.2+(完整)** | 完整 7 段 + META + artifacts | 本地(`LocalSandbox`) | 完整粗筛 5 步 | 双通道(rerank 已移除) |
 | **R5(生产)** | 同结构 | Docker(`AioSandboxProvider`) | 同 | + 多架构镜像 + warm pool |
 
 **R2 末最简形态**(可能同时解当前 delegate timeout):delegate 改成「workspace 目录 + AGENTS.md 契约 + 方式 B 指引 prompt」(opencode 读全量 code/+logs 而非内联片段)。

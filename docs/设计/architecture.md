@@ -27,7 +27,7 @@
 |---|---|---|
 | **D1** | **调度型 agent**:重活委托给 omp/opencode,自做记忆+调度 | 差异化在记忆+调度,不在重造 coding agent;一人/数月预算要用在刀刃上 |
 | **D2** | **平台 + 三工作流 + 共享服务** 三层分离(沿用 v0.1 骨架) | 代码理解/记忆/沙箱/检索三流共用,避免三套实现 |
-| **D3** | bug-RCA **多阶段委托 + 迭代 verify-refine**(localize→repair 两阶段,同会话自审重试),结构化 JSON 契约,直出报告 | 用户要求"第一版别太复杂";R2 先两阶段(解 glm-5.2 单 loop 不收敛),R3.1 改 verify-refine 双循环(弃多候选采样投票,rerank 降兜底);自动 PoC 放 R5 |
+| **D3** | bug-RCA **多阶段委托 + 迭代 verify-refine**(localize→repair 两阶段,同会话自审重试),结构化 JSON 契约,直出报告 | 用户要求"第一版别太复杂";R2 先两阶段(解 glm-5.2 单 loop 不收敛),R3.1 改 verify-refine 双循环(弃多候选采样投票;**2026-07-31 patch rerank 整体移除**);自动 PoC 放 R5 |
 | **D4** | **记忆底座 = 自有 `MemoryService` 契约**(deer-flow MemoryManager ABC + oh-my-pi backend-swap 形状);v1 native 后端 = SQLite+FTS5+向量(复用 code_index embedder/reranker)+ CRG 结构路(可选 extra,默认关);cognee/mem0 可换 | 组合已有引擎避免第三套重叠检索栈;差异化(持续学习闭环)必须自己握住;零锁死 |
 | **D5** | **委托抽象 `CodingAgentDelegate`**;v1 默认 opencode(2026-07-29 调研修正:omp 本机装不上 github 墙+bun),omp/claude 可换 | opencode 已装 v1.18.3 + `run --format json` 事件流绕结构化坑 + 原生 MCP client 反向查记忆;omp 的 strict schema 强校验是最大价值(待本机可用切入) |
 | **D6** | MVP 先 **bug-RCA**(有 demo1/demo2 金标准可对照) | 一次验证记忆+委托+省 token+流水线四个痛点 |
@@ -212,12 +212,12 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 | **R1** | 记忆核心 v1 | `MemoryService` ABC + native 后端(code_index+code-review-graph)+ memorize/recall + MCP 暴露 + CLI `memory recall/add` | demo 报告抽成知识项存入、按语义+结构召回命中 |
 | **R2** ✅MVP | bug-RCA 端到端 | `CodingAgentDelegate`(opencode **glm-5.2**)**多阶段委托**(localize→repair,见 [bug-rca-design.md](bug-rca-design.md) §7.5)+ **A+C**:自定义 agent(hyperion-localize/repair)+ `steps` 强制收敛 + `--continue` session 续接 + tolerant apply;报告 + 记忆闭环 | **2026-07-30 达标**:端到端 delegate 收敛,报告+补丁+BugLesson 入记忆(recall 命中) |
 | **R3.0** ✅ | runtime 骨架 | `platform/runtime/` 5 件(factory/state/token_budget/tool_output/checkpoint)+ delegate 可观测(#56 流式+delegate_log) | 冒烟:中间件链+token 预算+checkpointer 生效;`hyperion models` 回归绿 |
-| **R3.1** 🔧 | bug-RCA 硬化 | **workspace_changes(#51:git diff 观察补丁,已 e2e 验)** + **迭代 verify-refine(B,#54-rework:同会话双循环+verdict 自审+validate_patch 门控;rerank 降兜底默认关)**;trigger_parser(#53)/log_preprocess(#50)/方案A检索预筛/localize-rerank-A/F2-eval 待做 | demo2 patch `git apply --check` 过 + verify-refine 双循环跑通 + report 标 METR 警示 |
+| **R3.1** 🔧 | bug-RCA 硬化 | **workspace_changes(#51:git diff 观察补丁,已 e2e 验)** + **迭代 verify-refine(B,#54-rework:同会话双循环+verdict 自审+validate_patch 门控;patch rerank 2026-07-31 移除)**;trigger_parser(#53)/log_preprocess(#50)/方案A检索预筛/F2-eval 待做 | demo2 patch `git apply --check` 过 + verify-refine 双循环跑通 + report 标 METR 警示 |
 | **R3.2** | 深度调研(P1 头条) | C parser + CRG 接入 + Aider repomap + runtime 正式上场(summarization/loop/子agent)+ deep_research workflow(多视角+事实一致性 rerank B) | `hyperion research --repo` → 带溯源架构/模块文档 + CodebaseFact 入记忆(recall 命中) |
 | **R3.3** | 收尾 | opencode serve persistent(#55)+ report 精修(#46) | serve 长驻 session 精确续;report 对齐 demo 金标骨架 |
 | **R3.4** | 文档摄取→记忆 | bug 报告/调研报告/补丁 → 分析 → 写记忆(PatchIngestPipeline:补丁 retrieve-then-summarize) | 三类文档 ingest→recall 命中;同根因去重合并 |
 | **R4** | 团队/多代码库 + PR 跟踪 | 租户隔离、文档统一管理、PR tracker workflow、opencode 后端(团队分发) | 多 owner/多库互不串;PR 跟踪出合入建议 |
-| **R5** | 生产化 | 对齐 deer-flow 边界处理、自动 PoC、仿真验证、可观测、backlog 逐条;**runtime 生产化**(checkpoint patches/双层记忆/sandbox ownership);**多候选 rerank 在 oracle 就绪后启用**(测试套件/#50 repro 落地) | 按 backlog-production-grade 清单收敛 |
+| **R5** | 生产化 | 对齐 deer-flow 边界处理、自动 PoC、仿真验证、可观测、backlog 逐条;**runtime 生产化**(checkpoint patches/双层记忆/sandbox ownership);**多候选 rerank 在 oracle 就绪后再评估**(不预建;测试套件/#50 repro 落地) | 按 backlog-production-grade 清单收敛 |
 
 > **路线逻辑**:R1 记忆是 R2/R3 共同地基;R2 用 demo 金标准一次验证四痛点;R3 复用 R1 记忆 + R2 委托;R4/R5 扩展。**不 day-1 全上**——每阶段一个可验证场景。
 

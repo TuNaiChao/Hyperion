@@ -3,7 +3,7 @@
 > 状态:**outline(R3.2 未开,greenfield)** · 实现阶段:R3.2(PR 跟踪子项 R4)
 > 上位文档:[architecture.md §3/§7](architecture.md) · 参考:**DocAgent**(多 agent 代码文档生成)+ gpt-researcher(行内引用)+ code-review-graph(结构图)+ Aider repo-map + storm(多视角提问)
 >
-> **R3.2 起点**:复用 bug-RCA 已验的 verify-refine graph 骨架 + localize 漏斗 + `memory.memorize`,不重起炉灶。**rerank B 档**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度(复用 `bug_rca/rerank.py` `majority_vote`,换"事实指纹"归一化)。
+> **R3.2 起点**:复用 bug-RCA 已验的 verify-refine graph 骨架 + localize 漏斗 + `memory.memorize`,不重起炉灶。**事实一致性(原"rerank B 档")**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度。⚠️ 原计划复用 `bug_rca/rerank.py`,但 **patch 投票 rerank 已于 2026-07-31 整体移除**(无 oracle 时平凡);R3.2 若要事实一致性投票,**届时自建小原语,不预借已删的 rerank.py**(YAGNI;调研轨迹多样性高、与 patch 投票不同,到时按需评估)。
 >
 > ⚠️ **2026-07-30 审核纠正**:旧版引用「deer-flow Reporter(cited Markdown)」。实测本地 deer-flow 经全仓 grep 确认**无 Reporter/Researcher/Planner/Coordinator、无 `src/graph/`**(经典管线已重构为单 agent + 中间件链,只剩 prompt skill)。**故 cited-reporter 由 Hyperion 自建**,借鉴 DocAgent(代码域 + 对代码库 fact-check)+ gpt-researcher 行内引用。
 
@@ -83,7 +83,7 @@ parser.py(已抽 defs)→ + tags.scm 抽 refs → networkx 建图 → PageRank
 | **行内引用纪律** + 并行执行 | [gpt-researcher](https://github.com/assafelovic/gpt-researcher) | 每结论 → source file:line |
 | **多视角提问**生成大纲 | [storm](https://github.com/stanford-oval/storm) | plan 步:模拟 安全/性能/维护者 视角问"这模块该深挖啥" |
 | **图驱动架构地图** | code-review-graph | report 的"系统架构"章节 |
-| **多视角生成 + 事实一致性(rerank B)** | storm 多视角 + bug_rca `majority_vote` | N 条轨迹事实 de-dup,出现频次作置信度(共识 = 可靠) |
+| **多视角生成 + 事实一致性** | storm 多视角 | N 条轨迹事实 de-dup,出现频次作置信度(共识 = 可靠);投票原语届时自建(`rerank.py` 已移除) |
 
 ---
 

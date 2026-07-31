@@ -196,28 +196,14 @@ class ClaudeDelegateConfig(BaseModel):
     timeout: float = 600.0
 
 
-class RerankConfig(BaseModel):
-    """rerank 兜底子配置(R3.1 #54-rework:默认关,仅 progressive-escalation 兜底)。
-
-    面向小白:bug-RCA 主路径已改成「迭代 verify-refine(B)」;这个开关只在 repair loop 跑满
-    max_repair_loops 还没过时,再花预算 fan-out 几个独立样本做 majority voting 兜底。默认关 ——
-    无测试 oracle + 模型近确定性时投票平凡(白烧 token);等有测试套件 / #50 repro 落地再开。
-    同一套 majority_vote 原语(rerank.py)也服务 localize 文件投票(A)/ R3.2 调研事实一致性(B)/ R5。
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    enabled: bool = False  # 默认关:loop 耗尽 K2 未过才 fan-out 多样本投票
-    sample_count: int = 3  # 启用时采几个独立样本(各 git reset 后独立跑)
-
-
 class DelegateConfig(BaseModel):
     """委托层配置(R2,★P2 MVP)。对应 config.yaml 的 delegate: 段。
 
     面向小白:这一层控制"把 coding 活外包给谁"。backend 选 opencode(v1 默认)/omp/claude;
     下面三块是各自的旋钮。抽象接口 CodingAgentDelegate 从第一天起支持后端可换(三锁定决策 #2)。
     R3.1 #54-rework:多候选采样投票已弃,改「迭代 verify-refine 双循环」(max_localize/repair_loops
-    控制每阶段最多自审重试几轮);rerank 降为兜底(默认关,见 RerankConfig)。
+    控制每阶段最多自审重试几轮);2026-07-31 进一步移除 rerank/majority_voting(无 oracle + 模型
+    近确定性 → 投票平凡白烧 token;现代 SOTA 转单轨迹+执行验证,即本 B 路线)。
     """
 
     model_config = ConfigDict(extra="allow")
@@ -225,7 +211,6 @@ class DelegateConfig(BaseModel):
     backend: str = "opencode"  # opencode(v1 默认)| omp | claude | 'pkg.mod:Cls'
     max_localize_loops: int = 2  # R3.1 B:localize verify-refine 最大轮数(iter0 + 最多重定位 K1-1 次)
     max_repair_loops: int = 2  # R3.1 B:repair verify-refine 最大轮数
-    rerank: RerankConfig = Field(default_factory=RerankConfig)  # 兜底(默认关)
     opencode: OpencodeDelegateConfig = Field(default_factory=OpencodeDelegateConfig)
     omp: OmpDelegateConfig = Field(default_factory=OmpDelegateConfig)
     claude: ClaudeDelegateConfig = Field(default_factory=ClaudeDelegateConfig)

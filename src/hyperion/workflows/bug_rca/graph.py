@@ -10,7 +10,7 @@ R3.1 #54-rework(2026-07-30,B):弃多候选采样投票,改双循环同会话 ver
      verdict=needs_fix 则 --continue 再修)。
 两阶段共用一个 opencode session(--continue 链;per-bug workspace 隔离),verdict 由 opencode
 证伪式自审产出,执行硬门控由 Hyperion validate_patch(非 LLM)。收敛靠每 delegate call 的 steps +
-单 schema + max-loop 兜底(不重蹈 glm-5.2 单 loop 97K 不收敛)。rerank 降为兜底(默认关)。
+单 schema + max-loop 兜底(不重蹈 glm-5.2 单 loop 97K 不收敛)。
 LangGraph StateGraph;run() 是入口(CLI / 测试调)。
 """
 from __future__ import annotations

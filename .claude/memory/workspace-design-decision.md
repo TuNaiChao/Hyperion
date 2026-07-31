@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-07-29T09:26:13.878Z
+  modified: 2026-07-31T03:13:14.908Z
 ---
 
 2026-07-29 定稿:bug-RCA 采用「**每 bug 一个专用 workspace 目录**」(`<repo>__<bug-id>__<hash6>/`,七段:`code/`(全量 git checkout)+ `triggers/`(issue/logs/poc)+ `delegate/`(prompt/context/delegate_log)+ `artifacts/`(candidate_patches/validate)+ `patch/final.diff` + `report/` + `docs/`汇总),opencode `--dir` 在此跑(读全量代码+日志,非内联片段)。完整设计见 [docs/设计/workspace-design.md](../../../../Desktop/Agent/Hyperion/docs/设计/workspace-design.md)。
@@ -13,7 +13,7 @@ metadata:
 **三要点:**
 1. **隔离**:默认本地目录(R2/R3),Docker 作 R5 可选。抽象复用 deer-flow `Sandbox`/`SandboxProvider` ABC + `LocalSandbox` + `env_policy`(scrub key)+ `workspace_changes`(scanner/diff 生成 patch)。
 2. **大日志分层预筛**:Hyperion 粗筛(grep 关键字 + 时间窗 + addr2line 符号化 + 堆栈折叠 + LLM 摘要 → `delegate/context.md`)+ opencode 自主 grep 深挖。和代码 localize 同模式(Hyperion 给起点、delegate 深挖)。
-3. **补丁 6 步验证**(SWE-bench/Agentless 标准):clean checkout → `git apply --check` → revert → build → FAIL_TO_PASS/PASS_TO_PASS → 多候选 rerank。quilt 场景转 `debian/patches/`。
+3. **补丁 6 步验证**(SWE-bench/Agentless 标准):clean checkout → `git apply --check` → revert → build → FAIL_TO_PASS/PASS_TO_PASS(~~多候选 rerank~~ 已于 2026-07-31 移除)。quilt 场景转 `debian/patches/`。
 
 **Why:** 解 R2 内联 prompt 三痛点(opencode 被动读文本非 agent / 补丁基于快照易错位打不上 / 大日志没法结合)+ 补丁要能 quilt apply。对标 Agentless(定位→修复→验证)+ deer-flow per-thread per-user sandbox + SWE-bench(每实例一容器)。
 **How to apply:** 用户 2026-07-29 确认**方案 A + 方式 B 都上**(两个正交优化,互补)。

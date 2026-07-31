@@ -14,8 +14,9 @@ R3.1 #54-rework(2026-07-30):弃「多候选采样 + majority voting」(无测试
   - 执行硬门控(Hyperion 侧,非 LLM):validate_patch Tier0 apply/revert(#50 repro 落地后加强);
   - 收敛:每 delegate call 仍 steps + 单 schema(不重蹈 glm-5.2 单 loop 97K 不收敛);只在
     verdict=needs_revisit 时重试,infra 错误(timeout/error)直接跳出(不 --continue 破损 session)。
-rerank / majority_voting 降级为兜底(delegate.rerank.enabled,默认关)。
-依据:Self-Refine/Reflexion/SWE-Search/Aider;Agentless 投票仅在有 oracle 时有效(本地核查 + 2024-2026 论文)。
+2026-07-31 进一步:**rerank / majority_voting 整体移除**(无测试 oracle + 模型近确定性 → 投票平凡且
+白烧 token;现代 SOTA 转单轨迹+执行验证,正是本 verify-refine 路线)。
+依据:Self-Refine/Reflexion/SWE-Search/Aider/OpenHands;Agentless 投票仅在有 oracle 时有效(本地核查 + 2024-2026 论文)。
 """
 from __future__ import annotations
 
@@ -266,41 +267,6 @@ def _observe_patch(code_dir: str) -> str:
         return ""
 
 
-async def _rerank_fallback(
-    state: BugRcaState, n: int, repo_root: str, code_dir: str, schema: dict,
-) -> tuple:
-    """兜底:repair loop 耗尽仍未过 → fan-out n 个独立样本(各 reset)→ majority_vote 选 top-1。
-
-    面向小白:主路径是「同一会话里反复改」(迭代 refine);这个兜底是「实在改不出来,就换几个独立
-    思路各跑一遍,谁的方法出现次数多就选谁」(多采样投票)。**仅 delegate.rerank.enabled=true 触发**
-    (默认关 —— 无测试 oracle + 模型近确定性时投票平凡,白烧 token)。各样本 reset 到 base 后独立跑
-    (独立多采样,与主路径的累积 refine 不同)→ 观察补丁 → Tier0 验证 → majority_vote(rerank.py)。
-    """
-    from hyperion.services.workspace.validate import validate_patch
-    from hyperion.workflows.bug_rca.rerank import Candidate, majority_vote
-
-    delegate = CodingAgentDelegate.from_config()
-    prompt = state.get("prompt", "")
-    cands: list[Candidate] = []
-    for i in range(n):
-        # 独立样本:reset 到 base(清前序改动 + untracked;.gitignore tracked 保留)→ 各自独立跑
-        subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=code_dir, capture_output=True, timeout=30)
-        subprocess.run(["git", "clean", "-fd"], cwd=code_dir, capture_output=True, timeout=30)
-        await delegate.run(
-            prompt, cwd=code_dir, output_schema=schema, timeout=None,
-            agent="hyperion-repair", continue_session=False,  # 独立样本,不续 session
-        )
-        p = _observe_patch(code_dir)
-        v = (
-            validate_patch(p, forward_dir=repo_root, reverse_dir=code_dir)
-            if p else {"verified": False, "forward_method": "empty"}
-        )
-        cands.append(Candidate(patch=p, verified=bool(v["verified"]), method=v.get("forward_method", ""), sample_id=i))
-    best_patch, best, summary = majority_vote(cands)
-    verified = bool(best.verified) if best else False
-    return cands, best_patch, verified, summary
-
-
 async def node_delegate_repair_loop(state: BugRcaState) -> dict:
     """7. 阶段② 修复 verify-refine 循环(B,#54-rework)。【loop 核心·窗口展示】"""
     from hyperion.platform.config import get_app_config
@@ -318,7 +284,7 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
     validate_log = ""
     last_result = None
     verdict_chain: list[str] = []
-    loop_iters = 0  # 实际 loop 轮数(不含 rerank 兜底,供 report)
+    loop_iters = 0  # 实际 loop 轮数(供 report)
     prompt = state.get("prompt", "")
 
     for i in range(k2):
@@ -357,15 +323,6 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
             + str(schema)
         )
 
-    # 兜底:loop 耗尽仍未过 + delegate.rerank.enabled → fan-out 独立样本 majority_vote(默认关)
-    candidates: list = []
-    rerank_summary: dict | None = None
-    if not verified and getattr(cfg.rerank, "enabled", False):
-        candidates, patch, verified, rerank_summary = await _rerank_fallback(
-            state, cfg.rerank.sample_count, repo_root, code_dir, schema,
-        )
-        verdict_chain.append(f"rerank:{rerank_summary.get('reason', '?') if rerank_summary else '?'}")
-
     return {
         "patch": patch,
         "verified": verified,
@@ -373,8 +330,6 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
         "repair_loops": loop_iters,
         "verdict_chain": verdict_chain,
         "validate_log": validate_log,
-        "candidates": candidates,
-        "rerank_summary": rerank_summary,
     }
 
 
@@ -414,15 +369,6 @@ async def node_report_memorize(state: BugRcaState) -> dict:
             f"- 执行门控(validate_patch Tier0):{state.get('verified', False)}\n"
             f"- ⚠️ **准确率警示**:verify-refine 自审 + apply-check 通过 ≠ 补丁正确(约半数 test-passing "
             f"PR 不会被合,METR);需人工 / 日志 repro 终审。\n"
-        )
-
-    # rerank 兜底摘要(仅 delegate.rerank.enabled 触发 fan-out 时才有)
-    rs = state.get("rerank_summary")
-    if rs:
-        report_md += (
-            f"\n\n## rerank 兜底(已启用)\n"
-            f"- 候选数:{rs.get('n_candidates', '?')} | 通过 Tier0:{rs.get('n_verified', '?')} | "
-            f"当选票数:{rs.get('winner_votes', '?')} | 方式:{rs.get('reason', '?')}\n"
         )
 
     out_dir = Path("data/bug_rca")

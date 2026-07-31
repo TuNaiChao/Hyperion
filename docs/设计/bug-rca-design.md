@@ -178,7 +178,7 @@ delegate(omp/opencode)干活时,经 MCP 查 Hyperion 的:`memory_recall`(查历�
 ## 7. v1 取舍(用户:第一版别太复杂)
 
 **做(R2 MVP):** 结构化 JSON 契约、直出报告、记忆沉淀。
-**多阶段(2026-07-30 修正,见 §7.5/§7.6):** R2 末起 delegate 拆 localize + repair 两阶段(解 glm-5.2 单 loop 不收敛);**R3.1 改迭代 verify-refine(B,#54-rework,见 §7.6)**(弃无脑多候选采样,投票降为兜底);R5 对抗式红队 + rerank filter+vote(oracle 就绪后)。
+**多阶段(2026-07-30 修正,见 §7.5/§7.6):** R2 末起 delegate 拆 localize + repair 两阶段(解 glm-5.2 单 loop 不收敛);**R3.1 改迭代 verify-refine(B,#54-rework,见 §7.6)**(弃无脑多候选采样;**2026-07-31 patch 投票 rerank 整体移除**,见 §7.6);R5 对抗式红队(oracle 就绪后再评估 filter+vote)。
 **不做(放 R5):** 自动 PoC 生成、多委托后端并发。
 
 **L3/DAP(ChatDBG 式 reproduce-then-debug):** 仅当有**可复现 bug / core dump** 时才接(借 [chatdbg](https://github.com/plasma-umass/chatdbg));**事后日志分析不适用**(不能调试过去)。放 R3+/R5。
@@ -221,7 +221,7 @@ delegate(omp/opencode)干活时,经 MCP 查 Hyperion 的:`memory_recall`(查历�
 
 ### 落地分档
 - **R2 收尾**:`node_delegate` 拆 `node_delegate_localize` + `node_delegate_repair`(中间 state 传 `localization_json`);localize prompt 用**指引**(file:line,不内联大片,避 lost-in-the-middle);verify Tier 0(tolerant apply,已有)。**`CodingAgentDelegate` 接口不改**(`run` 调多次,每次不同 schema)。
-- **R3**(~~已演进,见 §7.6~~):原计划「多候选采样(N=3)+ repro test rerank」;R3.1 重审后改**迭代 verify-refine(B)**,多候选降为兜底(默认关)。workspace_changes(根治 patch 格式)+ validate Tier0 已落地。
+- **R3**(~~已演进,见 §7.6~~):原计划「多候选采样(N=3)+ repro test rerank」;R3.1 重审后改**迭代 verify-refine(B)**;**2026-07-31 多候选投票整体移除**(无 oracle 时平凡白烧 token,见 §7.6)。workspace_changes(根治 patch 格式)+ validate Tier0 已落地。
 - **R5**:Tier 2 跨模型对抗审 + 2 轮反馈循环 + 退化熔断。
 
 ### 关键参考
@@ -233,7 +233,8 @@ delegate(omp/opencode)干活时,经 MCP 查 Hyperion 的:`memory_recall`(查历�
 
 > §7.5 原设计是「②repair 采 N 候选 → ③verify 选 top-1」(Agentless majority voting)。R3.1 重审后
 > **主路径改为迭代 verify-refine(B)**:同一 opencode 会话内反复「自审 → 不行就重试」,弃无脑多采样投票。
-> majority voting **降级为兜底(默认关,见下「rerank 要啥条件」)**。**本节是当前实现真相**;§7.5 留作历史推理。
+> **2026-07-31 进一步:patch 多候选投票(majority voting / rerank)整体移除**(无测试 oracle + 模型近确定性
+> → 投票平凡 + N× token 白烧;现代 SOTA 转单轨迹+执行验证,即本 B 路线;见下「rerank 要啥条件」)。**本节是当前实现真相**;§7.5 留作历史推理。
 
 ### 为什么改(三铁据,非凭感觉)
 1. **投票前提 wpa/bluez 全缺**(详见下「rerank 要啥条件」):无测试 oracle + C 补丁形态发散(加 guard / 提前 free / 改状态机)+ glm-5.2 近确定性 → N 个样本几乎一样 → 投票平凡 + N× token 白烧。
@@ -266,15 +267,14 @@ ingest → recall → localize → assemble_localize
 
 **filter + vote = 先筛后投(这就是「前提①:oracle 存在」)**:Agentless 不是上来就投票,而是 ① **filter** —— 先把 N 个补丁逐个交给 oracle(测试/repro)跑,扔掉跑不过的;② **vote** —— 在**剩下的、可能对的**补丁里再按"谁出现多"选 top-1。**没裁判,filter 这步直接做不了,只剩光投票**——而光投票在没裁判时基本等于瞎蒙。
 
-**回到我们为啥默认关**:wpa/bluez 的 C 代码现在**没裁判**——hwsim/bluez unit 要先搭构建环境(R5 才搞定)、#50 repro 还没做、加上 glm-5.2 近确定性(N 个补丁几乎一样)。→ filter 做不了、vote 平凡 → N 次采样 token 白烧。所以 `delegate.rerank.enabled: false`(默认关)。
+**回到我们为啥(2026-07-31)整体移除**:wpa/bluez 的 C 代码现在**没裁判**——hwsim/bluez unit 要先搭构建环境(R5 才搞定)、#50 repro 还没做、加上 glm-5.2 近确定性(N 个补丁几乎一样)。→ filter 做不了、vote 平凡 → N 次采样 token 白烧。光留个"默认关"的兜底开关 = 扛死代码 + 和主路径哲学矛盾(主路径说单轨迹迭代精炼,fallback 说不行就多采样投票,但没 oracle 时多采样救不了)。故 **`rerank.py` / `RerankConfig` / `_rerank_fallback` / state 的 candidates/rerank_summary 全删**。
 
-**什么时候开**:① 构建环境就绪、能跑 hwsim/bluez 测试;或 ② #50 repro 落地、有了"打完补丁看崩溃还触不触发"的弱裁判 —— 这时 filter+vote 才有用,配置开 `enabled: true`(或 `auto` 自动检测 oracle)。在那之前,主路径走迭代 verify-refine(B)就够。
-
-> rerank 原语(`rerank.py` majority_vote)本身没删,换地方用:① **localize 文件投票**(R3.1 方案A,文件名归一化平凡、无需 oracle);② **深度调研事实一致性**(R3.2,多轨迹事实频次作置信度);③ **有 oracle 的 patch rerank**(R5)。三处复用同一「Counter + 票数/首现/简洁度」模式,换归一化函数即可。
+**以后会不会再加**:只在**真有 oracle** 时才考虑 —— ① 构建环境就绪、能跑 hwsim/bluez 测试;或 ② #50 repro 落地、有了"打完补丁看崩溃还触不触发"的弱裁判。到那时再按 Agentless filter+vote 重写(算法 ~40 行,git 史可查),**不预建、不为投机未来扛死代码**(YAGNI)。在那之前,主路径迭代 verify-refine(B)就够。
 
 ### 落地
-- **R3.1(当前实现)**:`node_delegate_localize_loop` + `node_delegate_repair_loop`(双循环);config `delegate.max_localize_loops/max_repair_loops`(默认 2);`delegate.rerank.enabled` 默认关(loop 耗尽 K2 未过 + enabled 才 fan-out 兜底)。
-- **R5 / 有测试模块**:`rerank.enabled: auto`(检测到测试套件/repro 才开 filter+vote);Tier 2 跨模型对抗审。
+- **R3.1(当前实现)**:`node_delegate_localize_loop` + `node_delegate_repair_loop`(双循环);config `delegate.max_localize_loops/max_repair_loops`(默认 2);loop 耗尽 K2 仍未过 → 取末次 patch + `verified=False`(无 fan-out 兜底)。
+- **2026-07-31 移除项**:`rerank.py`(整文件)、`_rerank_fallback`、`RerankConfig`、`delegate.rerank` 配置、state `candidates`/`rerank_summary`、rerank fallback 测试 —— 全删(无 oracle 时投票平凡白烧 token,见上)。检索 rerank(`memory.native.rerank` cross-encoder)是**不同机制**(BM25→精排召回块),保留。
+- **R5 / 有测试模块**:oracle 就绪后再评估 filter+vote(重写,不预建);Tier 2 跨模型对抗审。
 
 ### 关键参考
 [Self-Refine](https://arxiv.org/abs/2303.17651)(2303.17651)· [Reflexion](https://arxiv.org/abs/2303.11366)(2303.11366)· [SWE-Search](https://arxiv.org/abs/2410.20285)(2410.20285)· [Agentless](https://arxiv.org/abs/2407.01489)(2407.01489)· [Stechly self-verify 天花板](https://openreview.net/forum?id=4O0v4s3IzY)(ICLR24)· [Kamoi 自校正](https://direct.mit.edu/tacl/article/doi/10.1162/tacl_a_00713)(TACL24)· [METR 警示](https://metr.org/notes/2026-03-10-many-swe-bench-passing-prs-would-not-be-merged-into-main/)。
@@ -291,7 +291,7 @@ ingest → recall → localize → assemble_localize
 ## 9. 待办(记 backlog)
 
 - delegate 结构化产出契约字段 R2 定稿;omp `--mode rpc` / opencode `serve` API 实测。
-- Agentless 漏斗的 file/function/line 三级阈值与 rerank 策略。
+- Agentless 漏斗的 file/function/line 三级阈值(patch 投票 rerank 已于 2026-07-31 移除,见 §7.6;有 oracle 再评估)。
 - AutoCodeRover SBFL(有复现测试时)接入。
 - 多轮 refine / 多 candidate / 自动 PoC(R5)。
 - L3 DAP(ChatDBG 式,可复现 bug)。

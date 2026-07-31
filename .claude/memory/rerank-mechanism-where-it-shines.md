@@ -1,18 +1,15 @@
 ---
 name: rerank-mechanism-where-it-shines
-description: "rerank/majority-voting 的适用边界 —— 需 oracle 或样本多样性,否则平凡;bug-RCA patch rerank 默认关,复用到 localize 文件投票/调研事实一致性/有 oracle 的 patch"
+description: "patch 投票 rerank 已于 2026-07-31 整体移除 —— 无 oracle 时投票平凡白烧 token;现代 SOTA 转单轨迹+执行验证;有 oracle 再评估,不预建"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-07-31T01:33:57.686Z
+  modified: 2026-07-31T03:10:09.722Z
 ---
 
-「多采样 + 归一化 + 投票」(Agentless majority voting,`workflows/bug_rca/rerank.py`)机制本身没错,前提是(二选一):① 有廉价可靠 **oracle**(测试套件 / repro);② 样本**多样**且能归一化到同一规范解(self-consistency)。**两条都不沾时投票平凡**(白烧 N× token)——这正是 wpa/bluez 的 bug-RCA patch 选择(无测试 + C 补丁形态发散 + glm-5.2 近确定性)。
+**2026-07-31 决定:patch 多候选投票 rerank(Agentless majority voting)整体移除。** 删了 `workflows/bug_rca/rerank.py`(整文件)+ `_rerank_fallback` + `RerankConfig` + `delegate.rerank` + state `candidates`/`rerank_summary` + 相关测试。bug-RCA 主路径 = [[multi-stage-delegate-decision]] 的迭代 verify-refine(B),**不再有多采样投票兜底**(连"默认关"的开关都删了)。
 
-**决策(2026-07-31,#54-rework):** bug-RCA patch rerank **降为兜底**(`config delegate.rerank.enabled` 默认关;仅 repair loop 耗尽 + enabled 才 fan-out),主路径改 [[multi-stage-delegate-decision]] 的迭代 verify-refine(B)。`majority_vote` 原语**换地方用**(复用同一 Counter/票数/首现/简洁度模式,换归一化函数):
-- **A. localize 文件投票**(R3.1 方案A):文件名归一化平凡、无需 oracle —— 性价比最高的归宿。
-- **B. 深度调研多视角 + 事实一致性**(R3.2):N 条轨迹,事实出现频次作置信度。
-- **C. 有 oracle 的 patch rerank**(R5 / 有测试套件模块):filter+vote 才有效;`enabled: auto` 检测到 oracle 才开。
+**Why(调研三铁据 + 用户拍板):** ① 投票有效需(二选一)**廉价可靠 oracle**(测试/repro)或**样本多样 + 归一化**(self-consistency);wpa/bluez **无测试套件** + C 补丁形态发散 + glm-5.2 近确定性 → N 样本雷同 → 投票平凡 + N× token 白烧。② 现代 SOTA(OpenHands critic+执行反馈 / Aider 单轨迹+lint·test / R2E-Gym)已转**单轨迹 + 执行验证**,非文本投票;我们的 B 正是此路线。③ Agentless 投票原文就是 "after test filtering"(filter+vote 命门是测试当 oracle),无测试则 filter 做不了。METR:~半数 test-passing PR 不会被合 → 测试本就是弱 oracle。
 
-**How to apply:** 别再把 patch 多候选投票塞回 bug-RCA 主路径(默认关)。需要投票时优先想「这有 oracle 吗?样本会多样吗?」;两否 → 走迭代 refine,别采样。完整分析(含面向小白 oracle/filter+vote 解释)见 `docs/设计/bug-rca-design.md` §7.6。
+**How to apply:** 别再把 patch 多候选投票塞回 bug-RCA。**检索 rerank(`memory.native.rerank` cross-encoder)是不同机制,保留**。未来若真有 oracle(hwsim/bluez 测试套件就绪 / #50 repro 落地),再按 Agentless filter+vote 重写(~40 行,git 史可查),**不预建**(YAGNI)。需要投票时先问「有 oracle 吗?样本会多样吗?」;两否 → 走迭代 refine,别采样。完整分析见 `docs/设计/bug-rca-design.md` §7.6。
