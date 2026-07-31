@@ -104,7 +104,7 @@ class KnowledgeItem(BaseModel):
     embedding: list[float] | None  # native 后端写入时算
 ```
 
-- **`codebase_fact`**(P1 调研):`kind_detail` 记录"这个模块/符号/架构是干啥的、关键设计"。
+- **`codebase_fact`**(P1 调研):`kind_detail` 记录"这个模块/符号/架构是干啥的、关键设计"。**2026-07-31 增强(RepoGraph 实证)**:结构化事实 > 裸 chunk —— 应带**模块职责 + 公开签名 + 调用边**(从 code-review-graph 抽),而非仅 prose `detail` + 裸 `snippet`(schema 待扩字段)。
 - **`bug_lesson`**(P2 bug-RCA):`root_cause`/`fix_patch`/`blast_radius_files`。
 - **`mental_model`**:被召回 ≥N 次的教训巩固升级出的"稳定规则"(借 Letta 3+ 规则)。
 - **整份报告**:作为可检索 **document** 整体另存一份(便于"翻回原报告"),同时抽取其中的知识项(便于精确召回)。
@@ -165,7 +165,7 @@ async def memorize(report, scope):
 
 - **(a) workflow 自动召回/沉淀**:bug-RCA/deep-research workflow 的首尾节点调 `recall`/`memorize`,用户无感。
 - **(b) agent 工具** `memory_recall` / `memory_memorize`:agent 主动查/写(条件实例化——只在 memory 后端就绪时挂载,借 oh-my-pi `MemoryRecallTool.createIf`)。
-- **(c) MCP server**:把 memory(+ code_index + code-review-graph)暴露给 **delegate**(omp/opencode)现场查——delegate 干活时能翻 Hyperion 的笔记本。
+- **(c) MCP server**(★ 2026-07-31 起主路径):把 memory + code_index(`hyperion_search_codebase`)+ code-review-graph + `hyperion_filter_logs`(日志过滤)暴露给 **delegate**(opencode)现场查 —— delegate(opencode)自主定位/修复时,经 MCP 调这些工具(**不是** Hyperion 预筛喂它),见 [bug-rca-design.md §6](bug-rca-design.md)。
 
 ---
 

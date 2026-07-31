@@ -349,3 +349,16 @@ metadata:
     - 现状(R2):`subprocess.run` capture_output 跑完拿全部;**timeout 时 `except TimeoutExpired` 丢 stdout**(`delegate.py` 不存,看不到 opencode 跑到哪);`--format json` **块缓冲**(流式观察失败,诊断脚本收不到中间事件);`/tmp/delegate_debug.txt` 是临时诊断(非正式,且 A+C 达标后可删)。
     - 改:① **timeout 也存已收 stdout**(`TimeoutExpired` 前的 proc.stdout 部分落盘);② **流式读 stdout**(`Popen` + 逐行读,实时观察 step/text/tool 事件,不再块缓冲盲等);③ **`delegate/delegate_log/` 落盘**(workspace-design §2 已留目录)+ step_events 持久化(对标 deer-flow `subagents/step_events.py`,供可观测回放)。
     - 目标阶段:**R3**(workspace 完整时 delegate_log 落盘 + 流式)+ **R5**(可观测生产化,Langfuse 串 thread_id)。
+
+## ★ 工具驱动委托(2026-07-31 简化:砍 Hyperion 侧漏斗 → MCP 工具)
+
+57. **bug-RCA 简化:砍 Hyperion 侧定位漏斗,改 opencode 自主定位 + Hyperion 能力做 MCP 工具** — `graph.py` / `localize.py` / `nodes.py` / `tools/mcp_memory.py` / `config/opencode_hyperion.json`。
+    - 背景(踩坑 #2,见 `docs/踩坑记录.md`):Hyperion 自建 Agentless 式漏斗(file→function→line)+ regex 关键字 + 方案A 预筛 = 与 opencode **重复定位**(double localization)。三轮调研(全流程体检 / agentic RAG / opencode 能力核实)坐实 + 2026 共识(deer-flow 2.0 / Claude Code / OpenHands = lead agent + 工具,不重造能力)。
+    - **砍**:`workflows/bug_rca/localize.py`(file→function→line 漏斗)+ `nodes.py` 的 recall/localize/assemble_localize 三节点;流程从 8 步并到 **5 步**(ingest→delegate_localize_loop→assemble_repair→delegate_repair_loop→report_memorize)。`trigger_parser/parser.py:extract_keywords`(regex)弃。
+    - **建**(能力做 MCP 工具,opencode 按需调):`hyperion mcp serve` 暴露三工具 —— `hyperion_recall`(记忆,扩 `tools/mcp_memory.py`)+ `hyperion_search_codebase`(包 `code_index.retrieve`,回真实符号带 provenance,**防幻觉**)+ `hyperion_filter_logs`(包 `trigger_parser/log_filter.py`)。opencode 对此**原生支持**(已核实源码:`mcp/index.ts` + `catalog.ts:42-63`,MCP 工具注册成 `dynamicTool` mid-session 可调)。
+    - **接线**:`config/opencode_hyperion.json` 加 `mcp` 段(stdio `hyperion mcp serve`)+ `hyperion-localize` agent prompt 加"优先调 hyperion_* 工具"nudge + permission 放行 `hyperion*`;`delegate.py:_parse_stream` 加收 `tool_use` 事件(审计 opencode 调了哪些工具,~3 行)。
+    - **防幻觉契约**:`search_codebase` 只回索引里真实存在的符号(validated against `parser.py` Symbol 表);**抽概念不抽标识符**(opencode 查询 → 工具回真实候选 → opencode 选)。
+    - **token 取舍**:永远相关的廉价件(召回教训)可预进 prompt(0 turn);重/钻取件做工具。工具廉价 + 回手术级摘录 = 守住 Agentless "固定漏斗便宜 ~6×" 红利,又不重复 opencode。
+    - 现状:**文档已全量对齐**(docs/设计 6 份 + 踩坑 #2 + 本条);**代码尚未重构**(graph.py 仍 8 节点、localize.py 仍漏斗)。文档领先代码。
+    - 完整设计:`bug-rca-design.md` §1(流程)/ §2(为什么砍)/ §6(MCP 工具+接线)。
+    - 目标阶段:**R3.1**(MCP 工具落地 + 砍旧漏斗节点 + e2e 跑通 demo2)。

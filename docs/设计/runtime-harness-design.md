@@ -19,7 +19,7 @@
 
 - **压历史**:对话太长时,把旧消息**摘要**成一小段(summary),只留最近的 + 摘要,上下文瞬间瘦身(对标 deer-flow `SummarizationMiddleware`、OpenHands `Condenser`)。
 - **管预算**:设 token 上限,超了**优雅停**(不是崩溃),产出当前最佳结果(对标 `TokenBudgetMiddleware`)。
-- **截工具输出**:一次 `grep` 返回 10 万行不能全塞进上下文,**外化到文件 + 只回一个摘要**(对标 `ToolOutputBudgetMiddleware`)。
+- **截工具输出**:一次 `grep` 返回 10 万行不能全塞进上下文,**外化到文件 + 只回一个确定性 synopsis**(json/csv/code 摘要,**非 LLM 摘要**;OpenHands 实证:LLM 摘要化反 +24~94% token、mask 省 8.6% 无损 —— 故工具输出优先 mask/确定性 synopsis,LLM 摘要只用于对话历史压缩,不用于工具输出)(对标 `ToolOutputBudgetMiddleware`)。
 - **派子任务**:调研可以**并行**派几个子 agent 各查一个模块,互不污染上下文(对标 `SubagentExecutor`)。
 - **断点续跑**:长任务挂了能从检查点恢复(对标 LangGraph checkpointer)。
 
@@ -79,7 +79,7 @@ deer-flow 不是 OpenHands 那种"全量历史 + 窗口视图"双份管理,而�
 - **`SubagentResult.try_set_terminal` 锁**:timeout/cancel/worker 三方竞态下"终态恰好转移一次"。
 - **additive `stop_reason`**:`token_capped`/`turn_capped`/`loop_capped`(不破坏 v1 状态枚举)。
 
-**Hyperion 取舍**:这套是"Hyperion 内部并行派多个子 agent"(R3 调研并行查多模块)用;**R2 bug-RCA 的委托是单次 opencode subprocess,不需要它**(用更简单的 `CodingAgentDelegate.run()`)。
+**Hyperion 取舍**:这套是"Hyperion 内部并行派多个子 agent"(R3 调研并行查多模块)用;**bug-RCA 的委托是 verify-refine 双循环(delegate_localize/repair_loop),由 `CodingAgentDelegate.run()` 驱动、不并派子 agent,故不需要 SubagentExecutor**。
 
 ---
 
@@ -153,7 +153,7 @@ class HyperionState(AgentState):
 ## 5. 分档实现路线(对标调研报告 §6.3-6.5)
 
 ### R3.0:最小骨架(5 件)✅ 已落地
-> ⚠️ **bug-RCA 八步 graph 本身不依赖 runtime**(线性 DAG + 单次委托,不长)。R3.0 搭骨架是给 **R3.2 深度调研**铺路。冒烟测试 `tests/runtime/test_smoke.py` 已验中间件链 + token 预算 + checkpointer 生效。
+> ⚠️ **bug-RCA 五步 graph 本身不依赖 runtime**(线性 DAG,不长)。R3.0 搭骨架是给 **R3.2 深度调研**铺路。冒烟测试 `tests/runtime/test_smoke.py` 已验中间件链 + token 预算 + checkpointer 生效。
 
 1. ✅ **中间件框架**:`AgentMiddleware` 接入 + `create_hyperion_agent` factory。
 2. ✅ **TokenBudgetMiddleware**:移植(三档阈值 + warn/hard_stop)。

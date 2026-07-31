@@ -1,6 +1,6 @@
 # bug-RCA Workspace 设计(每 bug 一个专用工作目录)
 
-> 状态:设计稿(2026-07-29)→ **R3.1 #51 已落最简形态**(create_workspace + validate Tier0 + git diff 观察,已 e2e 验);完整七段/日志预筛/双通道 待 R3.2+。
+> 状态:设计稿(2026-07-29)→ **R3.1 #51 已落最简形态**(create_workspace + validate Tier0 + git diff 观察,已 e2e 验);完整七段/双通道 待 R3.2+。⚠️ **2026-07-31 bug-RCA 简化**:砍 Hyperion 侧定位漏斗(opencode 自定位)+ 日志预筛改 `hyperion_filter_logs` MCP 工具(addr2line/折叠 defer R5);详见 [bug-rca-design.md §1/§6](bug-rca-design.md)。
 > 依据:两路调研(opencode 最佳实践 + sandbox/workspace 设计,含本地 deer-flow 代码精读 + OpenHands/SWE-agent/Agentless 最新做法)。
 > 关联:[architecture.md](architecture.md) §workspace、[bug-rca-design.md](bug-rca-design.md)、[memory-design.md](memory-design.md)。
 
@@ -37,13 +37,12 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
 │   ├── logs/                  #   ★日志(journalctl/btmon/coredump/...)—— opencode 必读
 │   └── poc/                   #   重现脚本/PoC(可选)
 ├── delegate/                  # Hyperion ↔ opencode 通信
-│   ├── prompt.md              #   Hyperion 写的任务契约(线索 + 嫌疑起点指引 + JSON schema)
-│   ├── context.md             #   Hyperion 组装的手术刀上下文(记忆召回 + 结构图 + 预筛日志关键行)
+│   ├── prompt.md              #   Hyperion 写的任务契约(线索 + JSON schema;opencode 自定位,无 Hyperion 预筛锚点)
+│   ├── context.md             #   (可选)预取廉价上下文(召回教训/仓轮廓);主要靠 opencode 现场调 MCP 工具
 │   ├── contract.json          #   机器可读契约(输出格式/工具白名单/超时)
 │   └── delegate_log/          #   opencode 执行日志(事件流 step_events,供可观测回放)
 ├── artifacts/                 # opencode 写:中间产物
-│   ├── candidate_patches/     #   (多候选补丁位;patch 投票 rerank 已于 2026-07-31 移除,不再产出)
-│   └── validate/              #   每候选的验证日志(apply/build/test)
+│   └── validate/              #   补丁验证日志(apply/build/test;单补丁,verify-refine 选定)
 ├── patch/
 │   └── final.diff             # Hyperion 选定的最终补丁(必须 git apply --check 可过)
 ├── report/                    # Hyperion 写:分析报告(给用户)
@@ -61,16 +60,15 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
 
 ### 命名约定
 - workspace 目录名:`<repo>__<bug_id>`(repo 短名 + bug_id,默认时间戳)。例:`wpa__20260730-143022`。(目标加 `__<hash6>` 防重,待 META.json 落地。)
-- candidate patches:`NNN.diff`(三位序号);final patch 固定名 `final.diff`(脚本引用)。
+- final patch 固定名 `final.diff`(脚本引用);候选补丁编号已随 patch rerank 移除废弃(单补丁)。
 
 ### 谁写谁
 | 目录 | 写入方 | 说明 |
 |---|---|---|
 | `code/` / `triggers/issue.md` / `AGENTS.md` | Hyperion | 建 workspace 时:copytree + `.gitignore` + `git init`/base commit + 复制 issue |
-| `delegate/{prompt,context}.md` | Hyperion | 召回记忆 + code_index + **预筛日志** → 组装;prompt 是「线索 + 嫌疑起点指引 + JSON schema」(方式 B,非内联代码) |
+| `delegate/{prompt,context}.md` | Hyperion | prompt = 任务契约 + JSON schema(opencode 自定位);context.md 预取廉价件(召回教训,可选) |
 | `delegate/delegate_log/` | Hyperion(#56 可观测) | opencode stdout 流 + 摘要持久化(替 `/tmp` 诊断) |
-| `artifacts/candidate_patches/` | (不产出) | 多候选(Agentless);patch 投票 rerank 已于 2026-07-31 **整体移除**(无 oracle 时平凡,见 [bug-rca-design.md §7.6](bug-rca-design.md)) |
-| `patch/final.diff` | Hyperion | git diff 观察 code/ 改动(repair loop 选定;rerank 已移除) |
+| `patch/final.diff` | Hyperion | git diff 观察 code/ 改动(repair loop 选定;单补丁,rerank 已移除) |
 | `report/` / `docs/` | Hyperion | 综合产物生成报告;`docs/summary.md` 沉淀进 MemoryService |
 
 ### 多 bug 隔离
@@ -119,8 +117,8 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 ```markdown
 # 本 bug 工作目录(强制)
 - 代码在 ./code/,日志在 ./triggers/logs/ —— 必须先读日志再分析
-- Hyperion 已预筛日志关键行到 ./delegate/context.md,可自行 grep 原始日志深挖
-- 嫌疑起点(file:line)见 ./delegate/prompt.md,优先读这些
+- 大日志优先调 `hyperion_filter_logs` 工具粗筛(也可自行 grep ./triggers/logs/ 深挖)
+- 定位优先调 `hyperion_search_codebase` 工具找相关代码(比 grep 准),再自行精读
 - 阶段① localize:返回 {root_cause,evidence,trigger_chain,verdict,falsification};**不要 patch**
 - 阶段② repair:用 edit 直接改 ./code/ 里的文件;返回 {verdict,falsification};**禁止贴 diff 文本**(Hyperion 用 git diff 观察)
 - 改完必须自审(verdict);只改根因相关文件,禁止顺手重构;证据必须 file:line 溯源
@@ -134,31 +132,27 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 
 ---
 
-## 5. 问题描述解析 + 关键字驱动预筛(ingest 核心)
+## 5. 问题描述解析 + 工具驱动(ingest 核心;2026-07-31 简化)
 
-问题描述是 bug-RCA 的**起点 + 关键字源头**。ingest 把它解析成统一文本、抽关键字,关键字再**统一驱动日志预筛 + 代码 localize**(省 token = Hyperion 差异化)。
+> ⚠️ **2026-07-31 简化:** 旧版 ingest 抽关键字 → Hyperion 跑预筛漏斗(日志 addr2line + 代码 localize)。现已**砍掉 Hyperion 侧漏斗**(opencode 自定位);日志/代码检索改成 **MCP 工具**(`hyperion_filter_logs`/`hyperion_search_codebase`)opencode 按需调,prompt 提示优先用。详见 [bug-rca-design.md §2/§6](bug-rca-design.md)。
 
 ### 5.1 问题描述输入(多格式)
 - `triggers/issue.{md,txt,pdf}` 或直接 prompt(cli `--trigger` / API 文本)。
-- 解析:txt/md 直读;**PDF 用 pypdf/pdfplumber 抽文本**(demo1 就是 PDF 漏洞报告驱动);统一规范化写 `triggers/issue.md`。
+- 解析:txt/md 直读;**PDF 用 pypdf 抽文本**(`services/trigger_parser/parser.py:parse_issue`,demo1 就是 PDF 漏洞报告驱动);统一写 `triggers/issue.md`。
 - 谁写:用户放文件进 `triggers/`(或 cli 传文本),Hyperion ingest 解析。
 
-### 5.2 关键字抽取(预筛源头)
-从 issue 抽关键字 → `triggers/keywords.json`(错误码 / 函数名 / 文件路径 / 内核符号 / panic·OOPS·BUG·Warning / 模块名 / 症状词):
-1. **规则**(快,确定性):正则抽错误码、函数名(`[a-z_]+\(\)`)、路径、内核符号、通用关键字。
-2. **LLM 抽**(补):「这个 bug 涉及哪些关键符号/错误码/症状/模块?」(role=locator,flash)。
+### 5.2 日志处理(工具驱动,非 Hyperion 预筛阶段)
+- **不再** Hyperion 侧跑 addr2line/堆栈折叠/LLM 摘要(2026-07-31 defer:demos 无崩溃栈 + v2 已裁 log_symbolizer 给 delegate)。
+- **改为**:`hyperion_filter_logs` MCP 工具(包 `trigger_parser/log_filter.py:filter_log_window`,关键字∩时间窗 grep,原始全量日志路径仍给 opencode 可回查)—— opencode 经 MCP 调,agent prompt 提示大日志优先用它。
+- 几 MB~GB 日志不能全内联(爆 token);opencode 调工具拿有界摘录 + 自行 grep 深挖。
 
-### 5.3 日志预筛(关键字驱动)
-- **Hyperion 粗筛**:用 keywords + 通用关键字(panic/OOPS/错误码)grep `triggers/logs/` + 故障时间窗 + addr2line 符号化 + 堆栈折叠 + LLM 摘要 → `delegate/context.md`。
-- **opencode 深挖**:拿预筛关键行后,用自带 grep/read 按线索深挖原始日志(`AGENTS.md` 提示)。
-- 几 MB~GB 日志不能全喂 opencode(爆 token);Hyperion 粗筛省 token + 精准调度。
-
-### 5.4 代码 localize file-level 预筛(关键字驱动,= 方案A)
-- 现状(R3.1):LLM 三层漏斗(file→function→line)已跑通;file-level 仍是 LLM 看目录树选(未接 code_index 检索)。
-- 改(方案A,R3.2+):用 keywords 对 `code_index` 做 BM25/embedding 检索取 top-20 文件 → LLM rerank top-5(输入从整棵树 → 20 行,快 + 准,对标 Agentless 正路)。(localize 文件多采样投票曾考虑,2026-07-31 随 patch rerank 一并移除 —— 现有单次 localize 准确度已够,多采样白烧 token。)
+### 5.3 代码定位(工具驱动,opencode 自主)
+- **不再** Hyperion 跑 file→function→line 漏斗(与 opencode 重复定位,已砍)。
+- **改为**:`hyperion_search_codebase` MCP 工具(包 `code_index.retrieve`,BM25+向量+rerank,回**紧凑真实符号锚点**带 provenance,防幻觉)—— opencode 经 MCP 调,拿手术级起点再自行 grep/read 精定位。
+- Agentless 的"固定漏斗便宜 ~6× + skeleton > 整文件"思想不丢,落到工具里:工具廉价 + 回摘录,省 opencode 的 grep turns。
 
 ### 实现
-`services/trigger_parser/`(多格式解析 + 关键字抽取,R3)+ `services/log_preprocess/`(日志预筛,见 #50)+ localize file-level 改检索(方案A)。**关键字是三者的统一纽带**。
+`services/trigger_parser/{parser,log_filter}.py`(parse_issue + filter_log_window,已建雏形)。**无独立 `log_preprocess/` 服务**(并入 trigger_parser);addr2line/折叠 defer R5。MCP 暴露见 [bug-rca-design.md §6](bug-rca-design.md)。
 
 ---
 
@@ -211,7 +205,7 @@ opencode debug config && opencode models uniontech-ai      # 4. 验证
 |---|---|---|---|---|
 | **R2 末(最简)** | 本地目录 + 7 段 lite;delegate cwd=workspace | 本地 | 跳过(trigger 预摘要) | 步骤 1-3(apply/revert) |
 | **R3.1(已落最简)** | code/triggers/delegate/patch/report + AGENTS.md + `.gitignore` + git base | 本地 | 跳过(trigger 摘要) | Tier0(apply/revert)+ git diff 观察 |
-| **R3.2+(完整)** | 完整 7 段 + META + artifacts | 本地(`LocalSandbox`) | 完整粗筛 5 步 | 双通道(rerank 已移除) |
+| **R3.2+(完整)** | 完整 7 段 + META + artifacts | 本地(`LocalSandbox`) | 薄日志窗过滤(MCP 工具) | 双通道(rerank 已移除) |
 | **R5(生产)** | 同结构 | Docker(`AioSandboxProvider`) | 同 | + 多架构镜像 + warm pool |
 
 **R2 末最简形态**(可能同时解当前 delegate timeout):delegate 改成「workspace 目录 + AGENTS.md 契约 + 方式 B 指引 prompt」(opencode 读全量 code/+logs 而非内联片段)。
@@ -237,8 +231,8 @@ deer-flow 子 agent 产 patch 的方式 = `str_replace` 工具调用(非吐 diff
 ## 10. Hyperion 接入点(对照 architecture.md)
 
 - **新建 `src/hyperion/services/workspace/`**:`WorkspaceManager`(创建/列出/归档 workspace)+ `LocalWorkspaceProvider`(对标 deer-flow `SandboxProvider`)。七段目录初始化 + META.json + git checkout。
-- **新建 `src/hyperion/services/log_preprocess/`**(R3):grep + 时间窗 + addr2line + 折叠 + 摘要,产 `delegate/context.md` 日志段。
-- **改 `src/hyperion/workflows/bug_rca/`**:八步双循环 `ingest→recall→localize→assemble_localize→delegate_localize_loop→assemble_repair→delegate_repair_loop(含 git diff 观察 + validate_patch Tier0)→report_memorize`,见 [bug-rca-design.md §7.6](bug-rca-design.md)。
+- **日志过滤** = `services/trigger_parser/log_filter.py:filter_log_window`(已建),经 `hyperion_filter_logs` MCP 工具暴露给 opencode;**无独立 log_preprocess 服务**;addr2line/折叠 defer R5。
+- **改 `src/hyperion/workflows/bug_rca/`**:五步 `ingest→delegate_localize_loop(opencode 自定位 + MCP 工具)→assemble_repair→delegate_repair_loop(含 git diff 观察 + validate_patch Tier0)→report_memorize`,见 [bug-rca-design.md §1/§6](bug-rca-design.md)。
 - **改 `src/hyperion/tools/delegate.py`**:opencode cwd = `<workspace>/code/`,任务输入 = `delegate/prompt.md`;timeout 时存已收 stdout(可观测性)。
 - 复用:`services/code_index/`(召回写 `delegate/context.md`)+ `services/memory/`(完成后写 `docs/summary.md` → 记忆)。
 

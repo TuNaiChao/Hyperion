@@ -2,6 +2,7 @@
 
 > **状态**:P1.0–P1.5 已成(P1.5 L2 精确导航 find_references/goto_definition/hover 活验证通过,2026-07-28)。本文档随进展更新。
 > **v2 路线对齐(2026-07-28 产品重规划)**:本文的 P1.x 标签指**代码理解层**的子阶段(已成,作为资产保留)。在 v2 的 R0–R5 路线([architecture.md §8](architecture.md))里,这层 = 已建成的 **L1+L2**,兼作记忆核心 native 后端的**语义检索那条腿** + 调研/委托的上下文源([architecture.md §5.1](architecture.md))。文内其余 **"P2" 指代的 L3/DAP → 对齐到 R3+/R5,且仅可复现 bug 适用**(事后日志分析不适用,见 [bug-rca-design.md §7](bug-rca-design.md))。
+> **2026-07-31 更新**:`retrieval`/`search_code` 现**双重暴露**:内部 `@tool`(`tools/code_nav.py`)**+ `hyperion_search_codebase` MCP 工具**(`hyperion mcp serve`)。后者是 opencode 委托自主定位的**主消费路径**(opencode 现场调,回真实符号带 provenance,防幻觉;见 [bug-rca-design.md §6](bug-rca-design.md))—— Hyperion 不再自跑 file→function→line 漏斗(已砍,与 opencode 重复)。
 > **目标代码库**:bluez / wpa_supplicant 等 Linux C 组件(P1 以 Python/deer-flow 起步把管线跑通,C 专属难点留到 C 场景)。
 > **总纲**:[architecture.md §5.1](architecture.md#51-代码理解服务-servicescode_index);**演进依据**:[后续设计演进报告(oh-my-pi 与最佳实践)](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
@@ -621,8 +622,8 @@ src/hyperion/services/code_index/
 ├── retrieval.py     # [P1.3]  混合检索(BM25+向量+RRF+rerank)
 ├── outline.py       # [P1.4]  tree-sitter BFS 摘要 + elision footer(复用 parser,§4.4)
 ├── lsp.py           # [P1.5]  ClangdServer(multilspy 适配器)+ get_lsp_server 单例 + health(§5)
-├── loc_translate.py # [R2]    漏斗行区间翻译(transfer_locs/merge_intervals/line_wrap_content/sticky_scroll)
-├── skeleton.py      # [R2]    漏斗骨架渲染(render_file_tree/render_skeleton;复用 parser.Symbol)
+├── loc_translate.py # [已建成] 行区间渲染原语(transfer_locs/merge_intervals/line_wrap_content/sticky_scroll)—— 通用构建块,非 funnel 专用
+├── skeleton.py      # [已建成] 符号骨架/文件树渲染(render_file_tree/render_skeleton;复用 parser.Symbol)—— 喂 MCP 工具紧凑锚点 + 报告
 └── eval/            # [P1.3]  scorer.py(指标)+ runner.py(harness)
 ```
 

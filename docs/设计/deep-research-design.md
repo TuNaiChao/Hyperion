@@ -3,7 +3,7 @@
 > 状态:**outline(R3.2 未开,greenfield)** · 实现阶段:R3.2(PR 跟踪子项 R4)
 > 上位文档:[architecture.md §3/§7](architecture.md) · 参考:**DocAgent**(多 agent 代码文档生成)+ gpt-researcher(行内引用)+ code-review-graph(结构图)+ Aider repo-map + storm(多视角提问)
 >
-> **R3.2 起点**:复用 bug-RCA 已验的 verify-refine graph 骨架 + localize 漏斗 + `memory.memorize`,不重起炉灶。**事实一致性(原"rerank B 档")**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度。⚠️ 原计划复用 `bug_rca/rerank.py`,但 **patch 投票 rerank 已于 2026-07-31 整体移除**(无 oracle 时平凡);R3.2 若要事实一致性投票,**届时自建小原语,不预借已删的 rerank.py**(YAGNI;调研轨迹多样性高、与 patch 投票不同,到时按需评估)。
+> **R3.2 起点**:复用 bug-RCA 已验的 **verify-refine 双循环骨架** + `memory.memorize` + 共享底座(code_index/CRG/MCP 工具),不重起炉灶。⚠️ ~~复用 localize 漏斗~~ —— bug-RCA 2026-07-31 已砍 Hyperion 侧漏斗(opencode 自定位),深度调研不复用它(各有各的 workflow,见 §1)。**事实一致性(原"rerank B 档")**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度。⚠️ 原计划复用 `bug_rca/rerank.py`,但 **patch 投票 rerank 已于 2026-07-31 整体移除**;R3.2 若要事实一致性投票,**届时自建小原语,不预借已删的 rerank.py**(YAGNI;调研轨迹多样性高、与 patch 投票不同,到时按需评估)。
 >
 > ⚠️ **2026-07-30 审核纠正**:旧版引用「deer-flow Reporter(cited Markdown)」。实测本地 deer-flow 经全仓 grep 确认**无 Reporter/Researcher/Planner/Coordinator、无 `src/graph/`**(经典管线已重构为单 agent + 中间件链,只剩 prompt skill)。**故 cited-reporter 由 Hyperion 自建**,借鉴 DocAgent(代码域 + 对代码库 fact-check)+ gpt-researcher 行内引用。
 
@@ -19,7 +19,7 @@
 
 ---
 
-## 1. 工作流(R3.2 实现,未开 — 复用 bug_rca graph 骨架 + localize 漏斗 + memorize)
+## 1. 工作流(R3.2 实现,未开 — 自有六步;复用 bug-RCA 的 MCP 工具底座 + memorize)
 
 ```
 START → 1.ingest(git clone / 本地路径,注册 scope)
@@ -37,7 +37,7 @@ START → 1.ingest(git clone / 本地路径,注册 scope)
 | **3 plan** | 按报告骨架(§5)拆子模块/子问题;**storm 式多视角提问**生成深挖大纲(安全/性能/维护者视角) | 决定"每个模块要回答哪些问题" |
 | **4 research** | 并行深挖每子模块;可用 delegate(omp/opencode)读代码 + Hyperion 自有 nav 工具;**gpt-researcher 式行内引用纪律** | 每个结论锚 file:line |
 | **5 report** | 渲染架构/模块文档(§5) | code-review-graph 的架构地图作为一等章节(图驱动,非 LLM 瞎编) |
-| **6 memorize** | 抽 `CodebaseFact`(module/symbol/architecture)入记忆,带 commit SHA | 闭环:喂给后续 bug-RCA |
+| **6 memorize** | 抽 `CodebaseFact`(module/symbol/architecture,**结构化事实**:模块职责 + 公开签名 + 调用边,非裸 chunk 重述)入记忆,带 commit SHA | 闭环:喂给后续 bug-RCA(structured facts > chunks,RepoGraph 实证 identifier-EM 翻倍) |
 
 ---
 
