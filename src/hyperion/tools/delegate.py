@@ -276,13 +276,14 @@ class OpencodeDelegate(CodingAgentDelegate):
 
     @staticmethod
     def _delegate_log_dir(cwd) -> Path:
-        """delegate_log 落盘目录:优先 <cwd>/delegate/delegate_log(workspace 场景);否则 data/runtime/delegate_log/。
+        """delegate_log 落盘目录:优先 <workspace>/delegate/delegate_log;否则 data/runtime/delegate_log/。
 
-        workspace 场景(bug-RCA):cwd 是 workspace 根,有 delegate/ 目录 → 日志跟 bug 一起归档。
-        非 workspace(临时):落到 Hyperion 的 data/runtime/delegate_log/(gitignore)。
+        workspace 场景(bug-RCA):cwd = <workspace>/code,delegate/ 在 workspace 根(= cwd 的父)→
+        日志跟 bug 一起归档到 <workspace>/delegate/delegate_log/。非 workspace(cwd=repo_root 之类,
+        其父无 delegate/):落到 data/runtime/delegate_log/(gitignore)。
         """
-        ws_log = Path(cwd) / "delegate" / "delegate_log"
-        if ws_log.parent.exists():  # workspace 有 delegate/ 目录才往那写
+        ws_log = Path(cwd).parent / "delegate" / "delegate_log"
+        if ws_log.parent.exists():  # workspace 根有 delegate/ 目录才往那写
             return ws_log
         return _HYPERION_ROOT / "data" / "runtime" / "delegate_log"
 

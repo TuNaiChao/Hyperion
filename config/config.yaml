@@ -221,6 +221,11 @@ memory:
 # 反向:opencode 原生 MCP client 挂 `hyperion mcp serve`,外勤现场查 Hyperion 记忆(§6)。
 delegate:
   backend: opencode             # opencode(v1 默认,本机已装)| omp(需 bun)| claude(需 claude CLI)
+  max_localize_loops: 2         # R3.1 B 迭代 verify-refine:localize 阶段最多自审重定位几轮(iter0 + K1-1)
+  max_repair_loops: 2           # R3.1 B:repair 阶段最多自审重修几轮
+  rerank:                       # 兜底(默认关):仅 loop 耗尽 K2 未过才 fan-out 多样本 majority_vote
+    enabled: false              #   无测试 oracle + 模型近确定性 → 投票平凡,默认关;有测试套件/#50 repro 再开
+    sample_count: 3             #   启用时采几个独立样本(各 git reset)
   opencode:
     bin: opencode               # 可执行文件名;或写绝对路径
     model: uniontech-ai/glm-5.2  # flash 弱模型做复杂 RCA 收敛不了(600s timeout);换 glm-5.2 强档。格式 "provider/model"

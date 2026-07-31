@@ -11,5 +11,6 @@
 - [DeepSeek 结构化产出踩坑](deepseek-structured-output-gotcha.md) — DeepSeek-v4-pro 思考模式不支持 tool_choice/response_format json_schema;结构化产出改"喂 Schema+直出 JSON+解析"(R2 委托契约同样适用)。embedding/rerank 走 DashScope 不是 DeepSeek。
 - [测试步骤+结果在窗口打印](show-test-steps-and-results-in-window.md) — 跑测试/验证时正文里写清"测了啥+期望+实际(绿/红)",不只甩 Bash 输出块。
 - [workspace 设计决策](workspace-design-decision.md) — 2026-07-29 定稿:bug-RCA 每 bug 一个 workspace 目录(七段)+本地默认/Docker R5+大日志分层预筛(Hyperion粗筛+delegate深挖)+补丁6步验证+复用 deer-flow sandbox;R2末最简/R3完整/R5 Docker。
-- [多阶段委托决策](multi-stage-delegate-decision.md) — 2026-07-30 定稿:delegate 拆 localize→repair→verify→可选review(解 glm-5.2 单loop不收敛);Agentless 32%/$0.70 vs SWE-agent 18.3%/$2.53(分阶段又便宜又稳);验证分层(执行信号硬/对抗审弱);R2收尾两阶段/R3多候选+repro/R5对抗审。
+- [多阶段委托决策](multi-stage-delegate-decision.md) — 2026-07-30 定稿 + **07-31 反转(#54-rework B)**:delegate 拆 localize→repair 两阶段(解 glm-5.2 单loop不收敛);R3.1 弃「多候选采样投票」改**迭代 verify-refine(B)**(同 opencode 会话双循环 + verdict 证伪自审 + validate_patch 执行门控);rerank 降兜底默认关。
+- [rerank 投票适用边界](rerank-mechanism-where-it-shines.md) — rerank/majority-voting 需 oracle 或样本多样性才有效,否则平凡;bug-RCA patch rerank 默认关,复用到 localize 文件投票(A)/调研事实一致性(B,R3.2)/有 oracle 的 patch(C,R5)。
 - [runtime 中间件策略](runtime-middleware-policy.md) — 2026-07-30:不抄 deer-flow 30+,pull-by-need 加(R3.0=2/R3.2=5-8/R5选配);扩展口已留(middleware 列表+state_schema 自动合并+TypedDict+tool_output 沙箱钩子);将来 skills/MCP/鉴权/沙箱/artifacts/前端 R4/R5 加而不改;@Next/@Prev 链>7 再移植;记忆自建不抄。

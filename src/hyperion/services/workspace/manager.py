@@ -73,6 +73,37 @@ def create_workspace(
     # code/:复制全量代码(含 .git → git diff 能跑)。opencode 在此读+改,原仓不动。
     shutil.copytree(repo_root, ws / "code")
 
+    # .gitignore:排除 opencode 自己的运行时产物(否则会被 git add -A 连带进补丁)。
+    # opencode 在 code/ 里写 .omo/(session 续接)、.opencode/ 等,这些不是 bug 修复,
+    # observe_changes 的 git diff 必须忽略它们(否则补丁含噪声文件,e2e 实测踩到)。
+    import os
+    import subprocess
+
+    code = ws / "code"
+    _IGNORE_OPENCODE_ARTIFACTS = ".omo/\n.opencode/\n.omo\n.opencode\n"
+    # 追加(不覆盖原仓可能有的 .gitignore)
+    gi = code / ".gitignore"
+    gi.write_text((gi.read_text(encoding="utf-8", errors="ignore") if gi.exists() else "") + _IGNORE_OPENCODE_ARTIFACTS,
+                  encoding="utf-8")
+
+    # 确保 code/ 是个有干净 base commit 的 git 仓(node_observe_changes 的 git diff 需要 base)。
+    # repo_root 是 git 仓 → .git 被拷过来,直接用;不是 → git init 一个。再 add+commit 锁住
+    # 当前状态作 base,opencode 后续改动 = diff from base(干净可靠)。
+    git_env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "hyperion",
+        "GIT_AUTHOR_EMAIL": "hyperion@local",
+        "GIT_COMMITTER_NAME": "hyperion",
+        "GIT_COMMITTER_EMAIL": "hyperion@local",
+    }
+    if not (code / ".git").exists():
+        subprocess.run(["git", "init", "-q"], cwd=code, check=True, env=git_env)
+    subprocess.run(["git", "add", "-A"], cwd=code, check=True, env=git_env)
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", "workspace base"],
+        cwd=code, check=True, env=git_env,
+    )
+
     # triggers/:问题描述(R2 最简只 issue.md;logs/poc R3 随 log_preprocess)
     (ws / "triggers").mkdir()
     (ws / "triggers" / "issue.md").write_text(trigger, encoding="utf-8")
