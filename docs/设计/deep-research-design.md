@@ -1,9 +1,11 @@
 # 代码仓深度调研工作流 — 设计文档(P1)
 
-> 状态:设计稿 v1(2026-07-28)· 实现阶段:**R3**(PR 跟踪子项 **R4**)
+> 状态:**outline(R3.2 未开,greenfield)** · 实现阶段:R3.2(PR 跟踪子项 R4)
 > 上位文档:[architecture.md §3/§7](architecture.md) · 参考:**DocAgent**(多 agent 代码文档生成)+ gpt-researcher(行内引用)+ code-review-graph(结构图)+ Aider repo-map + storm(多视角提问)
 >
-> ⚠️ **2026-07-30 审核纠正**:旧版引用「deer-flow Reporter(cited Markdown)」作 cited-reporting 借鉴源。实测本地 deer-flow(`bytedance/deer-flow` harness 版)经全仓 grep 确认**无 Reporter/Researcher/Planner/Coordinator 任何类、无 `src/graph/`** —— 经典 Coordinator→Planner→Researcher→Reporter 管线已被重构成单 agent + 中间件链,只剩 prompt skill `skills/public/deep-research/SKILL.md`(且其 research 是 web 检索,非代码仓溯源)。**故 cited-reporter 由 Hyperion 自建**,借鉴源改用更贴合的 DocAgent(代码域 + 对代码库 fact-check)。
+> **R3.2 起点**:复用 bug-RCA 已验的 verify-refine graph 骨架 + localize 漏斗 + `memory.memorize`,不重起炉灶。**rerank B 档**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度(复用 `bug_rca/rerank.py` `majority_vote`,换"事实指纹"归一化)。
+>
+> ⚠️ **2026-07-30 审核纠正**:旧版引用「deer-flow Reporter(cited Markdown)」。实测本地 deer-flow 经全仓 grep 确认**无 Reporter/Researcher/Planner/Coordinator、无 `src/graph/`**(经典管线已重构为单 agent + 中间件链,只剩 prompt skill)。**故 cited-reporter 由 Hyperion 自建**,借鉴 DocAgent(代码域 + 对代码库 fact-check)+ gpt-researcher 行内引用。
 
 ---
 
@@ -13,11 +15,11 @@
 
 **与 bug-RCA 的关系:** 同一套底座(记忆 + code_index + code-review-graph + 委托)。调研产出的"代码库知识"沉淀进记忆,**正好喂给后续的 bug-RCA** 用——两者形成闭环(P1 调研给 P2 RCA 铺地基)。
 
-**多语言:** 先 Python + C(bluez/wpa 是 C);code-review-graph 经 tree-sitter 已多语言 → 结构侧早多语言;code_index 的 parser 按需补 grammar(R3 前补 `tree-sitter-c`)。
+**多语言:** 先 Python + C(bluez/wpa 是 C);C parser 已有(R2 为 wpa 补);code-review-graph 经 tree-sitter 已多语言;`c.tags.scm`(repomap 用)R3.2 补。
 
 ---
 
-## 1. 工作流(R3 实现)
+## 1. 工作流(R3.2 实现,未开 — 复用 bug_rca graph 骨架 + localize 漏斗 + memorize)
 
 ```
 START → 1.ingest(git clone / 本地路径,注册 scope)
@@ -69,7 +71,7 @@ parser.py(已抽 defs)→ + tags.scm 抽 refs → networkx 建图 → PageRank
 - 意外跨社区边 / 测试盲区 → "知识缺口"。
 - `list_flows`/`get_affected_flows` → "入口与关键执行流"章节。
 
-**接入方式:** clone 进仓库(已在 .gitignore),Hyperion 经 MCP 或直接 import 调它的工具。它也是记忆核心 native 后端的"结构检索"那条腿(见 [memory-design.md §4](memory-design.md))。
+**接入方式:** clone 进仓库(已在 .gitignore),Hyperion 经 MCP 或直接 import 调它的工具。它也是记忆核心 native 后端的"结构检索"那条腿(见 [memory-design.md §4](memory-design.md))。⚠️ `detect_communities`/`get_architecture_overview` 需装 igraph extra(`uv add code-review-graph[communities]`),否则静默降级文件聚类(F9)。
 
 ---
 
@@ -81,6 +83,7 @@ parser.py(已抽 defs)→ + tags.scm 抽 refs → networkx 建图 → PageRank
 | **行内引用纪律** + 并行执行 | [gpt-researcher](https://github.com/assafelovic/gpt-researcher) | 每结论 → source file:line |
 | **多视角提问**生成大纲 | [storm](https://github.com/stanford-oval/storm) | plan 步:模拟 安全/性能/维护者 视角问"这模块该深挖啥" |
 | **图驱动架构地图** | code-review-graph | report 的"系统架构"章节 |
+| **多视角生成 + 事实一致性(rerank B)** | storm 多视角 + bug_rca `majority_vote` | N 条轨迹事实 de-dup,出现频次作置信度(共识 = 可靠) |
 
 ---
 
@@ -124,13 +127,13 @@ cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + 
 ## 7. R3 退出标准(可验证)
 
 1. `uv run hyperion research --repo <wpa 或 bluez 路径>` → 产出一份架构/模块文档 `.md`。
-2. **人工抽查**:模块深挖小节是否锚 file:line、是否覆盖关键执行流;系统架构章节是否图驱动(code-review-graph 产出)。
+2. **CRG 覆盖率门槛 + 人工抽查**:系统架构章节的社区/hub 来自 code-review-graph 自动产出(覆盖率 ≥ X%);辅以人工抽查模块深挖小节锚 file:line、覆盖关键执行流(F10:把主观抽查升级为可验证)。
 3. `repomap` 产出的"最重要符号"地图合理(核心模块在前)。
 4. 产出抽成 `CodebaseFact` 入记忆;后续 bug-RCA 能 `recall` 命中这些事实(验证 P1→P2 闭环)。
 
 ## 8. 待办(记 backlog)
 
-- `tree-sitter-c` 接入 parser + `c.tags.scm`(R3 前置)。
+- ~~`tree-sitter-c` 接入 parser~~(✅ 已有,R2 为 wpa 补);`c.tags.scm`(repomap 用)R3.2 补。
 - repomap 的 token 预算 / PageRank 阻尼参数调优。
 - 多语言 grammar 扩展(Python+C 之外按需)。
 - PR tracker 的 GraphQL 增量 + 决策卡(R4)。

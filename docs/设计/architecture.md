@@ -27,8 +27,8 @@
 |---|---|---|
 | **D1** | **调度型 agent**:重活委托给 omp/opencode,自做记忆+调度 | 差异化在记忆+调度,不在重造 coding agent;一人/数月预算要用在刀刃上 |
 | **D2** | **平台 + 三工作流 + 共享服务** 三层分离(沿用 v0.1 骨架) | 代码理解/记忆/沙箱/检索三流共用,避免三套实现 |
-| **D3** | bug-RCA v1 **单委托、单轮、结构化 JSON 契约、直出报告** | 用户要求"第一版别太复杂";多轮/多 candidate/自动 PoC 放 R5 |
-| **D4** | **记忆底座 = 自有 `MemoryService` 契约**(deer-flow MemoryManager ABC + oh-my-pi backend-swap 形状);v1 后端组合 code_index+code-review-graph;cognee/mem0 可换 | 组合已有两个引擎(语义+结构)避免第三套重叠检索栈;差异化(持续学习闭环)必须自己握住;零锁死 |
+| **D3** | bug-RCA **多阶段委托 + 迭代 verify-refine**(localize→repair 两阶段,同会话自审重试),结构化 JSON 契约,直出报告 | 用户要求"第一版别太复杂";R2 先两阶段(解 glm-5.2 单 loop 不收敛),R3.1 改 verify-refine 双循环(弃多候选采样投票,rerank 降兜底);自动 PoC 放 R5 |
+| **D4** | **记忆底座 = 自有 `MemoryService` 契约**(deer-flow MemoryManager ABC + oh-my-pi backend-swap 形状);v1 native 后端 = SQLite+FTS5+向量(复用 code_index embedder/reranker)+ CRG 结构路(可选 extra,默认关);cognee/mem0 可换 | 组合已有引擎避免第三套重叠检索栈;差异化(持续学习闭环)必须自己握住;零锁死 |
 | **D5** | **委托抽象 `CodingAgentDelegate`**;v1 默认 opencode(2026-07-29 调研修正:omp 本机装不上 github 墙+bun),omp/claude 可换 | opencode 已装 v1.18.3 + `run --format json` 事件流绕结构化坑 + 原生 MCP client 反向查记忆;omp 的 strict schema 强校验是最大价值(待本机可用切入) |
 | **D6** | MVP 先 **bug-RCA**(有 demo1/demo2 金标准可对照) | 一次验证记忆+委托+省 token+流水线四个痛点 |
 | **D7** | LLM provider **反射 + 配置声明**,不硬编码厂家(沿用 v0.1) | 直接移植 deer-flow `use: module:ClassName`,加厂家零代码(见 §4.1,**已实现**) |
@@ -56,8 +56,8 @@
                                                │ CodingAgentDelegate(抽象接口)
                           ┌────────────────────┼────────────────────┐
                           ▼                    ▼                    ▼
-                   omp -p(默认)         opencode run         claude -p/SDK
-                   (本地,结构化产出)     (主流/团队分发,R4)    (可选高档后端)
+                   opencode run(默认)   omp -p(备选)         claude -p/SDK
+                   (本地,已装 v1.18)    (本机未装,可换)      (可选高档后端)
                           │
                           └── 反向:MCP 把 Hyperion 记忆暴露给委托 agent 现场查
 ```
@@ -142,7 +142,7 @@ Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread
 
 **为什么必须自建**:深度调研(R3)是 Hyperion 自己的长 agent(读几千文件、多轮检索),不是 coding 任务、没法委托,上下文必爆——必须有运行时上下文管理压住它。v2 初版一度以为"重活全外包、runtime 也不做",**2026-07-29 用户修正:coding 外包,但 runtime 必须自建**。
 
-**实现**:见独立设计文档 [runtime-harness-design.md](runtime-harness-design.md)(含对标文件:行号、`platform/runtime/` 目录、R2末骨架→R3上场→R5补齐 分档)。对标调研 [deer-flow-runtime-参考.md](../调研/deer-flow-runtime-参考.md)。
+**实现(R3.0 已落地)**:`platform/runtime/` 5 件已实现——factory(`create_hyperion_agent`)+ state(`HyperionState`)+ middlewares(token_budget/tool_output)+ context(tool_output_synopsis)+ checkpoint(SqliteSaver)。中间件 **pull-by-need**(不抄 deer-flow 30+,R3 仅 ~5 个);bug_rca graph 暂不用 checkpointer(线性 DAG,R3.2 deep_research 才真上);sandbox 虚拟路径映射**已简化掉**(tool_output 直接写本地 outputs_dir,留钩子备 R3.2 沙箱)。详见 [runtime-harness-design.md](runtime-harness-design.md);对标 [deer-flow-runtime-参考.md](../调研/deer-flow-runtime-参考.md)。
 
 ---
 
@@ -155,7 +155,7 @@ Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread
 > **面向小白的类比——理解代码像查一栋大楼,分三层(叠加不替代)**:
 > - **L1 向量检索**(大楼的"语义索引"):按**意思**模糊匹配,快、覆盖广。**已建成**。
 > - **L2 LSP/clangd**(大楼的"精确导航"):像 IDE 精确列每一处调用点(宏展开/跨文件/系统头都准)。**已建成**。
-> - **L3 DAP/lldb·gdb**(大楼的"现场勘查"):进程跑起来 attach,看此刻变量值/调用栈。**R2 末/P3**。
+> - **L3 DAP/lldb·gdb**(大楼的"现场勘查"):进程跑起来 attach,看此刻变量值/调用栈。**R3+/R5**。
 
 **L1(P1.0–P1.3 已成)**:`parser.py`(tree-sitter 抽符号,Python 起步、**C 待加,R3 前补**)→ `chunker.py`(符号边界切块 + `fts_text` 拆词)→ `embed.py`(远端 DashScope 默认/本地可选)→ `store.py`(LanceDB 嵌入式,table-per-repo,原生 BM25+向量+RRF 混合)→ `retrieval.py`(cross-encoder rerank)。实测 **recall@5 = 0.65 达标**。
 **L2(P1.5 已成,LSP/clangd)**:经 `multilspy` + 自写 `ClangdServer` 驱动 clangd,`find_references/goto_definition/hover`;硬前提 `compile_commands.json`。`get_callers/get_callees` **由 LSP 提供,取代原 code_graph 自建调用图**。
@@ -170,11 +170,11 @@ Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread
 
 **契约形状(照搬 deer-flow `MemoryManager` ABC + oh-my-pi backend-swap):** tier-1 `memorize/recall`;后端可换(丢 `backends/<name>/` + 配置 `memory.backend`)。**双接入**:workflow 内自动召回注入 + agent 工具自管(deer-flow 双模式)。
 
-**知识项 schema(三类,贴合代码域):** `CodebaseFact` / `BugLesson` / `ResearchReport|RcaReport`(整份报告 + 抽取的知识项,带 commit SHA 溯源)。
+**知识项 schema(三类 `kind`,同一 `KnowledgeItem` 类):** `codebase_fact`(P1 调研)/ `bug_lesson`(P2 bug-RCA)/ `mental_model`(巩固升级出的稳定规则);每条带 commit SHA 溯源 + evidence[file:line]。整份报告作为 document 整体另存(可"翻回原报告")。
 
 **持续学习闭环:** 调研→抽 `CodebaseFact`;bug-RCA→抽 `BugLesson` + 图边连相关 fact/历史 lesson;下一次先 `recall` 命中"这模式见过";巩固(借 mnemopi:去重/衰减/升级稳定事实)。
 
-**多代码库/团队:** 每个 `(owner, codebase)` 一个 scope;native 后端用 LanceDB table-per-repo + owner 字段做租户隔离。v1 单机,R4 多人。
+**多代码库/团队:** 每个 `(owner, codebase)` 一个 scope;native 后端 = SQLite + FTS5(知识项主表)+ 向量 blob(复用 code_index embedder)+ owner 字段做租户隔离。v1 单机,R4 多人。
 
 > 详细设计见 [memory-design.md](memory-design.md)。
 
@@ -188,7 +188,7 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 
 **为什么委托:** bug 定位 + 补丁合成正是成熟 coding agent 最擅长的;Hyperion 自建检索+推理+补丁引擎去拼 opencode/omp 会烧光预算在通用能力上。**Hyperion 的差异化在记忆 + 调度 + 团队知识,不在重造 agentic coding。**
 
-**接口:** `CodingAgentDelegate.run(prompt, cwd, output_schema) -> StructuredResult`。后端:`omp`(默认,`omp -p`/`--mode rpc`)、`opencode`(`run`)、`claude`(`-p`/SDK,可选)。配置 `delegate.backend` 切换。**两者都支持、可自定义用哪个**(抽象接口从第一天起)。
+**接口:** `CodingAgentDelegate.run(prompt, cwd, output_schema=None, *, agent=None, continue_session=False) -> DelegateResult`(`continue_session` 走 `opencode run --continue` 续同会话,是 verify-refine 双循环的承载;`agent` 指定子 agent)。后端:**`opencode`(v1 默认,已装 v1.18)**、`omp`(备选,本机未装)、`claude`(`-p`/SDK,可选)。配置 `delegate.backend` 切换(抽象接口从第一天起,三后端可换)。
 
 **反向 MCP:** Hyperion 把 `memory` + `code_index` + `code-review-graph` 暴露为 MCP server,delegate 干活时现场查 Hyperion 累积的知识(不是 MCP 驱动 delegate,而是 delegate 查 Hyperion)。
 
@@ -210,10 +210,14 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 |---|---|---|---|
 | **R0** | 本规划落地 | 重写 architecture.md v2 + 新建 memory/bug-rca/deep-research 设计文档;裁剪占位;更新 CLAUDE.md/记忆 | 文档自洽、断链修完;`uv run hyperion models/tools/lsp health` 仍绿 |
 | **R1** | 记忆核心 v1 | `MemoryService` ABC + native 后端(code_index+code-review-graph)+ memorize/recall + MCP 暴露 + CLI `memory recall/add` | demo 报告抽成知识项存入、按语义+结构召回命中 |
-| **R2** ✅MVP | bug-RCA 端到端 | `CodingAgentDelegate`(opencode **glm-5.2**)**多阶段委托**(localize→repair 两 delegate,见 [bug-rca-design.md](bug-rca-design.md) §7.5)+ **A+C**:`config/opencode_hyperion.json` 自定义 agent(hyperion-localize/repair)+ `steps` 强制收敛(解 glm-5.2 单 loop 发散)+ `--continue` session 续接 + tolerant apply;localize 用 pro(稳命中金标准);workflow 九步 + 报告 + 记忆闭环 | **2026-07-30 达标**:端到端 delegate 收敛,产出报告+补丁+BugLesson 入记忆(recall 命中);**patch apply + 根因准确性留 R3**(workspace_changes #51 + 多候选/repro #54) |
-| **R3** | 代码仓深度调研 | **开场搭 runtime 最小骨架**(5 件,见 [runtime-harness-design.md](runtime-harness-design.md))+ runtime 正式上场(summarization 压历史+loop 检测+并行子 agent);**workspace 七段完整 + 方式B 契约打磨 + log_preprocess + 补丁验证 6 步 + 方案A 检索预筛**(见 [workspace-design.md](workspace-design.md));补 C parser、接 code-review-graph、Aider repomap、出架构/模块文档;闭环(调研→CodebaseFact) | 对 wpa/bluez 出达标架构文档,知识入库可复用 |
+| **R2** ✅MVP | bug-RCA 端到端 | `CodingAgentDelegate`(opencode **glm-5.2**)**多阶段委托**(localize→repair,见 [bug-rca-design.md](bug-rca-design.md) §7.5)+ **A+C**:自定义 agent(hyperion-localize/repair)+ `steps` 强制收敛 + `--continue` session 续接 + tolerant apply;报告 + 记忆闭环 | **2026-07-30 达标**:端到端 delegate 收敛,报告+补丁+BugLesson 入记忆(recall 命中) |
+| **R3.0** ✅ | runtime 骨架 | `platform/runtime/` 5 件(factory/state/token_budget/tool_output/checkpoint)+ delegate 可观测(#56 流式+delegate_log) | 冒烟:中间件链+token 预算+checkpointer 生效;`hyperion models` 回归绿 |
+| **R3.1** 🔧 | bug-RCA 硬化 | **workspace_changes(#51:git diff 观察补丁,已 e2e 验)** + **迭代 verify-refine(B,#54-rework:同会话双循环+verdict 自审+validate_patch 门控;rerank 降兜底默认关)**;trigger_parser(#53)/log_preprocess(#50)/方案A检索预筛/localize-rerank-A/F2-eval 待做 | demo2 patch `git apply --check` 过 + verify-refine 双循环跑通 + report 标 METR 警示 |
+| **R3.2** | 深度调研(P1 头条) | C parser + CRG 接入 + Aider repomap + runtime 正式上场(summarization/loop/子agent)+ deep_research workflow(多视角+事实一致性 rerank B) | `hyperion research --repo` → 带溯源架构/模块文档 + CodebaseFact 入记忆(recall 命中) |
+| **R3.3** | 收尾 | opencode serve persistent(#55)+ report 精修(#46) | serve 长驻 session 精确续;report 对齐 demo 金标骨架 |
+| **R3.4** | 文档摄取→记忆 | bug 报告/调研报告/补丁 → 分析 → 写记忆(PatchIngestPipeline:补丁 retrieve-then-summarize) | 三类文档 ingest→recall 命中;同根因去重合并 |
 | **R4** | 团队/多代码库 + PR 跟踪 | 租户隔离、文档统一管理、PR tracker workflow、opencode 后端(团队分发) | 多 owner/多库互不串;PR 跟踪出合入建议 |
-| **R5** | 生产化 | 对齐 deer-flow 边界处理、多轮/多 candidate 委托、自动 PoC、仿真验证、可观测、backlog 逐条;**runtime 生产化**(checkpoint patches/双层记忆/sandbox ownership) | 按 backlog-production-grade 清单收敛 |
+| **R5** | 生产化 | 对齐 deer-flow 边界处理、自动 PoC、仿真验证、可观测、backlog 逐条;**runtime 生产化**(checkpoint patches/双层记忆/sandbox ownership);**多候选 rerank 在 oracle 就绪后启用**(测试套件/#50 repro 落地) | 按 backlog-production-grade 清单收敛 |
 
 > **路线逻辑**:R1 记忆是 R2/R3 共同地基;R2 用 demo 金标准一次验证四痛点;R3 复用 R1 记忆 + R2 委托;R4/R5 扩展。**不 day-1 全上**——每阶段一个可验证场景。
 
@@ -237,7 +241,7 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 **P0 必 clone(核心参考):**
 | 项目 | star | license | 借鉴什么 |
 |---|---|---|---|
-| [bytedance/deer-flow](https://github.com/bytedance/deer-flow) | ~47k | MIT | 架构主脊 + Reporter;MemoryManager ABC + backend-swap(已本地) |
+| [bytedance/deer-flow](https://github.com/bytedance/deer-flow) | ~47k | MIT | 架构主脊(单 agent + 中间件链)+ MemoryManager ABC + backend-swap(已本地;**无 Reporter/研究图**,cited-reporter 自建,见 deep-research-design.md) |
 | [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) | — | MIT | 委托目标 omp + mnemopi 持续学习件(已本地) |
 | [tirth8205/code-review-graph](https://github.com/tirth8205/code-review-graph) | ~26.5k | MIT | 结构图(blast-radius/社区/hub)+ 架构地图(已本地) |
 | [Aider-AI/aider](https://github.com/Aider-AI/aider) | ~48k | Apache-2.0 | **repo-map**(`tags.scm`→PageRank→token 预算)→ 新增 repomap.py |
@@ -261,15 +265,15 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 Hyperion/
 ├── src/hyperion/
 │   ├── platform/         # ✅ 平台 Harness(已实现):models/config/reflection/sandbox/tracing/agent
-│   │   └── runtime/      # 🆕 agent 运行时 Harness(R2末起):中间件链/上下文管理/子agent/checkpointer → runtime-harness-design.md
+│   │   └── runtime/      # ✅ agent 运行时 Harness(R3.0):中间件链(token_budget/tool_output)+checkpointer → runtime-harness-design.md
 │   ├── services/
 │   │   ├── code_index/   # ✅ 代码理解(已实现 P1.0–P1.5):L1 向量+L2 LSP+outline+eval
-│   │   ├── memory/       # 🆕 记忆核心(R1):MemoryService 契约 + backends/ + recall/memorize
-│   │   ├── workspace/    # 🆕 bug workspace(R3):每 bug 一个专用目录七段 + LocalWorkspaceProvider → workspace-design.md
-│   │   └── log_preprocess/ # 🆕 大日志预筛(R3):grep+时间窗+addr2line+折叠 → delegate/context.md
-│   ├── workflows/        # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
-│   ├── tools/            # ✅ 导航/沙箱工具(已实现)+ 🆕 CodingAgentDelegate + memory 工具
-│   └── cli.py            # ✅ 入口(已实现 models/run/index/tools/lsp;🆕 R1+ 加 memory/bug-rca/research)
+│   │   ├── memory/       # ✅ 记忆核心(R1):MemoryService 契约 + native 后端 + recall/memorize
+│   │   ├── workspace/    # ✅ bug workspace(R3.1 #51):create_workspace + validate(Tier0)→ workspace-design.md
+│   │   └── log_preprocess/ # 🆕 大日志预筛(R3.1 待做):grep+时间窗+addr2line+折叠 → delegate/context.md
+│   ├── workflows/        # bug_rca ✅(R2 MVP + R3.1 B)/ deep_research 🆕(R3.2)/ pr_tracker 🆕(R4)
+│   ├── tools/            # ✅ 导航/沙箱/code_nav/memory 工具 + CodingAgentDelegate(R2)
+│   └── cli.py            # ✅ 入口(models/tools/lsp/memory/mcp 已实现;bug-rca 已实现;research 待 R3.2)
 ├── config/               # config.yaml(声明式)+ extensions_config.json
 ├── docs/                 # 已完成/· 调研/· 设计/(本文件在此)
 ├── example/              # demo1/demo2 金标准(输入+补丁+报告)

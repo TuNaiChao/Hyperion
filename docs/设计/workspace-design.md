@@ -1,6 +1,7 @@
 # bug-RCA Workspace 设计(每 bug 一个专用工作目录)
 
-> 状态:设计稿(2026-07-29),R3 重点落地,R2 末上最简形态。依据:两路调研(opencode 最佳实践 + sandbox/workspace 设计,含本地 deer-flow 代码精读 + OpenHands/SWE-agent/Agentless 最新做法)。
+> 状态:设计稿(2026-07-29)→ **R3.1 #51 已落最简形态**(create_workspace + validate Tier0 + git diff 观察,已 e2e 验);完整七段/日志预筛/双通道 待 R3.2+。
+> 依据:两路调研(opencode 最佳实践 + sandbox/workspace 设计,含本地 deer-flow 代码精读 + OpenHands/SWE-agent/Agentless 最新做法)。
 > 关联:[architecture.md](architecture.md) §workspace、[bug-rca-design.md](bug-rca-design.md)、[memory-design.md](memory-design.md)。
 
 ## 0. TL;DR(一句话)
@@ -56,19 +57,20 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
     └── timeline.md            #   分析时间线(谁在何时做了什么)
 ```
 
+> ⚠️ **现状 vs 目标**:上图是**完整目标结构**(R3 演进)。**R3.1 #51 已落最简形态**(`manager.create_workspace` 实际建):`code/`(copytree + 追加 `.gitignore` 排除 `.omo/`/`.opencode/` + `git init`/base commit)+ `triggers/issue.md` + `delegate/`(含 `delegate_log/`)+ `patch/` + `report/` + `AGENTS.md`。`META.json`/`keywords.json`/`logs/`/`context.md`/`artifacts/`/`docs/` 等 = R3.2+ 待建(见 §5/§8)。
+
 ### 命名约定
-- workspace 目录名:`<repo>__<bug-id>__<hash6>`(repo 短名 + bug 标识/日期 + META.json SHA-256 前 6 位防重)。例:`wpa__p2p_scan_empty__a3f9c1`。
+- workspace 目录名:`<repo>__<bug_id>`(repo 短名 + bug_id,默认时间戳)。例:`wpa__20260730-143022`。(目标加 `__<hash6>` 防重,待 META.json 落地。)
 - candidate patches:`NNN.diff`(三位序号);final patch 固定名 `final.diff`(脚本引用)。
 
 ### 谁写谁
 | 目录 | 写入方 | 说明 |
 |---|---|---|
-| `META.json` / `code/` / `triggers/` | Hyperion | 建workspace 时:`git clone --filter=blob:none` + `checkout base_commit` + 复制用户日志/issue |
+| `code/` / `triggers/issue.md` / `AGENTS.md` | Hyperion | 建 workspace 时:copytree + `.gitignore` + `git init`/base commit + 复制 issue |
 | `delegate/{prompt,context}.md` | Hyperion | 召回记忆 + code_index + **预筛日志** → 组装;prompt 是「线索 + 嫌疑起点指引 + JSON schema」(方式 B,非内联代码) |
-| `delegate/delegate_log/` | opencode | 事件流持久化(对标 deer-flow `subagents/step_events.py`) |
-| `artifacts/candidate_patches/` | opencode | LLM 生成多候选(Agentless) |
-| `artifacts/validate/` | Hyperion(沙箱里跑) | 补丁验证 6 步的日志 |
-| `patch/final.diff` | Hyperion | rerank 选 top-1 复制过来 |
+| `delegate/delegate_log/` | Hyperion(#56 可观测) | opencode stdout 流 + 摘要持久化(替 `/tmp` 诊断) |
+| `artifacts/candidate_patches/` | opencode | 多候选(Agentless)—— **兜底,`delegate.rerank.enabled` 默认关** |
+| `patch/final.diff` | Hyperion | git diff 观察 code/ 改动(主路径)+ 可选 rerank 兜底选 top-1 |
 | `report/` / `docs/` | Hyperion | 综合产物生成报告;`docs/summary.md` 沉淀进 MemoryService |
 
 ### 多 bug 隔离
@@ -97,15 +99,17 @@ workspace 模型一次性解决:opencode 在**全量代码 checkout + 日志同�
 
 ## 4. opencode 在 workspace 里怎么跑
 
-### 启动命令(Hyperion 调度器组装好 workspace 后执行)
+### 启动命令(由 `delegate.py:_build_cmd` 组装)
 ```bash
 opencode run \
-  --dir ~/.hyperion/workspaces/wpa__p2p_scan_empty__a3f9c1 \
-  --title "wpa-p2p-scan" \
+  --dir <workspace>/code \
+  --agent hyperion-localize \      # C:指定子 agent(hyperion-localize/repair,steps 强制收敛)
   -m uniontech-ai/glm-5.2 \
   --format json --auto \
+  [--continue] \                   # A:续同 cwd 最近 session(verify-refine 双循环承载)
   "$(cat .../delegate/prompt.md)"
-# --dir = workspace 根 → session 自动按 project 隔离;AGENTS.md 自动注入契约
+# --dir = workspace/code → opencode 在此读+改;session 按 cwd 隔离;AGENTS.md 自动注入契约
+# --continue 与 --agent 正交(已核查 opencode run.ts):可续同 session 中途换 agent(localize→repair)
 ```
 
 ### AGENTS.md(放 workspace 根,强制契约,注入 system prompt)
@@ -117,9 +121,9 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 - 代码在 ./code/,日志在 ./triggers/logs/ —— 必须先读日志再分析
 - Hyperion 已预筛日志关键行到 ./delegate/context.md,可自行 grep 原始日志深挖
 - 嫌疑起点(file:line)见 ./delegate/prompt.md,优先读这些
-- 输出严格 JSON(root_cause/evidence/patch/confidence),patch 是 unified diff
-- 补丁必须 `git apply --check` 可过;只改根因相关文件,禁止顺手重构
-- 证据必须 file:line 溯源
+- 阶段① localize:返回 {root_cause,evidence,trigger_chain,verdict,falsification};**不要 patch**
+- 阶段② repair:用 edit 直接改 ./code/ 里的文件;返回 {verdict,falsification};**禁止贴 diff 文本**(Hyperion 用 git diff 观察)
+- 改完必须自审(verdict);只改根因相关文件,禁止顺手重构;证据必须 file:line 溯源
 ```
 
 ### 关键 opencode 机制(调研核实)
@@ -150,33 +154,35 @@ workspace 根的 `AGENTS.md`(本 bug 特定):
 - 几 MB~GB 日志不能全喂 opencode(爆 token);Hyperion 粗筛省 token + 精准调度。
 
 ### 5.4 代码 localize file-level 预筛(关键字驱动,= 方案A)
-- 现状(R2):file-level 喂**整棵目录树**(518 文件)给 LLM 选 → 慢。
-- 改(方案A,R3):用 keywords 对 `code_index` 做 BM25/embedding 检索取 top-20 文件 → LLM rerank top-5。输入从 518 行树 → 20 行,**快 + 准**(对标 Agentless 正路)。
+- 现状(R3.1):LLM 三层漏斗(file→function→line)已跑通;file-level 仍是 LLM 看目录树选(未接 code_index 检索)。
+- 改(方案A,R3.2+):用 keywords 对 `code_index` 做 BM25/embedding 检索取 top-20 文件 → LLM rerank top-5(输入从整棵树 → 20 行,快 + 准,对标 Agentless 正路)+ 可选 **localize 文件投票**(rerank A,复用 majority_vote)。
 
 ### 实现
 `services/trigger_parser/`(多格式解析 + 关键字抽取,R3)+ `services/log_preprocess/`(日志预筛,见 #50)+ localize file-level 改检索(方案A)。**关键字是三者的统一纽带**。
 
 ---
 
-## 6. 补丁可 apply 工作流(业界标准 6 步)
+## 6. 补丁验证(Tier 0 已落;全链门控构建环境 R5)
 
-综合 SWE-bench harness + Agentless + OpenHands,Hyperion 在 workspace 的 `code/` 里跑:
+补丁由 Hyperion 用 `git diff --cached` 观察 `workspace/code/` 改动生成(**不信任 delegate 吐的 diff**,根治 R2 off-by-one),`services/workspace/validate.py` 做 Tier 0 验证:
 
-1. **clean checkout**:`cd code && git checkout <base_commit> && git clean -xfd`(保证起点干净)。
-2. **apply 验证**:`git apply --check patch/final.diff`(优先,严格);失败降级 `git apply --3way` 或 `patch -p1`(更宽松,记日志视为质量降级)。
-3. **revert 验证**:revert 后跑测试应 fail(证明 patch 是 fix 必要条件)。
-4. **编译**(若需):`make -j`,log → `artifacts/validate/build.log`。
-5. **测试回归**:FAIL_TO_PASS(bug 触发测试,patch 后必 pass)+ PASS_TO_PASS(原有测试,无回归)。
-6. **多候选 rerank**(Agentless):每候选重复 2-5,按测试结果 + 补丁简洁度选 top-1 → `patch/final.diff`。
+**Tier 0(R3.1 已落,零 LLM):**
+1. **forward `--check`**:`git apply --recount --check patch`(严格);失败降级 `--3way` → `patch -p1 --dry-run`(记降级路径,反映补丁质量)。
+2. **reverse `--check`**:补丁能干净 revert(证必要:能撤回 = 真实改动,不是空补丁)。
+
+**目标全链(门控于「构建环境就绪」,R5 Docker)** —— wpa/bluez build 是硬前提且多无测试套件,不强凑:
+3. clean checkout(`git checkout <base> && git clean -xfd`)。
+4. 编译(`make -j`,log → `artifacts/validate/build.log`)。
+5. 测试回归:FAIL_TO_PASS(patch 后必 pass)+ PASS_TO_PASS(无回归)。
+6. 多候选 rerank(Agentless)—— **兜底,`delegate.rerank.enabled` 默认关**(无测试 oracle 时投票平凡,见 [bug-rca-design.md §7.6](bug-rca-design.md))。
 
 **quilt 场景**(系统包/Debian):`final.diff` → `debian/patches/fix-bug-N.diff` + 更新 `series` → `quilt push -a`。
 
-**生成 diff 的机制 —— 双观察通道(2026-07-30 审核增强 F5)**:不依赖 LLM 吐格式正确的 diff,用**两路观察交叉校验**:
-1. **流内 filediff**(即时):opencode `--format json` 流里,每次 `edit`/`write`/`apply_patch` 完成时,opencode 已从真实前后内容算好 `tool_use.part.metadata.filediff = {file, patch, additions, deletions}`(`opencode/.../tool/edit.ts`)。`delegate.py:_parse_stream` 分类这些事件 → `DelegateResult.edits`。
-2. **跑后 git diff**(ground truth):复用 deer-flow `workspace_changes/{scanner,diff}.py`,opencode 跑前后各扫一次 `code/`,`compare_snapshots` + `difflib.unified_diff`。scanner 有保护:排除 `.git/.venv/node_modules`、二进制识别、敏感文件(`.env/.key/*credential*` 只存元数据)、大小上限。
-3. **交叉校验**:sum(流内 filediff) vs 跑后 git diff 不一致 → 记告警(有工具改了文件 opencode 未报,或反之)。两路任一可用即产出 `patch/final.diff`,根治 R2「LLM 吐 diff off-by-one」通病。
+**diff 观察通道(R3.1 现状 = 单路 git diff;双通道待办 F5):**
+- ✅ **跑后 git diff**(已落,主路径):`nodes._observe_patch` = `git add -A && git diff --cached`,ground truth,行号/格式天然对。
+- 🆕 **流内 filediff**(待办):opencode `--format json` 流里 `edit` 完成时吐 `tool_use.part.metadata.filediff = {file,patch,additions,deletions}`(`opencode/.../tool/edit.ts`)。落地后与 git diff 交叉校验(防"工具改了文件 opencode 未报")。当前单路 git diff 够用。
 
-> ⚠️ **verify 范围(2026-07-30 审核纠正 F3)**:wpa_supplicant(autotools+libnl/dbus/elogind/openssl…)、bluez(ell/dbus/glib/udev…)的**构建环境是未落实硬前提**,且多无测试套件。**R3 默认只做 Tier 0**(上列步骤 1-3:clean checkout / apply --check / apply-revert 证必要);**步骤 4-5(编译 / F2P / P2P)门控于「构建环境就绪」**(独立子任务,可能并 R5 Docker 容器)。无测试套件时,repro 用**日志符号化替代**(见 [bug-rca-design.md §7.5](bug-rca-design.md) F4),不强凑 F2P/P2P。
+> ⚠️ **verify 范围(F3)**:wpa_supplicant / bluez 的**构建环境是未落实硬前提**且多无测试套件。**R3.1 只做 Tier 0**;编译/F2P/P2P 门控于「构建环境就绪」(独立子任务,可能并 R5 Docker)。无测试套件时 repro 用**日志符号化替代**(见 [bug-rca-design.md §7.5](bug-rca-design.md) F4)。
 
 ---
 
@@ -204,7 +210,8 @@ opencode debug config && opencode models uniontech-ai      # 4. 验证
 | 阶段 | workspace | 隔离 | 日志预筛 | 补丁验证 |
 |---|---|---|---|---|
 | **R2 末(最简)** | 本地目录 + 7 段 lite;delegate cwd=workspace | 本地 | 跳过(trigger 预摘要) | 步骤 1-3(apply/revert) |
-| **R3(完整)** | 完整 7 段 + candidate_patches + validate | 本地(`LocalSandbox`) | 完整粗筛 5 步 | 完整 6 步 + 多候选 rerank |
+| **R3.1(已落最简)** | code/triggers/delegate/patch/report + AGENTS.md + `.gitignore` + git base | 本地 | 跳过(trigger 摘要) | Tier0(apply/revert)+ git diff 观察 |
+| **R3.2+(完整)** | 完整 7 段 + META + artifacts | 本地(`LocalSandbox`) | 完整粗筛 5 步 | 双通道 + (rerank 兜底默认关) |
 | **R5(生产)** | 同结构 | Docker(`AioSandboxProvider`) | 同 | + 多架构镜像 + warm pool |
 
 **R2 末最简形态**(可能同时解当前 delegate timeout):delegate 改成「workspace 目录 + AGENTS.md 契约 + 方式 B 指引 prompt」(opencode 读全量 code/+logs 而非内联片段)。
@@ -219,7 +226,7 @@ opencode debug config && opencode models uniontech-ai      # 4. 验证
 | `sandbox/sandbox_provider.py` | `SandboxProvider` ABC + acquire/get/release 生命周期 + 工厂反射 |
 | `sandbox/local/local_sandbox.py` | `LocalSandbox`(path mapping + 子进程 + `_BoundedPipeCapture` pipe drain + 进程组 SIGKILL timeout) |
 | `sandbox/env_policy.py` | env scrub(继承 os.environ 时清 `*KEY*/*SECRET*/*TOKEN*`)—— **防 API key 泄到 delegate 子进程** ★ |
-| `workspace_changes/{scanner,diff}.py` | 前后扫描 + `difflib.unified_diff` 生成 patch —— **核心机制** ★ |
+| `workspace_changes/{scanner,diff}.py` | 前后扫描 + `difflib.unified_diff` 生成 patch —— **待接入**(R3.1 暂用原生 `git add -A && git diff --cached` 单路;接入后获 scanner 保护:敏感文件/二进制/大小上限) |
 | `sandbox/security.py` | `uses_local_sandbox_provider` / `is_host_bash_allowed` 模式 |
 | `community/aio_sandbox/` | R5 切 Docker 时直接引入(warm pool + ownership store) |
 
@@ -231,7 +238,7 @@ deer-flow 子 agent 产 patch 的方式 = `str_replace` 工具调用(非吐 diff
 
 - **新建 `src/hyperion/services/workspace/`**:`WorkspaceManager`(创建/列出/归档 workspace)+ `LocalWorkspaceProvider`(对标 deer-flow `SandboxProvider`)。七段目录初始化 + META.json + git checkout。
 - **新建 `src/hyperion/services/log_preprocess/`**(R3):grep + 时间窗 + addr2line + 折叠 + 摘要,产 `delegate/context.md` 日志段。
-- **改 `src/hyperion/workflows/bug_rca/`**:七步改成 `acquire_workspace → preprocess_logs → assemble_context(写 delegate/,方式 B 指引)→ delegate(cwd=workspace,opencode --dir)→ validate_patch(6 步)→ write_report + docs/`。
+- **改 `src/hyperion/workflows/bug_rca/`**:八步双循环 `ingest→recall→localize→assemble_localize→delegate_localize_loop→assemble_repair→delegate_repair_loop(含 git diff 观察 + validate_patch Tier0)→report_memorize`,见 [bug-rca-design.md §7.6](bug-rca-design.md)。
 - **改 `src/hyperion/tools/delegate.py`**:opencode cwd = `<workspace>/code/`,任务输入 = `delegate/prompt.md`;timeout 时存已收 stdout(可观测性)。
 - 复用:`services/code_index/`(召回写 `delegate/context.md`)+ `services/memory/`(完成后写 `docs/summary.md` → 记忆)。
 

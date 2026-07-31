@@ -1,6 +1,6 @@
 # 运行时上下文管理 harness — 设计文档
 
-> 状态:设计稿 v1(2026-07-29,R3-审核修订 2026-07-30)· 实现阶段:**R3 开场搭骨架 → R3 深度调研上场 → R5 生产化补齐**
+> 状态:**R3.0 骨架 ✅ 已落地**(2026-07-30,5 件 + 冒烟绿)· R3.2 深度调研上场 → R5 生产化补齐
 >
 > 📌 **2026-07-30 审核修订(F6/F7/F11)**:① 原「R2 末搭骨架」**整体挪到 R3 开场**(R2 九步不依赖 runtime、不验,R3 深度调研边搭边验)——文中残余「R2 末」字样均按「R3 开场」理解。② **factory 瘦身**:R3 中间件仅 ~5 个,用**普通有序 list**,不移植 deer-flow `_insert_extra`/`@Next/@Prev` 锚点机制(那是给 30+ 中间件排序的,R5 再上)。③ langchain **1.3.14 / langgraph 1.2.9**(`AgentMiddleware` 已实测可用);langgraph 1.2.9 的 delta-checkpoint 有上游 bug(deer-flow `checkpoint_patches.py` 正补它),**R3 用默认 full 模式避开**,delta 模式 + patches 推 R5。
 > 上位文档:[architecture.md](architecture.md) · 对标调研:[deer-flow-runtime-参考.md](../调研/deer-flow-runtime-参考.md)
@@ -86,25 +86,17 @@ deer-flow 不是 OpenHands 那种"全量历史 + 窗口视图"双份管理,而�
 ## 3. 架构:`platform/runtime/` 目录结构
 
 ```
-src/hyperion/platform/runtime/        # 🆕 新增(对标 deer-flow harness 包)
-├── __init__.py
-├── factory.py            # create_hyperion_agent(features, extra_middleware, checkpointer, state_schema)
-│                         #   对标 deer-flow create_deerflow_agent / _assemble_from_features / _insert_extra
-├── state.py              # HyperionState(AgentState):messages + summary_text + delegations + sandbox + ...
-├── context/              # —— 上下文管理核心 ——
-│   ├── __init__.py
-│   ├── condenser.py      # 历史→摘要(对标 SummarizationMiddleware;R3)
-│   ├── budget.py         # token 预算(对标 TokenBudgetMiddleware;R2末)
-│   └── tool_output.py    # 工具输出外化+synopsis(对标 ToolOutputBudgetMiddleware;R2末,委托前置)
-├── middlewares/          # —— 可插拔中间件(langgraph AgentMiddleware 子类)——
-│   ├── __init__.py
-│   ├── token_budget.py   # TokenBudgetMiddleware 移植(R2末)
-│   ├── tool_output.py    # ToolOutputBudgetMiddleware + synopsis(R2末)
-│   ├── summarization.py  # SummarizationMiddleware(R3)
-│   ├── memory.py         # 记忆自动注入(挂 MemoryService;R3)
-│   └── loop_detection.py # 死循环检测(R3)
-├── subagents.py          # SubagentExecutor 简化版(并行子任务;R3)
-└── checkpoint.py         # checkpointer 接入(SqliteSaver;R2末)+ 断点续跑
+src/hyperion/platform/runtime/        # ✅ R3.0 已落地(对标 deer-flow harness 包)
+├── factory.py            # create_hyperion_agent(model, tools, *, middleware=None, state_schema, checkpointer, name)
+│                         #   middleware=None → build_default_middlewares() 默认链;普通有序 list(R5 再上 @Next/@Prev)
+├── state.py              # HyperionState(AgentState):messages + summary_text + delegations(+ merge_delegations reducer)
+├── context/
+│   └── tool_output_synopsis.py  # ✅ 整文件搬 deer-flow 纯函数(json/csv/code synopsis + 5MB 守门 + defusedxml)
+├── middlewares/
+│   ├── token_budget.py   # ✅ TokenBudgetMiddleware(三档阈值 + warn/hard_stop + BoundedDict)
+│   └── tool_output.py    # ✅ ToolOutputBudgetMiddleware(超阈值外化磁盘 + synopsis)
+└── checkpoint.py         # ✅ SqliteSaver 工厂 + get_checkpointer() 单例 + 断点续跑
+# 🆕 R3.2 待加:middlewares/{summarization,loop_detection,dynamic_context,memory}.py + subagents.py
 ```
 
 > 与现有 [platform/](../../src/hyperion/platform/)(models/config/reflection/sandbox/tracing)**并列**——platform/ 是"平台层"(模型/配置/沙箱/工具),runtime/ 是"agent 运行时层"(跑长 agent 的变速箱)。runtime/ 依赖 platform/(用它的 model factory / config / sandbox)。
@@ -113,21 +105,21 @@ src/hyperion/platform/runtime/        # 🆕 新增(对标 deer-flow harness 包
 
 ## 4. 核心机制逐个(实现时照此对标)
 
-### 4.1 中间件框架 + factory(R2末)
+### 4.1 中间件框架 + factory(✅ R3.0 已落)
 - 继承 `langchain.agents.middleware.AgentMiddleware[HyperionState]`,override `before_model` 等。
-- `create_hyperion_agent(features, extra_middleware, checkpointer, state_schema)`:`features` 声明式 flag 组主干中间件链。**R3 简化(F6)**:中间件仅 ~5 个 → 用**普通有序 list** 装配;`extra_middleware` 暂不支持 `@Next/@Prev` 锚点(照抄 deer-flow `_insert_extra`,`factory.py:357-430` —— 那是给 30+ 中间件链排序用的,R3 用不上,**推 R5**)。
-- **最终调 langchain `create_agent(model, tools, middleware, system_prompt, state_schema, checkpointer)`**——不自造 ReAct 循环(langgraph 内置 ModelNode→ToolNode)。
+- `create_hyperion_agent(model, tools, *, middleware=None, state_schema=HyperionState, checkpointer=None, name=...)`:`middleware=None` → `build_default_middlewares()` 返回默认链(ToolOutputBudget + TokenBudget)。**普通有序 list** 装配(F6 瘦身:不移植 deer-flow `_insert_extra`/`@Next/@Prev`——那是给 30+ 中间件排序的,**推 R5**)。
+- 最终调 langchain `create_agent(model, tools, middleware, ...)`——不自造 ReAct 循环。详见 `platform/runtime/factory.py`。
 
-### 4.2 TokenBudget(R2末)— 几乎原样移植
+### 4.2 TokenBudget(✅ R3.0)— 几乎原样移植
 - `before_agent` 记已有 AIMessage 的 usage(不计本 run),`after_model` 累加 diff。
 - 三档阈值:`max_tokens` / `max_input_tokens` / `max_output_tokens`。
 - **warn**(默认 0.7)→ 注入 `HumanMessage(name="budget_warning")`;**hard_stop**(1.0)→ 剥 tool_calls + `finish_reason=stop` + 追加说明(**不抛异常**,loop 自然终止)。
 - `BoundedDict(1000)` 防 abandoned run 泄漏;`additive stop_reason`。
 - 文件:行号见调研报告 §2.2。
 
-### 4.3 ToolOutputBudget + synopsis(R2末,委托前置)— 整文件搬
+### 4.3 ToolOutputBudget + synopsis(✅ R3.0,委托前置)— 整文件搬
 - `tool_output_synopsis.py` 是**无依赖纯函数**(按 json/csv/code/text 产出 synopsis),5MB DoS 守门,defusedxml 安全解析——**可整文件搬**。
-- `ToolOutputBudgetMiddleware.wrap_tool_call`:工具结果 > `externalize_min_chars`(默认 30K)→ **外化到磁盘**(`/data/runtime/tool-outputs/`),模型可见换成 synopsis + 文件路径;磁盘不可用降级 head+tail(行边界对齐)。
+- `ToolOutputBudgetMiddleware.wrap_tool_call`:工具结果 > `externalize_min_chars`(默认 30K)→ 外化到 `data/runtime/tool-outputs/`(R3.0 简化:**无 sandbox 虚拟路径映射,直接写本地**;留 `_resolve_outputs_dir` 钩子备 R3.2 沙箱切 `<workspace>/outputs`);磁盘不可用降级 head+tail(行边界对齐)。
 - **意义**:opencode/grep 返回的大输出召回 Hyperion 时必须先过它,否则一次 dump 爆 context。
 
 ### 4.4 Summarization(R3)— LLM 摘要 + 独立 channel
@@ -141,12 +133,13 @@ src/hyperion/platform/runtime/        # 🆕 新增(对标 deer-flow harness 包
 - 删 deer-flow 的 skill/memory/authorization/guardrail/tracing 装配,留核心调度。
 - **R3 深度调研用**:并行派子 agent 各查一个模块。
 
-### 4.6 checkpointer(R2末)
+### 4.6 checkpointer(✅ R3.0)
 - 复用 LangGraph 官方 `SqliteSaver`(本地文件,零依赖),不自造后端。
 - `create_hyperion_agent(checkpointer=SqliteSaver(...))`,长任务可断点续跑。
-- full/delta channel 模式、checkpoint_patches(上游 bug 补丁)→ **R5 生产化再评估**。**R3 用默认 full 模式**(F11:langgraph 1.2.9 的 delta 模式有上游 bug —— InMemorySaver delta-history 丢 pending writes + Overwrite first-write 存 wrapper,d deer-flow `checkpoint_patches.py` 正补这两个;本机正是 1.2.9,full 模式不踩坑)。
+- full/delta channel 模式、checkpoint_patches(上游 bug 补丁)→ **R5 生产化再评估**。**R3 用默认 full 模式**(F11:langgraph 1.2.9 delta 模式有上游 bug —— InMemorySaver delta-history 丢 pending writes + Overwrite first-write 存 wrapper,deer-flow `checkpoint_patches.py` 正补;本机正是 1.2.9,full 模式不踩坑)。
+- ⚠️ **R3.1 bug_rca graph 暂不挂 checkpointer**(线性 DAG,`run()` 一次性 `ainvoke`);`get_checkpointer()` 单例已就绪,**R3.2 deep_research 长任务才真上**。
 
-### 4.7 HyperionState(R2末)
+### 4.7 HyperionState(✅ R3.0)
 ```python
 class HyperionState(AgentState):
     summary_text: NotRequired[str | None]              # LastValue,summarization 写入
@@ -159,16 +152,16 @@ class HyperionState(AgentState):
 
 ## 5. 分档实现路线(对标调研报告 §6.3-6.5)
 
-### R2 末:最小骨架(5 件,为 R3 铺路)
-> ⚠️ **R2 的 bug-RCA 七步本身不依赖 runtime**(它是 StateGraph DAG + 单次委托,不长)。R2 末搭骨架是**预研预搭**,让 R3 深度调研直接在这套上跑。
+### R3.0:最小骨架(5 件)✅ 已落地
+> ⚠️ **bug-RCA 八步 graph 本身不依赖 runtime**(线性 DAG + 单次委托,不长)。R3.0 搭骨架是给 **R3.2 深度调研**铺路。冒烟测试 `tests/runtime/test_smoke.py` 已验中间件链 + token 预算 + checkpointer 生效。
 
-1. **中间件框架**:`AgentMiddleware` 接入 + `create_hyperion_agent` factory 骨架。
-2. **TokenBudgetMiddleware**:几乎原样移植(bug-RCA 跑长也能用)。
-3. **ToolOutputBudget + synopsis**:整文件搬(委托 omp 的前置)。
-4. **HyperionState schema** + `SqliteSaver` checkpointer 接入。
-5. 一个冒烟测试:lead agent 跑一个简单 ReAct 任务,验证中间件链 + token 预算 + checkpointer 都生效。
+1. ✅ **中间件框架**:`AgentMiddleware` 接入 + `create_hyperion_agent` factory。
+2. ✅ **TokenBudgetMiddleware**:移植(三档阈值 + warn/hard_stop)。
+3. ✅ **ToolOutputBudget + synopsis**:整文件搬 `tool_output_synopsis.py`。
+4. ✅ **HyperionState** schema + `SqliteSaver` checkpointer 工厂(`get_checkpointer()` 单例)。
+5. ✅ 冒烟测试。
 
-**R2 不做**:summarization(先滑窗)、loop_detection、memory middleware、skill、guardrail、delta checkpoint。
+**R3.0 不做**(留 R3.2):summarization、loop_detection、memory middleware、skill、guardrail、delta checkpoint。
 
 ### R3 深度调研:runtime 正式上场
 - **SummarizationMiddleware**(调研对话长,必备 LLM 摘要 + summary_text channel + DurableContext 注入)。
@@ -190,8 +183,8 @@ class HyperionState(AgentState):
 
 > 同步进 `.claude/memory/backlog-production-grade.md`。
 
-- [ ] **R2末**:`platform/runtime/` 骨架(factory + state + token_budget + tool_output + checkpointer)。
-- [ ] **R3**:summarization + loop_detection + dynamic_context + SubagentExecutor + memory middleware。
+- [x] ✅ **R3.0**:`platform/runtime/` 骨架(factory + state + token_budget + tool_output + checkpointer)已落地。
+- [ ] **R3.2**:summarization + loop_detection + dynamic_context + SubagentExecutor + memory middleware。
 - [ ] **R5**:checkpoint_patches + 双层记忆 + sandbox ownership + alembic bootstrap。
 - [ ] 中间件顺序表照抄 deer-flow `factory.py:188-211`(顺序敏感,langgraph 反向 dispatch after_model)。
 - [ ] `tool_output_synopsis.py` 整文件搬(无依赖纯函数,优先)。

@@ -1,7 +1,7 @@
 # P1 设计:代码理解服务(`services/code_index/`)
 
 > **状态**:P1.0–P1.5 已成(P1.5 L2 精确导航 find_references/goto_definition/hover 活验证通过,2026-07-28)。本文档随进展更新。
-> **v2 路线对齐(2026-07-28 产品重规划)**:本文的 P1.x 标签指**代码理解层**的子阶段(已成,作为资产保留)。在 v2 的 R0–R5 路线([architecture.md §8](architecture.md))里,这层 = 已建成的 **L1+L2**,兼作记忆核心 native 后端的**语义检索那条腿** + 调研/委托的上下文源([architecture.md §5.1](architecture.md))。文内其余 **"P2" 指代的 L3/DAP → 对齐到 R2 末/R3,且仅可复现 bug 适用**(事后日志分析不适用,见 [bug-rca-design.md §7](bug-rca-design.md))。
+> **v2 路线对齐(2026-07-28 产品重规划)**:本文的 P1.x 标签指**代码理解层**的子阶段(已成,作为资产保留)。在 v2 的 R0–R5 路线([architecture.md §8](architecture.md))里,这层 = 已建成的 **L1+L2**,兼作记忆核心 native 后端的**语义检索那条腿** + 调研/委托的上下文源([architecture.md §5.1](architecture.md))。文内其余 **"P2" 指代的 L3/DAP → 对齐到 R3+/R5,且仅可复现 bug 适用**(事后日志分析不适用,见 [bug-rca-design.md §7](bug-rca-design.md))。
 > **目标代码库**:bluez / wpa_supplicant 等 Linux C 组件(P1 以 Python/deer-flow 起步把管线跑通,C 专属难点留到 C 场景)。
 > **总纲**:[architecture.md §5.1](architecture.md#51-代码理解服务-servicescode_index);**演进依据**:[后续设计演进报告(oh-my-pi 与最佳实践)](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
@@ -10,7 +10,7 @@
 ## 0. 这层是干什么的(先讲大白话)
 
 ### 为什么需要它
-P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构**。P2 Bug-RCA 要"定位根因到具体函数",P4 PR-Tracker 要"评估一个 PR 的影响面"——两者都要求 agent 能像 IDE 一样在大型 C 代码库里**按符号导航 + 语义检索**,而不是 `grep` 全文。P1 就是这个共同地基。
+平台层(platform/)给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构**。bug-RCA(R2/R3)要"定位根因到具体函数",PR-Tracker(R4)要"评估一个 PR 的影响面"——两者都要求 agent 能像 IDE 一样在大型 C 代码库里**按符号导航 + 语义检索**,而不是 `grep` 全文。代码理解层就是这个共同地基。
 
 ### 三层代码智能栈(理解本服务的主线)
 
@@ -20,9 +20,9 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 |---|---|---|---|---|
 | **L1 向量检索** | 大楼的"语义索引" | "找处理蓝牙断连的地方"(按**意思**模糊匹配) | `services/code_index/`(本文档) | **P1.0–P1.3 已成** |
 | **L2 LSP/clangd** | 大楼的"精确导航"(像 IDE) | "**谁调用**了 `disconnect_cb`"(精确到每一处,连宏/跨文件/系统头) | P1.5 | **已成** |
-| **L3 DAP/lldb·gdb** | 大楼的"现场勘查" | "进程崩在这,此刻这个变量值是多少、栈是什么" | R2 末/R3 | 待做(仅可复现 bug) |
+| **L3 DAP/lldb·gdb** | 大楼的"现场勘查" | "进程崩在这,此刻这个变量值是多少、栈是什么" | R3+/R5 | 待做(仅可复现 bug) |
 
-三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。**本服务当前覆盖 L1+L2(已成);L3 留 R2 末/R3(仅可复现 bug 适用)。**
+三层叠加:L1 先定位到大概哪个模块 → L2 精确串调用链 → L3 验证现场。**本服务当前覆盖 L1+L2(已成);L3 留 R3+/R5(仅可复现 bug 适用)。**
 
 ### 退出标准
 - **P1.3(已成)**:L2(语义查询)recall@5 ≥ 0.55 —— 实测 **0.650 达标**(见 §3)。
@@ -32,7 +32,7 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 ### 选型一览(P1 基础全部建在外部 SOTA 上)
 | 能力 | 选型 |
 |---|---|
-| 解析 | tree-sitter + 每语言独立 grammar 包(`tree-sitter-python`,后续 `tree-sitter-c`);ctags 补宏(C 场景) |
+| 解析 | tree-sitter + 每语言独立 grammar 包(`tree-sitter-python`;**C 已加**,R2 为 wpa 补);宏走 clangd 展开(P1.5),ctags 备选未接 |
 | 切块 | 符号边界(对标 cAST,EMNLP 2025) |
 | 向量库 | **LanceDB**(嵌入式,原生 BM25+向量+RRF 混合);`VectorStore` 接口留 Qdrant 扩展口子 |
 | embedding | **DashScope `text-embedding-v4`**(远端默认)/ 本地可选 |
@@ -81,7 +81,7 @@ P0 给了 agent "能跑命令/读文件" 的通用能力,但**不懂代码结构
 class Symbol:
     name: str                 # 简单名,如 "run"
     qualified_name: str       # 带作用域,如 "Agent.run"(消歧 / LSP 定位用)
-    kind: str                 # function | method | class(C 再加 struct/macro/typedef/enum)
+    kind: str                 # function | method | class(C 当前仅 function;struct/macro/typedef/enum 待补——按 body 过滤 struct_specifier 噪声)
     language: str             # python | c …
     file: str                 # 相对仓根路径(parse_repo 给相对路径,索引稳定)
     start_line: int           # 1-indexed
@@ -171,7 +171,7 @@ res = (tbl.search(query_type="hybrid", vector_column_name="vector", fts_columns=
 - **reranker provider 抽象(镜像 embed.py)**:`Reranker` Protocol;**远端默认** DashScope `qwen3-rerank`(原生端点,同 `DASHSCOPE_API_KEY`,¥0.0005/千token),SiliconFlow `BAAI/bge-reranker-v2-m3` 免费 fallback(Cohere 形态),本地仅 GPU(CPU 257s/100doc 不可交互)。用 LanceDB `Reranker` 子类(重写 `rerank_hybrid`)把远端 API 包进 `.rerank()` 接口。reranker 对 **fts_text**(短)打分,不对全长代码体。
 - **`_out_mode` 可观测**:每查询记录实际走了 hybrid+rerank / hybrid / rerank-failed:hybrid / empty。
 - **三级降级**:hybrid(FTS+向量)→ 仅 FTS → 仅向量;reranker 失败时降级用 hybrid 顺序。
-- ⚠️ **weakest-link**:RRF 不是越多路越好([Balancing the Blend, arXiv 2508.01405](https://arxiv.org/html/2508.01405v2));加第 3 路前必须单路 eval 消融,弱路径砍掉。TRF(ColBERT MaxSim 当融合器)作 P2 精度升级([backlog #10](../../.claude/memory/backlog-production-grade.md))。
+- ⚠️ **weakest-link**:RRF 不是越多路越好([Balancing the Blend, arXiv 2508.01405](https://arxiv.org/html/2508.01405v2));加第 3 路前必须单路 eval 消融,弱路径砍掉。TRF(ColBERT MaxSim 当融合器)作 R3+ 精度升级([backlog #10](../../.claude/memory/backlog-production-grade.md))。
 
 ### 2.6 建索引编排 `index.py` [P1.2 已成]
 
@@ -530,7 +530,7 @@ code_index:
 4. `uv run ruff check .` clean;multilspy 导入 + 单例起停**不泄漏子进程**(`ps` 无残留 clangd)。
 5. `CodeChunk.callers/callees` 字段不再被任何代码回填(P1.4 留的空 tuple,本阶段确认无害或清理)。
 
-> **实测计划**:① 自带 C fixture(零依赖,装 clangd 即跑)验证 plumbing;② bluez / wpa 真实仓的 `bear -- make` 生成 compile_commands + 全仓 references 留到 **P2 Bug-RCA 首个真实任务**(需源码 + 干净 build 环境,P1.5 不强行)。
+> **实测计划**:① 自带 C fixture(零依赖,装 clangd 即跑)验证 plumbing;② bluez / wpa 真实仓的 `bear -- make` 生成 compile_commands + 全仓 references 留到 **R3+ bug-RCA 首个真实任务**(需源码 + 干净 build 环境,P1.5 不强行)。
 
 > **实测结果(2026-07-28,自带 fixture `tests/fixtures/lsp_c/`,clangd 17.0.6)**:
 > - 退出标准 **①**✓:`hyperion lsp health` 报 ✓✓ 绿(clangd + compile_commands 就位);缺 clangd 的机器报 ✗ + 修复指引(降级路径验过)。
@@ -564,7 +564,7 @@ code_index:
 - **LSP 结果短期缓存**:同一 `(file,line,col)` 短期复用(镜像 `_symbols_for_file` 的 mtime 键)。
 - **业界印证**(方向校准):Cursor / Claude Code(v2.0.74 原生 9 个 LSP 工具)/ Continue 都用「LSP 符号图 + 向量」分层检索——正是本项目 L1(向量)+L2(LSP)设计;反方证据(SWE-bench 上纯 grep 偶尔胜过纯向量)恰好说明**向量必须配精确层**,不可单独用。
 
-> L3(DAP 调试器,attach/读栈/读变量)留 **P2** Bug-RCA(可复现 bug 现场深挖);TTSR 流式规则 / advisor 副驾 / Hashline 补丁等护栏也留 P2。详见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
+> L3(DAP 调试器,attach/读栈/读变量)留 **R3+** bug-RCA(可复现 bug 现场深挖);TTSR 流式规则 / advisor 副驾 / Hashline 补丁等护栏也留 R3+。详见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
 
 ---
 
@@ -575,7 +575,7 @@ code_index:
   repo: hyperion                       # P1.4:search_code 查的表名(须与 build_index 一致;缺省回退 workspace 目录名)
   embedding:                           # embed.py(P1.2 已落地:远端 OpenAI 兼容默认)
     provider: openai_compatible        # 远端默认(免下载/免 torch);本地可选 sentence_transformers
-    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    base_url: $DASHSCOPE_BASE_URL      # 走 ENV(.env);未设回落 serverless dashscope.aliyuncs.com
     api_key: $DASHSCOPE_API_KEY
     model: text-embedding-v4           # = Qwen3-Embedding 全血版;换则触发全量重建
     dimensions: 1024
@@ -591,16 +591,19 @@ code_index:
     fts_remove_stop_words: false       # 代码场景必须关(否则 int/void/public/return 被删)
   reranker:                            # provider 抽象,镜像 embedding。DashScope rerank 走原生端点
     provider: dashscope                # dashscope(默认)| siliconflow(免费)| sentence_transformers(本地,GPU)| off
-    base_url: https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+    base_url: $DASHSCOPE_RERANK_URL     # 走 ENV;未设回落 serverless(DashScope rerank 走原生端点,非 OpenAI 兼容面)
     api_key: $DASHSCOPE_API_KEY        # 与 embedding 同一个 key
     model: qwen3-rerank
     rerank_top_n: 5
 
-tools:                                 # P1.4 追加 4 条(grep_symbol/read_function/search_code + grep);read_file 已在(升级不改名)
-  - { name: grep_symbol,  group: code,      use: hyperion.tools.code_nav:grep_symbol_tool }
-  - { name: read_function,group: code,      use: hyperion.tools.code_nav:read_function_tool }
-  - { name: search_code,  group: code,      use: hyperion.tools.code_nav:search_code_tool }
-  - { name: grep,         group: file:read, use: hyperion.tools.sandbox:grep_tool }
+tools:                                 # code 导航:P1.4(grep_symbol/read_function/search_code)+ P1.5 LSP 三件套(find_references/goto_definition/hover)
+  - { name: grep_symbol,     group: code,      use: hyperion.tools.code_nav:grep_symbol_tool }
+  - { name: read_function,   group: code,      use: hyperion.tools.code_nav:read_function_tool }
+  - { name: search_code,     group: code,      use: hyperion.tools.code_nav:search_code_tool }
+  - { name: find_references, group: code,      use: hyperion.tools.code_nav:find_references_tool }
+  - { name: goto_definition, group: code,      use: hyperion.tools.code_nav:goto_definition_tool }
+  - { name: hover,           group: code,      use: hyperion.tools.code_nav:hover_tool }
+  - { name: grep,            group: file:read, use: hyperion.tools.sandbox:grep_tool }
 ```
 
 ---
@@ -610,16 +613,17 @@ tools:                                 # P1.4 追加 4 条(grep_symbol/read_func
 ```
 src/hyperion/services/code_index/
 ├── __init__.py
-├── parser.py        # [P1.0 已成]  tree-sitter:Symbol 抽取(含 .h)
-├── chunker.py       # [P1.1 已成]  符号边界切块 + fts_text 分词
-├── embed.py         # [P1.2 已成]  embedding(远端默认/本地可选)
-├── store.py         # [P1.2 已成]  LanceDB 表(schema/BTree+FTS 索引/merge_insert/查询)+ VectorStore 接口
-├── index.py         # [P1.2 已成]  编排:walk→parse→chunk→embed→store(+ 原子性 + 增量,§2.6)
-├── retrieval.py     # [P1.3 已成]  混合检索(BM25+向量+RRF+rerank)
-└── eval/            # [P1.3 已成]  scorer.py(指标)+ runner.py(harness)
-# 待做:
-├── outline.py       # [P1.4 已成]  tree-sitter BFS 摘要 + elision footer(复用 parser,§4.4)
-└── lsp.py           # [P1.5 已成]  ClangdServer(multilspy 适配器)+ get_lsp_server 单例 + health(§5)
+├── parser.py        # [P1.0]  tree-sitter:Symbol 抽取(含 .h)
+├── chunker.py       # [P1.1]  符号边界切块 + fts_text 分词
+├── embed.py         # [P1.2]  embedding(远端默认/本地可选)
+├── store.py         # [P1.2]  LanceDB 表(schema/BTree+FTS 索引/merge_insert/查询)+ VectorStore 接口
+├── index.py         # [P1.2]  编排:walk→parse→chunk→embed→store(+ 原子性 + 增量,§2.6)
+├── retrieval.py     # [P1.3]  混合检索(BM25+向量+RRF+rerank)
+├── outline.py       # [P1.4]  tree-sitter BFS 摘要 + elision footer(复用 parser,§4.4)
+├── lsp.py           # [P1.5]  ClangdServer(multilspy 适配器)+ get_lsp_server 单例 + health(§5)
+├── loc_translate.py # [R2]    漏斗行区间翻译(transfer_locs/merge_intervals/line_wrap_content/sticky_scroll)
+├── skeleton.py      # [R2]    漏斗骨架渲染(render_file_tree/render_skeleton;复用 parser.Symbol)
+└── eval/            # [P1.3]  scorer.py(指标)+ runner.py(harness)
 ```
 
 P1.4 还涉及另两处(不在 services/code_index/ 下):

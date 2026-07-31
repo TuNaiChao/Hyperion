@@ -73,35 +73,41 @@ src/hyperion/services/memory/
 
 ---
 
-## 3. 知识项 schema(贴合代码域,三类)
+## 3. 知识项 schema(三类 kind 共用一个 `KnowledgeItem` 类)
+
+> ⚠️ 下方为设计示意;**实际以 `src/hyperion/services/memory/schema.py` 为准**(已演化:无子类,三类 `kind` 共用 `KnowledgeItem`,按 kind 填不同字段;另有 `source_tier`/`access_count`/`superseded_by`/`active` 等持续学习字段)。
 
 ```python
-# src/hyperion/services/memory/schema.py
+# src/hyperion/services/memory/schema.py(示意,完整字段见源码)
 class KnowledgeItem(BaseModel):
-    id: str               # {repo}:{kind}:{sha8-of-content}
-    kind: Literal["codebase_fact", "bug_lesson"]   # 整份报告另存为 document
-    repo: str             # 代码库标识
-    commit_sha: str       # ★ 溯源到具体 commit(记忆的"保质期"锚点)
-    scope: Scope          # (owner, codebase) 租户
-    summary: str          # 人读摘要(检索+注入用)
-    evidence: list[Evidence]  # [file:line + 原文片段] —— 证据纪律
-    source: str           # 产生它的 report_id / workflow
-    confidence: float     # 0..1
-    valid_at: datetime    # 生效时间(graphiti bi-temporal 思路,先留位)
-    related: list[str]    # 关联知识项 id(图边)
-    embedding: list[float] | None  # native 后端写入时算
-
-class BugLesson(KnowledgeItem):
-    kind = "bug_lesson"
-    symptom: str
-    root_cause: str
-    fix_patch: str        # 补丁文本/引用
+    id: str               # sha256(f"{owner}/{codebase}:{kind}:{content_key}")[:16] —— 稳定 id:
+                          #   同根因重复 memorize → 同 id → 走"合并/加权"而非"新增"(持续学习基础)
+    kind: Literal["codebase_fact", "bug_lesson", "mental_model"]  # 三类共用此类,无子类
+    repo: str
+    scope: Scope          # (owner, codebase)
+    summary: str          # 人读摘要(检索 + 注入用,核心字段)
+    # —— 按 kind 填的可选展开字段 ——
+    detail: str
+    root_cause: str       # bug_lesson 专用
+    fix_patch: str        # bug_lesson:补丁文本/引用
     blast_radius_files: list[str]
+    kind_detail: Literal["module", "symbol", "architecture"]  # codebase_fact 专用
+    # —— 溯源 + 证据 ——
+    commit_sha: str | None    # ★ 溯源到 commit(记忆"保质期"锚点)
+    evidence: list[Evidence]  # [file:line + 原文片段]
+    source: str
+    source_tier: SourceTier   # 可信度档(stated/delegate/inferred/imported/tool,合并时加权)
+    # —— 持续学习信号 ——
+    confidence: float         # Bayes 累加(初始 = tier_weight · 0.5)
+    access_count: int         # 被召回次数(≥N 升级 mental_model)
+    valid_at / invalid_at / superseded_by  # bi-temporal:矛盾时"失效"而非"删除"
+    embedding: list[float] | None  # native 后端写入时算
 ```
 
-**`CodebaseFact`**(P1 调研产出):`kind=codebase_fact`,字段 `kind_detail ∈ {module, symbol, architecture}`,记录"这个模块/符号/架构是干啥的、关键设计"。
-
-**整份报告**(`ResearchReport`/`RcaReport`):作为可检索**文档**整体存一份(便于"翻回原报告"),同时抽取其中的 `CodebaseFact`/`BugLesson` 知识项(便于精确召回)。
+- **`codebase_fact`**(P1 调研):`kind_detail` 记录"这个模块/符号/架构是干啥的、关键设计"。
+- **`bug_lesson`**(P2 bug-RCA):`root_cause`/`fix_patch`/`blast_radius_files`。
+- **`mental_model`**:被召回 ≥N 次的教训巩固升级出的"稳定规则"(借 Letta 3+ 规则)。
+- **整份报告**:作为可检索 **document** 整体另存一份(便于"翻回原报告"),同时抽取其中的知识项(便于精确召回)。
 
 ---
 
@@ -165,7 +171,7 @@ async def memorize(report, scope):
 
 ## 8. 多代码库 / 团队(数据模型现在定,v1 单机,R4 多人)
 
-- **scope = (owner, codebase)**:native 后端用 LanceDB `table-per-repo` + 知识项 `owner` 字段做租户隔离(对应 cognee 的 tenant isolation,但用已有 LanceDB 实现)。
+- **scope = (owner, codebase)**:native 后端 = **SQLite + FTS5**(知识项主表 + 全文检索)+ 向量 blob(复用 code_index embedder);知识项 `owner` 字段做租户隔离。v1 单 owner,R4 多人。
 - **文档统一管理**:RCA/调研报告按 `(owner, codebase, report_id)` 列/查/版本。
 - v1 单 owner,R4 再做多 owner 并发隔离与权限。
 
