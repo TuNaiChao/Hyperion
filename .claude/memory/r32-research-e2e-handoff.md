@@ -31,4 +31,4 @@ metadata:
 ~12-15min:CRG 重建(~2min)+ 8 模块×~20 轮(并发 3)+ 强制收尾 + report/verifier + memorize extract。索引(LanceDB `data/code_index/wpa`)幂等复用。
 
 ## 关键文件
-`workflows/deep_research/{state,graph,nodes,report,_research,_verify}.py`、`services/code_index/code_graph.py`、`cli.py:cmd_research`。设计 `docs/设计/deep-research-design.md`。**待办**:把 Bug C/D(优雅降级)与 Bug E(线程死锁)补进 `docs/踩坑记录.md`(#3/#4);commit 整个 R3.2。
+`workflows/deep_research/{state,graph,nodes,report,_research,_verify}.py`、`services/code_index/code_graph.py`、`cli.py:cmd_research`。设计 `docs/设计/deep-research-design.md`。**已落地(2026-08-03)**:优雅降级=踩坑 #7、线程死锁=踩坑 #8,均五段式写入 `docs/踩坑记录.md`;整个 R3.2 已 **commit `c03008c`**(29 文件 +1917 −94,pitfall-log/MEMORY 记忆亦同步)。下一步 R3.3(opencode serve persistent #55 + bug-rca report 精修 #46)/ R3.4(文档摄取→学习→记忆 ingest)。
