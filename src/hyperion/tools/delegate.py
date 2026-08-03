@@ -168,14 +168,36 @@ class OpencodeDelegate(CodingAgentDelegate):
     """
 
     async def run(self, prompt, cwd, output_schema=None, *, timeout=None, agent=None, continue_session=False):
-        """跑一次委托。agent=指定 opencode agent(hyperion-localize/repair);continue_session=True 续同 cwd 最近 session。
+        """跑一次委托(带瞬时网络错重试 + 可选 fallback 模型;A,2026-08)。
 
-        R3.0 #56 可观测增强:① 流式逐行读 stdout/stderr(弃 R2 的块缓冲盲等,实时可见);
-        ② 超时 kill 整个进程组 + 存已收 stdout(R2 timeout 会丢 stdout,无法诊断跑到哪);
-        ③ 正式 delegate_log 落盘(替 /tmp/delegate_debug.txt)。
+        glm-5.2 API 偶发 `connection reset by peer`(对长/大请求不稳;repair --continue 全量重发
+        ~60K 历史 + 无 prompt cache → 高暴露)。delegate 层自动重试:① 主模型(cfg.model)试 retry_max
+        次;② 仍瞬时错且配了 fallback_model → 换它(如 deepseek-v4-flash,非推理快、reset 概率低)再试
+        retry_max 次。重试都 --continue 续同 session(opencode 已做的改动在磁盘上,接着来)。非瞬时错
+        (SCHEMA / 真 ERROR / OK)不重试直接返。
         """
         cfg = get_app_config().delegate.opencode
-        cmd = self._build_cmd(cfg, prompt, cwd, agent, continue_session)
+        retry_max = max(1, getattr(cfg, "retry_max", 2) or 1)
+        fallback = getattr(cfg, "fallback_model", None)
+        # 重试序列:主模型 N 次,再 fallback N 次(fallback 更稳/快,治 glm 长/大请求 reset)
+        model_seq: list[str | None] = [cfg.model] * retry_max
+        if fallback and fallback != cfg.model:
+            model_seq += [fallback] * retry_max
+        last_result: DelegateResult | None = None
+        for attempt, model in enumerate(model_seq):
+            # 续 session:调用方要续 OR 重试(第 2 次起都续,接 opencode 已做的活;新 session 仅 attempt0)
+            cont = bool(continue_session) or attempt > 0
+            last_result = await self._run_once(
+                prompt, cwd, output_schema, cfg, timeout, agent, cont, model_override=model)
+            # 只对"瞬时网络错"重试;其他(SCHEMA / 真 ERROR / OK)直接返
+            if not (last_result.status == DelegateStatus.ERROR and _is_transient_net_error(last_result)):
+                return last_result
+        return last_result
+
+    async def _run_once(self, prompt, cwd, output_schema, cfg, timeout, agent, continue_session, *,
+                        model_override: str | None = None) -> DelegateResult:
+        """单次跑 opencode(run() 的重试单元)。R3.0 #56 可观测:流式读 + 超时 kill 进程组 + delegate_log。"""
+        cmd = self._build_cmd(cfg, prompt, cwd, agent, continue_session, model_override=model_override)
         timeout = timeout or cfg.timeout
 
         # env OPENCODE_CONFIG:注入 Hyperion 自带 opencode 配置(agent+steps+permission+mcp,config/opencode_hyperion.json),
@@ -347,13 +369,18 @@ class OpencodeDelegate(CodingAgentDelegate):
             pass
 
     @staticmethod
-    def _build_cmd(cfg, prompt: str, cwd, agent=None, continue_session=False) -> list[str]:
-        """组装 opencode run 命令(--continue 续会话 A + --agent 指定 agent C)。flags 实测自 --help。"""
+    def _build_cmd(cfg, prompt: str, cwd, agent=None, continue_session=False,
+                   model_override: str | None = None) -> list[str]:
+        """组装 opencode run 命令(--continue 续会话 + --agent 指定 agent + -m 指定模型)。flags 实测自 --help。
+
+        model_override:重试/fallback 时换模型(如 glm-5.2 → deepseek-v4-flash);None 用 cfg.model。
+        """
         cmd = [cfg.bin, "run", "--format", cfg.format, "--auto", "--dir", str(cwd)]
         if continue_session:
-            cmd += ["--continue"]  # A: 续同 cwd 最近 session(多阶段同会话,避重复探索)
-        if cfg.model:
-            cmd += ["-m", cfg.model]
+            cmd += ["--continue"]  # 续同 cwd 最近 session(多阶段同会话,避重复探索)
+        use_model = model_override or cfg.model  # 重试/fallback 覆盖 > config 默认
+        if use_model:
+            cmd += ["-m", use_model]
         use_agent = agent or cfg.agent  # 调用方传 > config 默认
         if use_agent:
             cmd += ["--agent", use_agent]
@@ -436,6 +463,29 @@ def _extract_json(text: str) -> dict | None:
             if isinstance(obj, dict) and (best is None or len(obj) > len(best)):
                 best = obj
     return best
+
+
+def _is_transient_net_error(result: DelegateResult) -> bool:
+    """delegate 回执是否"瞬时网络错"(值得重试,治 glm API connection reset)。
+
+    opencode 调 LLM API 偶发 connection reset / EOF / timeout(glm 端对长/大请求不稳);这些是瞬时的,
+    重试(可能换 fallback 模型)通常能过。扫 result.error + events 里的 error 事件文本匹配关键字。
+    非瞬时错(opencode 退出码非 0 但无网络关键字、SCHEMA、OK)不重试。
+    """
+    if result.status != DelegateStatus.ERROR:
+        return False
+    blob = result.error or ""
+    for e in result.events:
+        if isinstance(e, dict) and e.get("type") == "error":
+            msg = ((e.get("error") or {}).get("data") or {}).get("message", "")
+            blob = f"{blob}\n{msg}"
+    haystack = blob.lower()
+    return any(s in haystack for s in (
+        "connection reset", "broken pipe", "eof",  # TCP 层瞬时
+        "timeout", "timed out", "deadline exceeded",
+        "transport", "socket hang up", "fetch failed", "network",
+        "502", "503", "504", "service unavailable",  # 网关/服务端瞬时
+    ))
 
 
 # ──────────────────────────────────────────────────────────────────────────
