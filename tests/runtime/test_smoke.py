@@ -55,14 +55,15 @@ class _ScriptedModel(BaseChatModel):
 
 # ── 1. factory 装配 + 编译 ────────────────────────────────────────────
 def test_factory_assembles_default_chain():
-    """默认中间件链(无 model)= [ToolOutputBudget, LoopDetection, TokenBudget],顺序外→内。
+    """默认中间件链(无 model)= [ToolOutputBudget, LoopDetection, TurnBudget, TokenBudget],顺序外→内。
 
-    R3.2 加 LoopDetection(无条件);Summarization 要 model,没给就跳过(见下个测试)。
+    R3.2 加 LoopDetection;R3.2.x P1 加 TurnBudget(轮数闸,无条件);Summarization 要 model,没给就跳过(见下个测试)。
     """
     mws = build_default_middlewares()
     assert [type(m).__name__ for m in mws] == [
         "ToolOutputBudgetMiddleware",
         "LoopDetectionMiddleware",
+        "TurnBudgetMiddleware",
         "TokenBudgetMiddleware",
     ]
 
@@ -75,6 +76,7 @@ def test_factory_chain_adds_summarization_when_model_given():
         "ToolOutputBudgetMiddleware",
         "SummarizationMiddleware",
         "LoopDetectionMiddleware",
+        "TurnBudgetMiddleware",
         "TokenBudgetMiddleware",
     ]
 

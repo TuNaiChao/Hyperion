@@ -30,7 +30,8 @@ from langgraph.errors import GraphRecursionError
 
 from hyperion.platform.config import get_app_config
 from hyperion.platform.models import create_chat_model
-from hyperion.platform.runtime.factory import create_hyperion_agent
+from hyperion.platform.runtime.factory import build_default_middlewares, create_hyperion_agent
+from hyperion.platform.runtime.middlewares.turn_budget import TurnBudgetConfig
 
 # 注意:code_index 这些必须在**模块顶层**导入,不能在 @tool 函数里懒导入。langgraph 的 tool_node
 # 用线程池(run_in_executor)跑工具,工具第一次执行时在线程里 import 重模块会触发 _DeadlockError
@@ -45,12 +46,13 @@ logger = logging.getLogger(__name__)
 
 _CONCURRENCY = 3   # 同时跑几个模块子 agent
 _MAX_TURNS = 20    # 每子 agent 最多几轮 ReAct(model 调一次工具 + 工具回 = 一轮;防跑飞)。
-# LangGraph 的 recursion_limit 按 *superstep*(图节点执行次数)计,不是"轮"。标准 ReAct 图每轮
-# = 2 superstep(model 节点吐 tool_call + tools 节点执行),所以 ×2 把"轮"换算成 superstep。
-# 真正的防跑飞交给 LoopDetection(相同 tool_call ≥5 硬停)+ TokenBudget(总账兜底);
-# recursion_limit 只设一个不误杀合法深调研的上限(踩坑:原先直接把 _MAX_TURNS 当 recursion_limit,
-# 实际只给 ~12 轮,wpa 8 模块里 7 个撞 GraphRecursionError)。
-_RECURSION_LIMIT = _MAX_TURNS * 2
+# TurnBudgetMiddleware(max_turns=_MAX_TURNS)主管"轮数":第 _MAX_TURNS-1 轮 warn、第 _MAX_TURNS 轮
+# strip tool_calls,让 run 干净自收尾。recursion_limit 在 _research_one_module 里按【中间件数】动态算
+# (见那里的注释)——不能用固定值:LangGraph 的 recursion_limit 按 *superstep*(图节点执行次数)计,
+# 而每个中间件的 after_model/before_model/before_agent 都是【独立的图节点】= 各算 1 superstep,所以
+# 一轮 ReAct 实际消耗 1(model) + N(after_model 链) + 1(tools) ≈ N+2 superstep,不是 2。
+# (踩坑 #7 进阶:早版 _RECURSION_LIMIT=(_MAX_TURNS+2)*2 按"每轮 2 superstep"算,漏算了中间件节点 →
+# 真实每轮 ~7 superstep,44 的 limit 只够 ~6 轮就撞墙,TurnBudget 的 max_turns=20 永远到不了 → 全撞墙。)
 
 # 子 agent 系统提示。注意:不用 ``` 围栏(会和外层 markdown 冲突),JSON 形状用纯文本描述。
 _RESEARCHER_PROMPT = """\
@@ -206,17 +208,30 @@ def _compact_evidence(messages: list, *, max_chars: int = 24000) -> str:
 async def _research_one_module(plan_item: ModulePlan, repo_root: str, codebase: str, model) -> ModuleFinding:
     """跑一个模块的 ReAct 子 agent → ModuleFinding(cited)。
 
-    优雅降级(关键):用 astream 流式拿 state。若子 agent 一路探索到 recursion_limit 还没收尾
-    (reasoning 模型常见 —— 工具越好越想多看几眼,实测 8/8 撞墙),**不**让 GraphRecursionError
-    把已做的工作全丢,而是把已收集的证据喂回裸模型(不带工具)逼它产出 JSON 总结。
-    这样每个模块至少拿到一份"基于真实 file:line"的 finding,而不是空白的"(调研失败)"。
+    收尾策略(TurnBudget + 统一降级补救):
+    - TurnBudgetMiddleware 在第 _MAX_TURNS-1 轮 warn、第 _MAX_TURNS 轮 strip tool_calls,让模型常规
+      情形自己吐最终 JSON、干净收尾(不撞 recursion_limit 硬墙,优于旧 astream+catch+裸模型)。
+    - 统一补救:无论 clean / 被 TurnBudget strip / 撞墙(理论上不触达),只要 final 抠不出研究 JSON,
+      就把已收集证据(_compact_evidence)喂回裸模型强制产 JSON —— 挽救真实 file:line 证据,不丢工作。
     """
     name = plan_item.get("name", "mod")
     tools = _build_research_tools(repo_root, codebase)
+    # 给子 agent 默认中间件链 + 紧 TurnBudget(max_turns=_MAX_TURNS):管轮数,让模型在 _MAX_TURNS-1
+    # 轮被警告、_MAX_TURNS 轮自收尾,常规情形不再撞 recursion_limit 硬墙(见 turn_budget.py)。
+    middleware = build_default_middlewares(model, turn_budget=TurnBudgetConfig(max_turns=_MAX_TURNS))
+    # recursion_limit 按 *superstep*(图节点执行次数)计,不是"轮"。每轮 ReAct 消耗的 superstep 数 ≈
+    # 1(model 节点) + len(middleware)(每个中间件的 after_model 是独立图节点) + 1(tools 节点) = N+2。
+    # 必须让 recursion_limit > _MAX_TURNS × (N+2),否则递归墙会在 TurnBudget 的 max_turns 之前先撞
+    # (踩坑 #7 进阶,见模块顶部)。这里按真实中间件数算 + 2×N 的 startup/teardown(before/after_agent
+    # 各 N 节点各跑一次)+ 20 安全 buffer,确保 TurnBudget 在 _MAX_TURNS 轮先 strip 收尾;recursion_limit
+    # 仅作 TurnBudget 万一失效的硬墙兜底(理论上不触达)。
+    _n_mw = len(middleware)
+    recursion_limit = _MAX_TURNS * (_n_mw + 2) + 2 * _n_mw + 20
     agent = create_hyperion_agent(
         model,
         tools,
         system_prompt=_RESEARCHER_PROMPT,
+        middleware=middleware,
         name=f"research-{name}",
     )
     prompt = (
@@ -225,7 +240,7 @@ async def _research_one_module(plan_item: ModulePlan, repo_root: str, codebase: 
         f"成员文件(参考,不必全读):{', '.join((plan_item.get('member_files') or [])[:15])}\n"
         f"已知 hub 符号(优先看这些):{', '.join((plan_item.get('key_symbols') or [])[:10])}\n"
     )
-    cfg: RunnableConfig = {"configurable": {"thread_id": f"research-{name}"}, "recursion_limit": _RECURSION_LIMIT}
+    cfg: RunnableConfig = {"configurable": {"thread_id": f"research-{name}"}, "recursion_limit": recursion_limit}
 
     final = ""
     messages: list = []
@@ -240,8 +255,14 @@ async def _research_one_module(plan_item: ModulePlan, repo_root: str, codebase: 
                     final = msg.content if isinstance(msg.content, str) else str(msg.content)
                     break
     except GraphRecursionError:
-        # 模型一路探索没收尾 —— 挽救:把已收集证据喂回裸模型强制产出 JSON(不再带工具)。
-        logger.warning("research 模块 %s 撞 recursion_limit(%d),降级强制收尾", name, _RECURSION_LIMIT)
+        # 兜底:TurnBudgetMiddleware 应在 recursion_limit 之前 strip 收尾,这里理论上不触达。
+        logger.warning("research 模块 %s 撞 recursion_limit(%d)(TurnBudget 兜底之上,理论上不触达)", name, recursion_limit)
+
+    # 统一降级补救:无论 clean / 被 TurnBudget strip / 撞墙,只要 final 抠不出研究 JSON,且已收集
+    # 证据 → 喂回裸模型强制产 JSON,挽救真实 file:line 证据(不丢工作)。覆盖 TurnBudget strip 的情形
+    # (strip 后 final 是停止提示、无 JSON),避免相对旧 catch+裸模型的退化:TurnBudget 让多数模块
+    # 自收尾(更连贯),少数被 strip 的仍靠这里恢复,不回退。
+    if not re.search(r"\{[\s\S]*\}", final):
         evidence = _compact_evidence(messages)
         if evidence:
             try:
