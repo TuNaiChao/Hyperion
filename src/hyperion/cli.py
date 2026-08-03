@@ -252,11 +252,20 @@ def cmd_memory(args) -> int:
 
 
 def cmd_mcp(args) -> int:
-    """启动 MCP server(把记忆暴露给 delegate,stdio)。需 `uv sync --extra mcp`。"""
+    """启动 MCP server(把记忆/检索/日志过滤暴露给 delegate,stdio)。需 `uv sync --extra mcp`。"""
+    import os as _os
+
+    from hyperion.platform.config import _default_config_path
     from hyperion.tools.mcp_memory import build_server
 
+    # MCP server 被 opencode 拉起时 cwd 通常是 workspace/code(≠ Hyperion 根)→ config 里相对
+    # data/ 路径(memory SQLite / code_index LanceDB)会写进 workspace(污染补丁 + 记忆不持久)。
+    # chdir 到 Hyperion 根(config.yaml 所在),让相对路径解析回正轨。MCP server 是独立进程,
+    # 工具都用绝对路径/名查(log_path 绝对、codebase 走 env、index 走 repo 表名),不依赖 cwd。
+    _os.chdir(_default_config_path().parent.parent)
+
     try:
-        server = build_server()
+        server = build_server(codebase=args.codebase)
     except ImportError as e:
         print(f"错误:MCP 依赖未装。装它: uv sync --extra mcp\n  ({e})", file=sys.stderr)
         return 2
@@ -265,18 +274,21 @@ def cmd_mcp(args) -> int:
 
 
 def cmd_bug_rca(args) -> int:
-    """bug-RCA workflow(R2 ★MVP):输入 repo + trigger → 报告 + 补丁。
+    """bug-RCA workflow(R3.1 ★MVP):输入 repo + trigger(和/或 log)→ 报告 + 补丁。
 
-      hyperion bug-rca --repo <path> --trigger "<线索>"
-    七步:ingest→recall→localize→assemble→delegate(opencode)→verify→report+memorize。
-    真调 LLM(localize 三段)+ opencode(delegate),较慢(数分钟)。
+      hyperion bug-rca --repo <path> --trigger "<线索>" [--log <日志文件>]
+    五步:ingest→[delegate_localize_loop(opencode 自定位 + MCP 工具)]→assemble_repair
+         →[delegate_repair_loop]→report+memorize。真调 opencode(delegate),较慢(数分钟)。
     """
     import asyncio
 
     from hyperion.workflows.bug_rca.graph import run
 
+    if not args.trigger and not args.log:
+        print("错误:至少给 --trigger(线索)或 --log(日志文件)之一。", file=sys.stderr)
+        return 2
     try:
-        final = asyncio.run(run(args.repo, args.trigger))
+        final = asyncio.run(run(args.repo, args.trigger, log_path=args.log))
     except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
         print(f"bug-RCA 运行出错:{e}", file=sys.stderr)
         return 1
@@ -352,14 +364,16 @@ def main(argv: list[str] | None = None) -> int:
     m_inv.add_argument("--repo", default=None)
     sub_memory.set_defaults(func=cmd_memory)
 
-    sub_mcp = sub.add_parser("mcp", help="MCP server(把记忆暴露给 delegate)")
+    sub_mcp = sub.add_parser("mcp", help="MCP server(把记忆/检索/日志过滤暴露给 delegate)")
     sub_mcp_sub = sub_mcp.add_subparsers(dest="mcp_cmd", required=True)
-    sub_mcp_sub.add_parser("serve", help="启动 stdio MCP server")
+    mcp_serve = sub_mcp_sub.add_parser("serve", help="启动 stdio MCP server")
+    mcp_serve.add_argument("--codebase", default=None, help="查哪个代码库的索引/记忆(= 建索引时的 name);默认 config.code_index.repo")
     sub_mcp.set_defaults(func=cmd_mcp)
 
     sub_bug = sub.add_parser("bug-rca", help="bug 根因定位 workflow(★MVP,委托 opencode)")
     sub_bug.add_argument("--repo", required=True, help="仓库根目录")
-    sub_bug.add_argument("--trigger", required=True, help="bug 线索(日志摘要/问题描述/漏洞关键句)")
+    sub_bug.add_argument("--trigger", default=None, help="bug 线索(日志摘要/问题描述/漏洞关键句);纯日志驱动可省")
+    sub_bug.add_argument("--log", default=None, help="原始日志文件路径(喂 opencode 的 filter_logs 工具)")
     sub_bug.set_defaults(func=cmd_bug_rca)
 
     args = parser.parse_args(argv)
