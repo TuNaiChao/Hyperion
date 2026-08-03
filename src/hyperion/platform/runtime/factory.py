@@ -24,6 +24,7 @@ from langgraph.graph.state import CompiledStateGraph
 from hyperion.platform.runtime.middlewares.loop_detection import LoopDetectionMiddleware
 from hyperion.platform.runtime.middlewares.token_budget import TokenBudgetConfig, TokenBudgetMiddleware
 from hyperion.platform.runtime.middlewares.tool_output import ToolOutputBudgetConfig, ToolOutputBudgetMiddleware
+from hyperion.platform.runtime.middlewares.turn_budget import TurnBudgetConfig, TurnBudgetMiddleware
 from hyperion.platform.runtime.state import HyperionState
 
 
@@ -32,6 +33,7 @@ def build_default_middlewares(
     *,
     token_budget: TokenBudgetConfig | None = None,
     tool_output: ToolOutputBudgetConfig | None = None,
+    turn_budget: TurnBudgetConfig | None = None,
 ) -> list[AgentMiddleware]:
     """R3.0 默认中间件链(顺序敏感)。
 
@@ -53,8 +55,9 @@ def build_default_middlewares(
        10. Summarization            ← R3.2 已有(langchain 直用;没给 model 则跳过)
        11. Memory(auto-inject)      (Hyperion 自建挂 MemoryService;**不抄** deer-flow MemoryMiddleware)
        12. LoopDetection            ← R3.2 已有(单层 hash 最小版;pull-by-need:频次层/stop_reason)
-       13. TokenBudget              ← R3.0 已有(外层兜底总账)
-       14. (tail) Clarification     (若做交互式,必须最后)
+       13. TurnBudget               ← R3.2.x P1 已有(轮数闸:warn@N-1 + strip@N;管"每轮换工具的良性探索")
+       14. TokenBudget              ← R3.0 已有(外层兜底总账)
+       15. (tail) Clarification     (若做交互式,必须最后)
     规则:链 >7 个时移植 deer-flow @Next/@Prev(factory.py:357-430)让中间件自声明位置;现在普通有序 list 够。
     """
     chain: list[AgentMiddleware] = [
@@ -64,6 +67,8 @@ def build_default_middlewares(
         # SummarizationMiddleware 要模型来压历史;没给 model 就跳过(冒烟 / 测试)
         chain.append(SummarizationMiddleware(model, trigger=("messages", 50), keep=("messages", 20)))
     chain.append(LoopDetectionMiddleware())
+    # TurnBudget(轮数闸):默认宽 max_turns=50;research 子 agent 显式传紧配置(见 _research.py)
+    chain.append(TurnBudgetMiddleware(turn_budget) if turn_budget else TurnBudgetMiddleware())
     chain.append(TokenBudgetMiddleware(token_budget) if token_budget else TokenBudgetMiddleware())
     return chain
 
