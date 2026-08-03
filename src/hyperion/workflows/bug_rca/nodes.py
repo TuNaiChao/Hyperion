@@ -1,22 +1,21 @@
-"""bug-RCA 多阶段委托 + 迭代 verify-refine(R3.1 #54-rework,B)。
+"""bug-RCA 多阶段委托 + 迭代 verify-refine(R3.1 #54-rework,B)+ 工具驱动(踩坑 #2)。
 
-八步(对标 bug-rca-design.md §7.5):
-  ingest → recall → localize → assemble_localize
-    → delegate_localize_loop  (阶段① 定位:verify-refine 循环,max K1 轮,同会话)
-    → assemble_repair
-    → delegate_repair_loop    (阶段② 修复:verify-refine 循环,max K2 轮,同会话 + git diff 观察 + validate_patch 门控)
-    → report_memorize
+五步(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— recall/localize/assemble_localize 三节点
+与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具):
+  ingest → delegate_localize_loop  (阶段① 定位:opencode 自定位 + 调 hyperion_* 工具,verify-refine 循环,max K1 轮,同会话)
+        → assemble_repair
+        → delegate_repair_loop    (阶段② 修复:verify-refine 循环,max K2 轮,同会话 + git diff 观察 + validate_patch 门控)
+        → report_memorize
 
-R3.1 #54-rework(2026-07-30):弃「多候选采样 + majority voting」(无测试 oracle + glm-5.2
-近确定性 → 样本雷同 → 投票平凡 + N× token 白烧),改「迭代 verify-refine(B)」:
+R3.1 #54-rework(B):弃「多候选采样 + majority voting」改「迭代 verify-refine」——
   - 同一个 opencode session 贯穿两阶段(--continue 链;per-bug workspace 唯一 cwd → session 隔离);
   - verdict 由 opencode 证伪式自审产出(confirmed/needs_revisit、verified/needs_fix);
   - 执行硬门控(Hyperion 侧,非 LLM):validate_patch Tier0 apply/revert(#50 repro 落地后加强);
   - 收敛:每 delegate call 仍 steps + 单 schema(不重蹈 glm-5.2 单 loop 97K 不收敛);只在
     verdict=needs_revisit 时重试,infra 错误(timeout/error)直接跳出(不 --continue 破损 session)。
-2026-07-31 进一步:**rerank / majority_voting 整体移除**(无测试 oracle + 模型近确定性 → 投票平凡且
-白烧 token;现代 SOTA 转单轨迹+执行验证,正是本 verify-refine 路线)。
-依据:Self-Refine/Reflexion/SWE-Search/Aider/OpenHands;Agentless 投票仅在有 oracle 时有效(本地核查 + 2024-2026 论文)。
+2026-07-31:rerank/majority_voting 整体移除(无 oracle 平凡白烧);Hyperion 侧定位漏斗砍掉改工具驱动
+(opencode 经 MCP 调 search_codebase/recall/filter_logs,见 bug-rca-design.md §6)。
+依据:Self-Refine/Reflexion/SWE-Search/Aider/OpenHands;Agentless 投票仅在有 oracle 时有效。
 """
 from __future__ import annotations
 
@@ -28,7 +27,6 @@ from hyperion.services.code_index.parser import parse_file
 from hyperion.services.memory import get_memory_service
 from hyperion.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
 from hyperion.tools.delegate import CodingAgentDelegate
-from hyperion.workflows.bug_rca.localize import localize
 from hyperion.workflows.bug_rca.state import BugRcaState
 
 # 阶段① 定位契约:root_cause/evidence + verdict/falsification(自审),**无 patch**。
@@ -79,76 +77,53 @@ def _code_dir(state: BugRcaState) -> str:
     return state["repo_root"]
 
 
-async def node_recall(state: BugRcaState) -> dict:
-    """2. recall:翻记忆。"""
-    scope = state.get("scope")
-    if scope is None:
-        return {"recalled": []}
-    svc = get_memory_service()
-    hits = await svc.recall(state["trigger"], scope, top_k=5)
-    return {"recalled": hits}
+def _build_localize_prompt(trigger: str, schema: dict, log_path: str | None = None) -> str:
+    """阶段① 定位 prompt:线索 + 自主定位 + 证伪自审 + 契约。
 
-
-def node_localize(state: BugRcaState) -> dict:
-    """3. localize:Hyperion 自己的漏斗,产锚点(给阶段①作指引起点)。"""
-    anchors = localize(state["repo_root"], state["trigger"])
-    return {"anchors": anchors}
-
-
-def _render_guide(anchors) -> str:
-    """渲染嫌疑起点指引(file:line + why,不内联大片代码)—— 避 lost-in-the-middle。"""
-    if not anchors:
-        return "(漏斗未圈出锚点;请自行 grep/read 探索)"
-    lines = [f"- {a.file}:{a.line}  {a.function or '?'}  [{a.why}]" for a in anchors]
-    return "\n".join(lines)
-
-
-def node_assemble_localize(state: BugRcaState) -> dict:
-    """4. 阶段① 组装定位 prompt:线索 + 锚点指引 + 历史教训 + 定位 schema(含自审 verdict)。"""
-    guide = _render_guide(state.get("anchors", []))
-    recalled_lines = []
-    for h in state.get("recalled", []):
-        recalled_lines.append(h.render() if hasattr(h, "render") else str(h))
-    recalled_ctx = "\n".join(recalled_lines) or "(暂无历史教训)"
-    prompt = f"""你是 C/系统软件 bug 根因定位专家。**只定位根因,不要写补丁**。
+    砍漏斗后(踩坑 #2,2026-07-31):不再预喂「锚点/历史教训」—— opencode 自主定位,**优先调
+    Hyperion 的 MCP 工具**(search_codebase 语义找码 / recall 翻教训 / filter_logs 筛大日志)缩范围,
+    比 grep 整库又准又省;再 read/grep 精读、追调用链。**工具名 + 优先级写在 opencode agent 持久
+    prompt 里**(config/opencode_hyperion.json),这里只给任务 + 契约,不硬编码工具名(免得前缀对不上)。
+    """
+    log_hint = ""
+    if log_path:
+        log_hint = (
+            f"\n### 日志(大文件,禁直接 read)###\n原始日志 `{log_path}` 可能很大(兆级)。"
+            f"**禁止直接 read 它(会撑爆上下文)**;只调 "
+            f"`hyperion_filter_logs(log_path=\"{log_path}\", since=\"<故障窗起 HH:MM:SS>\", "
+            f"until=\"<故障窗止 HH:MM:SS>\")` 取时间窗内的精华行(默认封顶 400 行)。"
+            f"故障窗起止从日志/线索里读出;需要更细再缩窗调一次。\n###\n"
+        )
+    return f"""你是 C/系统软件 bug 根因定位专家。**只定位根因,不要写补丁**。
 
 ### Bug 线索 ###
-{state["trigger"]}
-###
-
-### 已圈定的嫌疑起点(从这里读,可自行 grep/read 扩展)###
-{guide}
-###
-
-### 相关历史教训(来自 Hyperion 记忆)###
-{recalled_ctx}
-###
-
+{trigger or "(见日志,自行提取故障现象)"}
+##
+{log_hint}
 ### 你的任务 ###
-1. 用 read/grep 工具读嫌疑代码(起点已给,可追调用链、不限于这些)。
-2. 定位根因(为什么出 bug)。
-3. **输出前自审(证伪式,对抗「自己骗自己」)**:主动找一条可能推翻结论的证据(日志/堆栈/调用链
-   里仍矛盾处)填 falsification;无反例 → verdict="confirmed",有矛盾 → verdict="needs_revisit"。
-4. 严格按下面 JSON schema 返回(**不要 patch 字段** —— 本阶段只定位):
-{LOCALIZE_SCHEMA}
+1. 自主定位根因(为什么出 bug):优先用 Hyperion 提供的差异化工具(语义检索代码 / 翻历史同类 bug
+   教训 / 筛大日志)缩范围——比从头 grep 整库更准更省;再用 read/grep 精读嫌疑代码、追调用链。
+2. **输出前自审(证伪式,对抗「自己骗自己」)**:主动找一条可能推翻结论的证据(日志/堆栈/调用链里
+   仍矛盾处)填 falsification;无反例 → verdict="confirmed",有矛盾 → verdict="needs_revisit"。
+3. 严格按下面 JSON schema 返回(**不要 patch 字段** —— 本阶段只定位):
+{schema}
 """
-    return {"localize_prompt": prompt, "localize_schema": LOCALIZE_SCHEMA}
 
 
 async def node_delegate_localize_loop(state: BugRcaState) -> dict:
-    """5. 阶段① 定位 verify-refine 循环(B,#54-rework)。【loop 核心·窗口展示】"""
+    """2. 阶段① 定位 verify-refine 循环(B,#54-rework)。【loop 核心】"""
     from hyperion.platform.config import get_app_config
 
     # K1:最多跑几轮(iter0 + 最多 K1-1 次重定位)。默认 2 = 初次定位 + 1 次重定位机会。
     k1 = getattr(get_app_config().delegate, "max_localize_loops", 2) or 2
     delegate = CodingAgentDelegate.from_config()
     code_dir = _code_dir(state)
-    schema = state.get("localize_schema") or LOCALIZE_SCHEMA
+    schema = LOCALIZE_SCHEMA  # 模块常量(砍 assemble_localize 节点后不再走 state)
 
     localization = None            # 最后一次拿到的 localization_json(喂阶段②)
     last_result = None             # 最后一次 delegate 回执(report 用)
     verdict_chain: list[str] = []  # 每轮 verdict(report 显示 verify-refine 过程)
-    prompt = state.get("localize_prompt", "")
+    prompt = _build_localize_prompt(state["trigger"], schema, state.get("log_path"))
 
     for i in range(k1):
         # iter0 新 session(continue_session=False);其后 --continue 续同一个 session —— 复用 opencode
@@ -215,7 +190,7 @@ def _render_evidence_snippets(localization_json, repo_root: str) -> str:
 
 
 def node_assemble_repair(state: BugRcaState) -> dict:
-    """6. 阶段② 组装修复 prompt:阶段①根因(锁死)+ evidence 代码片段 + 修复 schema(含自审 verdict)。"""
+    """3. 阶段② 组装修复 prompt:阶段①根因(锁死)+ evidence 代码片段 + 修复 schema(含自审 verdict)。"""
     loc = state.get("localization_json") or {}
     root_cause = loc.get("root_cause", "(阶段①未给出)")
     trigger_chain = loc.get("trigger_chain", [])
@@ -268,7 +243,7 @@ def _observe_patch(code_dir: str) -> str:
 
 
 async def node_delegate_repair_loop(state: BugRcaState) -> dict:
-    """7. 阶段② 修复 verify-refine 循环(B,#54-rework)。【loop 核心·窗口展示】"""
+    """4. 阶段② 修复 verify-refine 循环(B,#54-rework)。【loop 核心】"""
     from hyperion.platform.config import get_app_config
     from hyperion.services.workspace.validate import validate_patch
 
@@ -333,8 +308,29 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
     }
 
 
+def _coerce_evidence_line(v) -> int | None:
+    """LLM 给的 evidence.line 防御解析 → 首个 int(或 None)。
+
+    模型偶尔不守 schema:int / "3067" / "3067,4105,5980"(多嫌疑行逗号串)/ "3067-3070"(区间)/ float。
+    取首个 int 喂 Evidence(要 int | None);解析不出 → None(丢行号,留 file)。
+    """
+    if v is None or isinstance(v, bool):  # bool 是 int 子类,先排除
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v)
+    if isinstance(v, str):
+        first = v.split(",")[0].split("-")[0].strip()  # "3067,4105" / "3067-3070" → "3067"
+        try:
+            return int(first)
+        except ValueError:
+            return None
+    return None
+
+
 async def node_report_memorize(state: BugRcaState) -> dict:
-    """8. report + memorize:patch 从 repair loop 观察;root_cause/evidence 从阶段① localization_json。"""
+    """5. report + memorize:patch 从 repair loop 观察;root_cause/evidence 从阶段① localization_json。"""
     repair_result = state.get("delegate_result")
     loc = state.get("localization_json") or {}
     scope = state.get("scope")
@@ -386,9 +382,14 @@ async def node_report_memorize(state: BugRcaState) -> dict:
         if not isinstance(e, dict):
             continue
         efile = e.get("file")
-        if efile is None:
+        if not efile:
             continue
-        evidence.append(Evidence(file=efile, line=e.get("line")))
+        # 防御 LLM 输出方差:evidence.line 可能是 int / "3067" / "3067,4105,5980"(逗号多行)/ float。
+        # 单条 evidence 坏不连坐全盘崩 —— try/except 跳过这条,继续。
+        try:
+            evidence.append(Evidence(file=efile, line=_coerce_evidence_line(e.get("line"))))
+        except Exception:  # noqa: BLE001 —— 坏 evidence 跳过,不崩整个 workflow
+            continue
     lesson = KnowledgeItem(
         kind="bug_lesson", repo=repo_name, scope=scope,
         summary=root_cause[:200], root_cause=root_cause, detail="", evidence=evidence,

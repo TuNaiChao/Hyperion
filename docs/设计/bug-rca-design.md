@@ -179,13 +179,18 @@ class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端(需另装 cla
 
 ### 6.2 opencode 侧接线(已核实)
 
-- **`config/opencode_hyperion.json` 加 `mcp` 段**(stdio 最简,免 daemon):
+- **`config/opencode_hyperion.json` 加 `mcp` 段**(已落地,stdio 最简,免 daemon):
   ```jsonc
   "mcp": { "hyperion": { "type":"local",
-    "command":["hyperion","mcp","serve","--codebase","{env:HYPERION_CWD}"],
-    "enabled":true, "timeout":30000 } }
+    "command":["hyperion","mcp","serve"],
+    "environment":{"PYTHONUNBUFFERED":"1"}, "enabled":true, "timeout":10000 } }
   ```
-  (`delegate.py` 已注入 `OPENCODE_CONFIG` 指此文件;要长驻 daemon 用 `"type":"remote"`,`url:"http://127.0.0.1:PORT/mcp"`。)
+  ⚠️ **opencode local server 的 `environment` 是字面值,不展开 `{env:VAR}`**(2026-08-03 R3.1 源码核实:
+  `opencode/packages/core/src/v1/config/mcp.ts:6-24`;`{env:VAR}` 仅在 remote 的 `headers`/`oauth` 展开)。
+  所以 codebase **不写在配置里,走进程 env 继承**:delegate 注入 `HYPERION_CODEBASE` → opencode 透传父 env
+  → MCP 子进程 `_resolve_codebase` 读 `os.environ`(四段兜底:`--codebase` > `HYPERION_CODEBASE` env >
+  `config.code_index.repo` > cwd 目录名)。`command` 是**单数组**(cmd+args 合并,无独立 `args` 字段);
+  env 字段叫 **`environment`**(非 `env`);`timeout` 单位 ms。
 - **工具名带前缀**:opencode 把 MCP 工具注册成 `hyperion_search_codebase`(server名_工具名)——prompt 里得用全名。
 - **agent prompt 加 nudge**(`hyperion-localize.prompt` 任意文本,注入系统消息首位):*"定位前先调 `hyperion_search_codebase`(语义找代码)和 `hyperion_recall`(翻历史教训);大日志用 `hyperion_filter_logs` 粗筛。比 grep 更准更省。"*
 - **permission 放行** `"hyperion*":"allow"`(headless `--auto` 不卡)。
@@ -198,7 +203,18 @@ class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端(需另装 cla
 - 自定义 agent:`opencode_hyperion.json` `agent` 段(prompt/permission/steps)——Hyperion 已在用。
 - 工具调用进 `--format json` 事件流:`tool_use` 带 `part.state.input`(run.ts:715-727)。
 - `--continue` 跨 localize→repair 续会话:全量历史 + 工具结果保留(run.ts:456-533)。
-- ⚠ **坑**:别开 `experimentalCodeMode`(塌缩 MCP 工具成单 `execute`);MCP 调用留在 primary agent(别塞 `task` 子 agent,其 tool_use 不进流,issue #33397);`listTools` 默认 5s 超时,长检索要流式进度。
+- ⚠ **坑**(2026-08-03 R3.1 源码 + GitHub issues 核实):
+  - 别开 `experimentalCodeMode`(塌缩 MCP 工具成单 `execute`)。
+  - **MCP 调用留 primary agent**(hyperion-localize/repair 已是 `mode:primary`):`task` 子 agent 两坑 ——
+    [#33397](https://github.com/sst/opencode/issues/33397)(父 NDJSON 流滤掉子 session 事件,看不见但能跑)+
+    [#16491](https://github.com/anomalyco/opencode/issues/16491)(子 agent 里 MCP 列得出但执行不了,看版本)。
+  - `listTools` 默认 **5s**(docs)/ 30s(code `catalog.ts:5`),Python 冷启 + `import hyperion` 可能紧 → 显式
+    `timeout:10000`;且**每 LLM step 都调一次 listTools**([#17099](https://github.com/sst/opencode/issues/17099),
+    有延迟税 + 单次抖动会永久踢出 server 无重连)。
+  - 单次响应 **< 8KB**(macOS pipe 缓冲,超了 `write()` 死锁,Cursor forum #158804);`PYTHONUNBUFFERED=1` 防
+    stdout 块缓冲致握手挂(官方 mcp v2 SDK `run()` 已把 wire 挪到私有 fd,但显式开更稳)。
+  - **工具名 = `sanitize(server)+"_"+sanitize(tool)`**(单下划线,`catalog.ts:97`):server `hyperion` + 工具
+    `search_codebase` → 模型见 `hyperion_search_codebase`(callTool 仍发原名)。
 
 ---
 

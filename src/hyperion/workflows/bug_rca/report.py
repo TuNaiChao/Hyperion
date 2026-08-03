@@ -1,8 +1,8 @@
-"""bug-RCA 中文报告渲染(R2 批4)。
+"""bug-RCA 中文报告渲染(R2 批4;R3.1 砍漏斗,去 anchors 段)。
 
 按 demo 金标准骨架渲染中文报告(bug-rca-design.md §5)。证据纪律是签名:
 每条结论锚 file:line、补丁 unified diff、置信度用数值。
-输入:workflow state(anchors/trigger/recalled/verified)+ delegate 的 DelegateResult(data)。
+输入:workflow state(trigger/verified/log_path)+ delegate 的 DelegateResult(data)。
 """
 
 from __future__ import annotations
@@ -17,14 +17,13 @@ from hyperion.workflows.bug_rca.state import BugRcaState
 def render_report(state: BugRcaState, result: DelegateResult) -> str:
     """渲染中文 bug-RCA 报告(markdown)。
 
-    state : BugRcaState(repo_root/trigger/anchors/recalled/verified)。
+    state : BugRcaState(repo_root/trigger/verified/log_path)。
     result: delegate 的 DelegateResult(data 含 root_cause/evidence/trigger_chain/
              patch/confidence/blast_radius_files)。
     """
     data = result.data or {}
     repo_name = Path(state.get("repo_root", ".")).name
     trigger = state.get("trigger", "")
-    anchors = state.get("anchors", [])
     verified = state.get("verified", False)
     now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -77,14 +76,6 @@ def render_report(state: BugRcaState, result: DelegateResult) -> str:
                 parts.append(f"| {e.get('file', '-')} | {e.get('line', '-')} | {snippet} |")
         parts.append("")
 
-    # —— 漏斗锚点(附录性,证明定位过程)——
-    if anchors:
-        parts.append("### 定位漏斗锚点(Agentless file→function→line)")
-        for a in anchors:
-            fn = getattr(a, "function", None) or "-"
-            parts.append(f"- `{getattr(a, 'file', '?')}:{getattr(a, 'line', '?')}` {fn}  ({getattr(a, 'why', '')})")
-        parts.append("")
-
     # —— 补丁 ——
     patch = data.get("patch", "")
     parts.append("## 四、补丁\n")
@@ -92,6 +83,6 @@ def render_report(state: BugRcaState, result: DelegateResult) -> str:
 
     # —— 附录 ——
     parts.append("## 五、附录\n")
-    parts.append("- 本报告由 Hyperion bug-RCA workflow 生成(定位漏斗 + delegate 委托 + 记忆召回)。")
+    parts.append("- 本报告由 Hyperion bug-RCA workflow 生成(opencode 自主定位 + MCP 工具 + delegate 委托 + 记忆)。")
     parts.append("- 补丁见配套 `.patch` 文件;根因已抽成 `BugLesson` 入记忆(下次同类问题可 recall 命中)。")
     return "\n".join(parts)

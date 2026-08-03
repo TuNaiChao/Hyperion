@@ -93,6 +93,7 @@ class DelegateResult:
     tokens: dict[str, int] = field(default_factory=dict)
     error: str | None = None
     events: list[dict] = field(default_factory=list)
+    tool_calls: list[str] = field(default_factory=list)  # opencode 调过的工具名(含 hyperion_* MCP;observability)
 
     @property
     def ok(self) -> bool:
@@ -177,13 +178,22 @@ class OpencodeDelegate(CodingAgentDelegate):
         cmd = self._build_cmd(cfg, prompt, cwd, agent, continue_session)
         timeout = timeout or cfg.timeout
 
-        # env OPENCODE_CONFIG:注入 Hyperion 自带 opencode 配置(agent+steps+permission,config/opencode_hyperion.json),
+        # env OPENCODE_CONFIG:注入 Hyperion 自带 opencode 配置(agent+steps+permission+mcp,config/opencode_hyperion.json),
         # 与用户全局 opencode.json(provider/key)合并(opencode 配置 8 层合并,路 1 调研)。
         env = dict(os.environ)
         if cfg.config:
             _cp = Path(cfg.config)
             _cp = _cp if _cp.is_absolute() else _HYPERION_ROOT / _cp
             env["OPENCODE_CONFIG"] = str(_cp)
+        # HYPERION_CODEBASE:告诉 `hyperion mcp serve`(opencode 经 MCP 拉起的子进程)查哪个代码库的
+        # 索引/记忆(= 建索引时的 name)。opencode 把父进程 env 透传给 MCP 子进程(local server 的
+        # environment 字段不展开 {env:},靠进程 env 继承 —— r3.1 research 确认)。从 workspace 目录名
+        # 推导(<repo>__<bugid>/code 的父名前半);非 workspace(无 __)→ 不设,MCP server 自身
+        # _resolve_codebase 回落 config.code_index.repo / cwd(见 mcp_memory.py)。
+        _parent = Path(cwd).parent.name
+        if "__" in _parent:
+            env["HYPERION_CODEBASE"] = _parent.split("__", 1)[0]
+        env["PYTHONUNBUFFERED"] = "1"  # 防 MCP server stdio stdout 块缓冲致 tools/list 握手挂(r3.1 research: pipe buffering)
 
         # 流式跑:start_new_session=True 让 opencode 独立成进程组(超时可 killpg 整组,防子进程残留)
         proc = await asyncio.create_subprocess_exec(
@@ -199,11 +209,20 @@ class OpencodeDelegate(CodingAgentDelegate):
         stderr_chunks: list[bytes] = []
 
         async def _drain(stream, sink: list[bytes]) -> None:
-            """逐行流式读(弃块缓冲);并发 drain stdout+stderr 防 stderr 管道写满阻塞 opencode。"""
+            """读原始字节块(不受 readline 64KB 行长限制);并发 drain stdout+stderr 防 stderr 管道写满阻塞。
+
+            为什么不用 `async for line in stream`(readline):opencode --format json 的单个事件可能很大
+            (read 大文件/大日志的工具结果 >64KB),readline 抛 "Separator is not found, and chunk exceed
+            the limit"(e2e 实测踩到:opencode 读 2.6MB 日志)。改 read(n) 块读 + 之后 _parse_stream
+            统一 splitlines,行长无上限。
+            """
             if stream is None:
                 return
-            async for line in stream:
-                sink.append(line)
+            while True:
+                chunk = await stream.read(65536)
+                if not chunk:
+                    break
+                sink.append(chunk)
 
         try:
             await asyncio.wait_for(
@@ -239,7 +258,17 @@ class OpencodeDelegate(CodingAgentDelegate):
             )
 
         final_text, tokens, events, all_text = self._parse_stream(stdout)
-        result = DelegateResult(final_text=final_text, tokens=tokens, events=events)
+        # 审计 opencode 调了哪些工具(§6.2;含 hyperion_* MCP 工具 → 验证「工具驱动委托」真生效)。
+        # 事件 shape 以 opencode 实测为准(tool_use part.tool / part.name);defensive 取值,缺字段则空。
+        tool_calls: list[str] = []
+        for _e in events:
+            if _e.get("type") not in ("tool_use", "tool"):
+                continue
+            _part = _e.get("part") or {}
+            _tool = _part.get("tool") or _part.get("name")
+            if _tool:
+                tool_calls.append(str(_tool))
+        result = DelegateResult(final_text=final_text, tokens=tokens, events=events, tool_calls=tool_calls)
         self._write_delegate_log(
             cwd,
             stdout,
