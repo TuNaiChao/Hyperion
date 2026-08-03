@@ -162,7 +162,7 @@ Langfuse(自托管友好),无 env 时 no-op。约定 `langfuse_session_id=thread
 **L3(P2 末/P3,DAP)**:手写轻量 DAP client 驱动 `lldb-dap`/`gdb -i dap`,仅用于**可复现 bug** 的现场深挖(学术范式 ChatDBG;事后日志分析不适用)。
 
 > 详细设计见 [p1-code-understanding-design.md](p1-code-understanding-design.md);演进依据见 [后续设计演进报告](../调研/后续设计演进报告-oh-my-pi与最佳实践.md)。
-> **新增借鉴(Aider)**:R3 起新增 `repomap.py`——Aider 式 tree-sitter `tags.scm` → PageRank → token 预算"全仓最重要符号"地图,叠在 `parser.py` 上(见 §10/backlog)。
+> **新增借鉴(Aider)**:~~R3 起新增 `repomap.py`~~ — **2026-08-03 改 backlog**(aider `c-tags.scm` 无 C 引用查询 → PageRank 对 wpa/bluez 这种 C 仓失真;CRG 对 C 有 `call_expression` 调用边 + 自带社区/hub/bridge,改以 **CRG 为主**(`services/code_index/code_graph.py`),见 [deep-research-design.md §2](deep-research-design.md))。原 Aider tags→PageRank→token 预算地图的想法留 backlog。
 
 ### 5.2 记忆与持续学习服务 `services/memory/`(★ P3 差异化,R1 新建)
 
@@ -213,7 +213,7 @@ v0.1 的 `services/log_symbolizer/`(addr2line/btmon/wpa)与 `services/static_ana
 | **R2** ✅MVP | bug-RCA 端到端 | `CodingAgentDelegate`(opencode **glm-5.2**)**多阶段委托**(localize→repair,见 [bug-rca-design.md](bug-rca-design.md) §7.5)+ **A+C**:自定义 agent(hyperion-localize/repair)+ `steps` 强制收敛 + `--continue` session 续接 + tolerant apply;报告 + 记忆闭环 | **2026-07-30 达标**:端到端 delegate 收敛,报告+补丁+BugLesson 入记忆(recall 命中) |
 | **R3.0** ✅ | runtime 骨架 | `platform/runtime/` 5 件(factory/state/token_budget/tool_output/checkpoint)+ delegate 可观测(#56 流式+delegate_log) | 冒烟:中间件链+token 预算+checkpointer 生效;`hyperion models` 回归绿 |
 | **R3.1** 🔧 | bug-RCA 硬化 | **workspace_changes(#51,已 e2e 验)** + **迭代 verify-refine(B,#54-rework)** + **2026-07-31 简化:砍 Hyperion 侧漏斗,改 opencode 自定位 + MCP 工具(search_codebase/filter_logs/recall)**;patch rerank 移除;trigger_parser #53 仅 parse_issue(extract_keywords 弃);addr2line/log_preprocess #50 defer R5 | demo2 patch `git apply --check` 过 + 工具驱动委托跑通 + report 标 METR 警示 |
-| **R3.2** | 深度调研(P1 头条) | C parser + CRG 接入 + Aider repomap + runtime 正式上场(tool-output masking/loop/子agent)+ deep_research workflow(多视角;事实一致性合并届时自建,rerank.py 已删不复用) | `hyperion research --repo` → 带溯源架构/模块文档 + CodebaseFact 入记忆(recall 命中) |
+| **R3.2** ✅代码完 | 深度调研(P1 头条) | **CRG 接入**(`code_graph.py`:communities/overview/hub/bridge)+ runtime 中间件上场(summarization + loop_detection,**其余 DynamicContext/DurableContext/ToolErrorHandling pull-by-need**)+ **deep_research workflow**(六节点;每模块 ReAct 子 agent + cited-reporter + Verifier);⚠️ **repomap 改 backlog**(CRG 为主)、多轨迹事实一致性 pull-by-need | `hyperion research --repo` → 带溯源架构/模块文档 + CodebaseFact 入记忆(recall 命中);**代码完、75 测绿、#58 权威 index 回归绿,e2e 待跑** |
 | **R3.3** | 收尾 | opencode serve persistent(#55)+ report 精修(#46) | serve 长驻 session 精确续;report 对齐 demo 金标骨架 |
 | **R3.4** | 文档摄取→记忆 | bug 报告/调研报告/补丁 → 分析 → 写记忆(PatchIngestPipeline:补丁 retrieve-then-summarize) | 三类文档 ingest→recall 命中;同根因去重合并 |
 | **R4** | 团队/多代码库 + PR 跟踪 | 租户隔离、文档统一管理、PR tracker workflow、opencode 后端(团队分发) | 多 owner/多库互不串;PR 跟踪出合入建议 |

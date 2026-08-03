@@ -34,9 +34,9 @@ Hyperion/
 │   ├── services/
 │   │   ├── code_index/  # ✅ 代码理解(已实现 P1.0–P1.5):parser/chunker/embed/store/retrieval/index/lsp/outline/eval
 │   │   └── memory/      # ✅ 记忆核心(R1 已实现):MemoryService 契约 + native 后端(SQLite+FTS5+向量)+ tools/mcp
-│   ├── workflows/    # 🆕 三工作流(R1+):bug_rca / deep_research / pr_tracker
+│   ├── workflows/    # ✅ bug_rca(R3.1)+ deep_research(R3.2,代码完);🆕 pr_tracker(R4)
 │   ├── tools/        # ✅ 导航/沙箱工具(12 个)+ memory 工具(R1)+ 🆕 委托 delegate(R2)
-│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp/memory/mcp 已实现;🆕 R2+ 加 bug-rca/research)
+│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp/memory/mcp/bug-rca/research 已实现)
 ├── config/           # config.yaml(模型/工具/记忆/委托 声明式)+ extensions_config.json(MCP/skills)
 ├── docs/             # 已完成/ · 调研/ · 设计/(architecture + memory/bug-rca/deep-research + p1-code-understanding)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
@@ -76,6 +76,6 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 ## 路线(v2,2026-07-28 重规划)
 
-**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ 2026-08-03)→ **R4** 团队/多用户(租户隔离 + 鉴权)+ 多库 + PR 跟踪 + skills/MCP → **R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_hyperion_agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、HyperionState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。详见 [architecture.md §8](docs/设计/architecture.md)。
+**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ + R3.2 深度调研 ✅代码完 2026-08-03,e2e 待跑)→ **R4** 团队/多用户(租户隔离 + 鉴权)+ 多库 + PR 跟踪 + skills/MCP → **R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_hyperion_agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、HyperionState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。详见 [architecture.md §8](docs/设计/architecture.md)。
 
 **三锁定决策:** ① 记忆 = 自有 MemoryService 契约 + v1 native 后端(组合 code_index+code-review-graph),cognee/mem0 可换;② bug-RCA 委托给 coding agent,抽象 `CodingAgentDelegate`,v1 默认 omp,opencode 可换;③ MVP 先 bug-RCA。详见各设计文档。

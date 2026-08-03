@@ -324,7 +324,7 @@ R5 节点新增:`localize_pre`、`localize_refine`、`delegate_one`、`vote`。�
 | **Hyperion 外层(bug-RCA workflow)** | 固定 StateGraph DAG(R2 线性 → R5 加并行/分支/循环)| 步骤确定、要对金标准、要可观测。Agentless 基线背书 |
 | **Hyperion `delegate` 节点内部** | ReAct agent(opencode / omp,本身是 `create_agent` 式)| 读码、试 patch、回退重试是开放任务,适合 ReAct;deer-flow lead agent 同款 |
 | **Hyperion demo agent(P0,`platform/agent.py`)** | ReAct(`langchain.agents.create_agent`)| 通用 chat,deer-flow 同款;与 bug-RCA 专用流水线并存,不冲突 |
-| **Hyperion deep-research workflow(R3,未建)** | 看齐 deer-flow:外层 Planner-Reporter 固定阶段 + 中间 Researcher 可以是 ReAct subagent(Send fan-out 到多个数据源)| 调研任务的"查多源"步骤天生适合 ReAct,但"出报告"是固定阶段。混合模式 |
+| **Hyperion deep-research workflow(R3.2 ✅已建 2026-08-03)** | 看齐 deer-flow:外层固定阶段 workflow(ingest→index→plan→research→report→memorize)+ research 节点每模块 ReAct subagent(asyncio fan-out)。落地印证了本行判断:"查多模块"用 ReAct 子 agent,"出报告"是固定阶段 |
 
 ---
 

@@ -363,8 +363,5 @@ metadata:
     - 完整设计:`bug-rca-design.md` §1(流程)/ §2(为什么砍)/ §6(MCP 工具+接线)。
     - 目标阶段:**R3.1**(MCP 工具落地 + 砍旧漏斗节点 + e2e 跑通 demo2)。✅ 已完成。
 
-- **#58**:code_index chunker 不切超长 chunk → 巨文件建索引报 400(2026-08-03 建 wpa 索引踩到)。
-    - 现象:`hyperion index example/demo2/wpa wpa` 挂 `openai.BadRequestError: 400 - Range of input length should be [1, 33000]`。wpa 的 `src/drivers/driver_nl80211.c`(~300KB)/ `src/common/qca-vendor.h`(~300KB)有超长符号,chunker 按符号 body 整块建 chunk → 单块 >33000 字符(DashScope text-embedding-v4 上限)→ embedder 拒。
-    - 根因:`services/code_index/chunker.py` 按 Symbol(start_line→end_line)整块切,**无 max-chunk-size 兜底**:超长符号(巨函数/巨 vendor 头)不按行区间再切。
-    - 修法:chunker 加"超 max_chars(如 8000/30000)的符号块按行区间再切 sub-chunk";indexer `_SKIP_DIRS`(parser.py:219)加 `.pc`(quilt 内部树,别连带索引)。
-    - 不阻塞 R3.1(e2e #5 verified=True 不靠索引;opencode 用 grep + filter_logs + recall 照样定位准)。目标阶段:**R3.2**(code_index 加固 + 深度调研要用索引)。
+- **#58** ✅ 已修(2026-08-03,R3.2):`_symbol_to_chunks`(符号路径)+ `_module_chunks`(模块路径,这才是真正肇事点——vendor 头无被解析符号 → 整文件落 module chunk)按行区间二次切分,复用预留 part/total + 独立 content_hash + 真实行号;`MAX_CHUNK_CHARS` 改总字符数=16000(留 DashScope 33000 安全余量);`_SKIP_DIRS` 加 `.pc`;6 单测绿 + wpa 全仓扫描 max=16000/0超限。
+    - 原详情(留档):现象 = `hyperion index wpa` 挂 400 "Range of input length should be [1, 33000]";根因 = chunker 按 Symbol 整块切无 max-chunk-size 兜底。**离线扫描发现 driver_nl80211.c 其实没事(符号各<12K),肇事的是 qca-vendor.h(300KB 无符号头 → 单 module chunk 304044 字符)→ module 路径(`_module_chunk`)也得切,光修符号路径不够。**

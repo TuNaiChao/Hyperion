@@ -55,11 +55,28 @@ class _ScriptedModel(BaseChatModel):
 
 # ── 1. factory 装配 + 编译 ────────────────────────────────────────────
 def test_factory_assembles_default_chain():
-    """默认中间件链 = [ToolOutputBudget, TokenBudget],顺序对外→内。"""
+    """默认中间件链(无 model)= [ToolOutputBudget, LoopDetection, TokenBudget],顺序外→内。
+
+    R3.2 加 LoopDetection(无条件);Summarization 要 model,没给就跳过(见下个测试)。
+    """
     mws = build_default_middlewares()
-    assert len(mws) == 2
-    assert type(mws[0]).__name__ == "ToolOutputBudgetMiddleware"
-    assert type(mws[1]).__name__ == "TokenBudgetMiddleware"
+    assert [type(m).__name__ for m in mws] == [
+        "ToolOutputBudgetMiddleware",
+        "LoopDetectionMiddleware",
+        "TokenBudgetMiddleware",
+    ]
+
+
+def test_factory_chain_adds_summarization_when_model_given():
+    """给 model → 链多 SummarizationMiddleware(ToolOutputBudget 后、LoopDetection 前)。"""
+    model = _ScriptedModel(script=[AIMessage(content="ok", id="m1")])
+    mws = build_default_middlewares(model)
+    assert [type(m).__name__ for m in mws] == [
+        "ToolOutputBudgetMiddleware",
+        "SummarizationMiddleware",
+        "LoopDetectionMiddleware",
+        "TokenBudgetMiddleware",
+    ]
 
 
 def test_factory_compiles_with_state_channels():

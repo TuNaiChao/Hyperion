@@ -17,16 +17,18 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware import AgentMiddleware, SummarizationMiddleware
 from langchain.chat_models import BaseChatModel
 from langgraph.graph.state import CompiledStateGraph
 
+from hyperion.platform.runtime.middlewares.loop_detection import LoopDetectionMiddleware
 from hyperion.platform.runtime.middlewares.token_budget import TokenBudgetConfig, TokenBudgetMiddleware
 from hyperion.platform.runtime.middlewares.tool_output import ToolOutputBudgetConfig, ToolOutputBudgetMiddleware
 from hyperion.platform.runtime.state import HyperionState
 
 
 def build_default_middlewares(
+    model: BaseChatModel | None = None,
     *,
     token_budget: TokenBudgetConfig | None = None,
     tool_output: ToolOutputBudgetConfig | None = None,
@@ -48,17 +50,22 @@ def build_default_middlewares(
         7. DynamicContext           (R3.2:注入日期 + 记忆 recall 作 system-reminder)
         8. Skill*                   (若引入 skills:Activation → ToolPolicy)
         9. DurableContext           (R3.2:summary/delegations 投影成隐藏 HumanMessage)
-       10. Summarization            (R3.2:压历史;落地后须伴生 DanglingToolCall)
+       10. Summarization            ← R3.2 已有(langchain 直用;没给 model 则跳过)
        11. Memory(auto-inject)      (Hyperion 自建挂 MemoryService;**不抄** deer-flow MemoryMiddleware)
-       12. LoopDetection            (R3.2:防搜索死循环)
+       12. LoopDetection            ← R3.2 已有(单层 hash 最小版;pull-by-need:频次层/stop_reason)
        13. TokenBudget              ← R3.0 已有(外层兜底总账)
        14. (tail) Clarification     (若做交互式,必须最后)
     规则:链 >7 个时移植 deer-flow @Next/@Prev(factory.py:357-430)让中间件自声明位置;现在普通有序 list 够。
     """
-    return [
+    chain: list[AgentMiddleware] = [
         ToolOutputBudgetMiddleware(tool_output) if tool_output else ToolOutputBudgetMiddleware(),
-        TokenBudgetMiddleware(token_budget) if token_budget else TokenBudgetMiddleware(),
     ]
+    if model is not None:
+        # SummarizationMiddleware 要模型来压历史;没给 model 就跳过(冒烟 / 测试)
+        chain.append(SummarizationMiddleware(model, trigger=("messages", 50), keep=("messages", 20)))
+    chain.append(LoopDetectionMiddleware())
+    chain.append(TokenBudgetMiddleware(token_budget) if token_budget else TokenBudgetMiddleware())
+    return chain
 
 
 def create_hyperion_agent(
@@ -84,7 +91,7 @@ def create_hyperion_agent(
       name          agent 名(Langfuse trace / 日志用)。
     """
     if middleware is None:
-        middleware = build_default_middlewares()
+        middleware = build_default_middlewares(model)
     return create_agent(
         model,
         tools,
