@@ -232,6 +232,8 @@ delegate:
     format: json                # json(NDJSON 事件流,默认)| default(格式化文本)
     timeout: 1200               # 委托总超时(秒);复杂 C RCA + 写补丁需久,600 不够 flash 收敛
     config: config/opencode_hyperion.json  # Hyperion 自带 opencode 配置(hyperion-localize/repair agent + steps 限轮 + permission 工具白名单);env OPENCODE_CONFIG 注入
+    retry_max: 2               # 瞬时网络错(connection reset)重试次数 —— glm API 偶发 reset,delegate 自动续 session 重试(每模型最多跑这么多次)
+    fallback_model: uniontech-ai/deepseek-v4-flash  # 主模型(glm-5.2)重试仍瞬时错 → 换 flash(非推理、调用快 2-5s、reset 概率低;同 provider 无需新 key)
   omp:                          # 备选(本机暂未装;网络/bun 通了切回 —— 其 strict schema 强校验是最大价值)
     bin: omp
     mode: rpc                   # rpc(NDJSON 流,推荐)| print(-p 纯文本兜底)

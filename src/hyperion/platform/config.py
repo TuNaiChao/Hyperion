@@ -174,6 +174,8 @@ class OpencodeDelegateConfig(BaseModel):
     format: str = "json"  # json(NDJSON 事件流)| default(格式化文本)
     timeout: float = 600.0  # 委托总超时(秒)
     config: str | None = "config/opencode_hyperion.json"  # Hyperion 自带 opencode 配置(agent+steps+permission);env OPENCODE_CONFIG 注入,与用户全局 provider/key 合并
+    retry_max: int = 2  # 瞬时网络错(connection reset 等)重试次数 —— glm API 偶发 reset,delegate 自动 --continue 续 session 重试
+    fallback_model: str | None = None  # 主模型重试仍瞬时错时换它(如 "uniontech-ai/deepseek-v4-flash":flash 非推理、快、reset 概率低)
 
 
 class OmpDelegateConfig(BaseModel):
