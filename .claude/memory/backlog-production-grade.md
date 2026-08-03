@@ -359,6 +359,12 @@ metadata:
     - **接线**:`config/opencode_hyperion.json` 加 `mcp` 段(stdio `hyperion mcp serve`)+ `hyperion-localize` agent prompt 加"优先调 hyperion_* 工具"nudge + permission 放行 `hyperion*`;`delegate.py:_parse_stream` 加收 `tool_use` 事件(审计 opencode 调了哪些工具,~3 行)。
     - **防幻觉契约**:`search_codebase` 只回索引里真实存在的符号(validated against `parser.py` Symbol 表);**抽概念不抽标识符**(opencode 查询 → 工具回真实候选 → opencode 选)。
     - **token 取舍**:永远相关的廉价件(召回教训)可预进 prompt(0 turn);重/钻取件做工具。工具廉价 + 回手术级摘录 = 守住 Agentless "固定漏斗便宜 ~6×" 红利,又不重复 opencode。
-    - 现状:**文档已全量对齐**(docs/设计 6 份 + 踩坑 #2 + 本条);**代码尚未重构**(graph.py 仍 8 节点、localize.py 仍漏斗)。文档领先代码。
+    - 现状:**✅ 已完成**(commit `6e0a039`,2026-08-03):代码 8→5 节点 + 三 MCP 工具上线 + e2e verified=True(patch `git apply --check` 过)。委托重试(A+C,commit `282fc8d`)。
     - 完整设计:`bug-rca-design.md` §1(流程)/ §2(为什么砍)/ §6(MCP 工具+接线)。
-    - 目标阶段:**R3.1**(MCP 工具落地 + 砍旧漏斗节点 + e2e 跑通 demo2)。
+    - 目标阶段:**R3.1**(MCP 工具落地 + 砍旧漏斗节点 + e2e 跑通 demo2)。✅ 已完成。
+
+- **#58**:code_index chunker 不切超长 chunk → 巨文件建索引报 400(2026-08-03 建 wpa 索引踩到)。
+    - 现象:`hyperion index example/demo2/wpa wpa` 挂 `openai.BadRequestError: 400 - Range of input length should be [1, 33000]`。wpa 的 `src/drivers/driver_nl80211.c`(~300KB)/ `src/common/qca-vendor.h`(~300KB)有超长符号,chunker 按符号 body 整块建 chunk → 单块 >33000 字符(DashScope text-embedding-v4 上限)→ embedder 拒。
+    - 根因:`services/code_index/chunker.py` 按 Symbol(start_line→end_line)整块切,**无 max-chunk-size 兜底**:超长符号(巨函数/巨 vendor 头)不按行区间再切。
+    - 修法:chunker 加"超 max_chars(如 8000/30000)的符号块按行区间再切 sub-chunk";indexer `_SKIP_DIRS`(parser.py:219)加 `.pc`(quilt 内部树,别连带索引)。
+    - 不阻塞 R3.1(e2e #5 verified=True 不靠索引;opencode 用 grep + filter_logs + recall 照样定位准)。目标阶段:**R3.2**(code_index 加固 + 深度调研要用索引)。
