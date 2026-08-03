@@ -298,6 +298,27 @@ def cmd_bug_rca(args) -> int:
     return 0
 
 
+def cmd_research(args) -> int:
+    """deep_research workflow(R3.2 P1):输入 repo → 架构/模块调研报告 + CodebaseFact 入记忆。
+
+      hyperion research --repo <path> --codebase <name> [--owner <owner>]
+    六步:ingest→index(code_index + CRG)→plan(社区)→research(每模块 ReAct 子 agent)
+         →report(§5 + Verifier)→memorize(CodebaseFact)。真调模型建子 agent,较慢(数分钟)。
+    """
+    import asyncio
+
+    from hyperion.workflows.deep_research.graph import run
+
+    try:
+        final = asyncio.run(run(args.repo, codebase=args.codebase, owner=args.owner))
+    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
+        print(f"deep_research 运行出错:{e}", file=sys.stderr)
+        return 1
+    print(f"报告:{final.get('report_path', '-')}")
+    print(f"CodebaseFact 入记忆:{final.get('facts_memorized', 0)} 条")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -375,6 +396,12 @@ def main(argv: list[str] | None = None) -> int:
     sub_bug.add_argument("--trigger", default=None, help="bug 线索(日志摘要/问题描述/漏洞关键句);纯日志驱动可省")
     sub_bug.add_argument("--log", default=None, help="原始日志文件路径(喂 opencode 的 filter_logs 工具)")
     sub_bug.set_defaults(func=cmd_bug_rca)
+
+    sub_res = sub.add_parser("research", help="代码仓深度调研 workflow(P1,产架构/模块报告 + CodebaseFact)")
+    sub_res.add_argument("--repo", required=True, help="仓库根目录")
+    sub_res.add_argument("--codebase", required=True, help="仓库名(= 建索引 name;CRG db / 记忆 scope.codebase 用)")
+    sub_res.add_argument("--owner", default="default", help="记忆 scope.owner(默认 default;多用户 R4)")
+    sub_res.set_defaults(func=cmd_research)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

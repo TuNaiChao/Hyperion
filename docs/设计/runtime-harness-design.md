@@ -96,7 +96,7 @@ src/hyperion/platform/runtime/        # ✅ R3.0 已落地(对标 deer-flow harn
 │   ├── token_budget.py   # ✅ TokenBudgetMiddleware(三档阈值 + warn/hard_stop + BoundedDict)
 │   └── tool_output.py    # ✅ ToolOutputBudgetMiddleware(超阈值外化磁盘 + synopsis)
 └── checkpoint.py         # ✅ SqliteSaver 工厂 + get_checkpointer() 单例 + 断点续跑
-# 🆕 R3.2 待加:middlewares/{summarization,loop_detection,dynamic_context,memory}.py + subagents.py
+# R3.2 已加(✅ 2026-08-03):middlewares/{summarization,loop_detection}.py(summarization 直用 langchain;loop_detection 单层 hash 最小版 + 共享 _bounded_dict)。🆕 仍待加(pull-by-need):{dynamic_context,durable_context,memory,tool_error_handling}.py + subagents.py + loop_detection 频次层
 ```
 
 > 与现有 [platform/](../../src/hyperion/platform/)(models/config/reflection/sandbox/tracing)**并列**——platform/ 是"平台层"(模型/配置/沙箱/工具),runtime/ 是"agent 运行时层"(跑长 agent 的变速箱)。runtime/ 依赖 platform/(用它的 model factory / config / sandbox)。
@@ -161,7 +161,7 @@ class HyperionState(AgentState):
 4. ✅ **HyperionState** schema + `SqliteSaver` checkpointer 工厂(`get_checkpointer()` 单例)。
 5. ✅ 冒烟测试。
 
-**R3.0 不做**(留 R3.2):summarization、loop_detection、memory middleware、skill、guardrail、delta checkpoint。
+**R3.0 不做 → R3.2 已加 summarization + loop_detection**(2026-08-03);仍留(**pull-by-need**):memory middleware、skill、guardrail、delta checkpoint、dynamic_context、SubagentExecutor。
 
 ### R3 深度调研:runtime 正式上场
 - **SummarizationMiddleware**(调研对话长,必备 LLM 摘要 + summary_text channel + DurableContext 注入)。
@@ -184,7 +184,8 @@ class HyperionState(AgentState):
 > 同步进 `.claude/memory/backlog-production-grade.md`。
 
 - [x] ✅ **R3.0**:`platform/runtime/` 骨架(factory + state + token_budget + tool_output + checkpointer)已落地。
-- [ ] **R3.2**:summarization + loop_detection + dynamic_context + SubagentExecutor + memory middleware。
+- [x] ✅ **R3.2(部分)**:summarization(直用 langchain)+ loop_detection(单层 hash 最小版 + 共享 `_bounded_dict`,顺手修了 R3.0 BoundedDict 不淘汰的 bug)已加(2026-08-03)。
+- [ ] **R3.2 pull-by-need**:dynamic_context + SubagentExecutor 精简版 + memory middleware + loop_detection 频次层 + consume_stop_reason。
 - [ ] **R5**:checkpoint_patches + 双层记忆 + sandbox ownership + alembic bootstrap。
 - [ ] 中间件顺序表照抄 deer-flow `factory.py:188-211`(顺序敏感,langgraph 反向 dispatch after_model)。
 - [ ] `tool_output_synopsis.py` 整文件搬(无依赖纯函数,优先)。

@@ -28,11 +28,14 @@
 4. **非空白字符判大小**(学 cAST):判 chunk 大小用「非空白字符数」而非行数,比行数稳。
 5. **content_hash**:chunk 代码文本的 sha256,增量更新靠它判"这块代码变没变"(见设计 §10)。
 
-还没做(P1.1 范围外,已记 backlog)
-----------------------------------
-- **超大函数的 AST 子语句切分**:bge-m3 有 8K token 上下文,deer-flow 的 Python 函数
-  根本不会超;真正需要是 C(bluez 200+ 行状态机)。这里只**预留 part/total 字段** +
-  超长打标记,真正的 cAST 式切分留到 C 场景。
+切分策略(#58,2026-08)
+----------------------
+- **超长符号按行区间二次切分(已实现)**:一个符号默认一个 chunk;但巨 C 文件单符号可能 ~300KB
+  (driver_nl80211.c),整块超 embedder 输入上限(DashScope 33000 字符)→ 建索引 400。所以超
+  ``MAX_CHUNK_CHARS`` 的符号按行区间贪心切成多段 sub-chunk,各带 part/total + 独立 content_hash
+  + 真实行号(见 ``_symbol_to_chunks``)。
+- **还没做的**:真·AST 子语句级切分(行中间下刀、保语法结构)—— 行区间切分已够避开 embedder
+  上限,AST 级是质量优化,留 backlog;单行就超阈值(vendor 头巨宏,极罕见)无法按行再切,原样保留。
 - **前导注释抽取**(C 的 doxygen):Python 靠 docstring 已够,留 C 场景。
 
 对外提供
@@ -153,10 +156,11 @@ _STOPWORDS: frozenset[str] = frozenset(
     }
 )
 
-# chunk 大小阈值(非空白字符数)。bge-m3 有 8K token 上下文,代码约 1 token ≈ 3.5 非空白字符,
-# 8K token ≈ 28000 非空白字符;这里留元数据头和余量,取 20000(≈5-6K token)。
-# 超过说明函数异常长(Python 罕见,C 状态机可能),P1.1 暂不切(记 backlog),仅整块保留。
-MAX_CHUNK_CHARS: int = 20000
+# 单个 chunk 的字符数上限(总字符数,含空白)。DashScope text-embedding-v4 单条输入硬上限
+# 33000 字符(超了报 400 "Range of input length should be [1, 33000]");embed 还会加元数据头
+# (embed.py:expand_chunk_text),留足余量取 16000。超长符号(巨 C 函数 / vendor 头)按行区间
+# 二次切到 ≤ 此值,见 _symbol_to_chunks(#58)。值更小 → embedding 信号更聚焦但 chunk 更多。
+MAX_CHUNK_CHARS: int = 16000
 
 
 def split_identifier(name: str) -> list[str]:
@@ -270,11 +274,16 @@ def _symbol_to_chunk(sym: Symbol, text: str, part: int = 1, total: int = 1) -> C
     )
 
 
-def _module_chunk(file: str, language: str, lines: list[str], spans: list[tuple[int, int]]) -> CodeChunk | None:
-    """把一个文件里「不属于任何符号」的代码(import / 全局常量 / 顶层语句)聚成一个 module chunk。
+def _module_chunks(file: str, language: str, lines: list[str], spans: list[tuple[int, int]]) -> list[CodeChunk]:
+    """把「不属于任何符号」的代码(import / 全局常量 / 顶层语句 / 无符号的整个头文件)聚成
+    module chunk;**超长则按行区间贪心切成多段**(#58:vendor 头如 qca-vendor.h ~300KB、无任何
+    被解析的符号 → 整文件落这里,不切会超 embedder 33000 上限报 400)。
 
     spans 是该文件所有符号的 [start_line, end_line] 区间(1-indexed,闭区间);把这些区间
-    覆盖的行挖掉,剩下有内容的行拼成模块级代码。没有就返回 None(整个文件都是符号)。
+    覆盖的行挖掉,剩下有内容的行 = 模块级代码。没有就返回 [](整个文件都是符号)。
+
+    切法:kept 行未必连续(跳过了符号覆盖区),按顺序贪心累积到 ≤ MAX_CHUNK_CHARS 封口开新段,
+    各段带 part/total + 独立 content_hash + 真实行号(逻辑同 _symbol_to_chunks)。
     """
     covered: set[int] = set()
     for s, e in spans:
@@ -288,25 +297,100 @@ def _module_chunk(file: str, language: str, lines: list[str], spans: list[tuple[
         if line.strip():
             kept.append((idx, line))
     if not kept:
-        return None
+        return []
 
-    start_line = kept[0][0]
-    end_line = kept[-1][0]
-    text = "\n".join(line for _, line in kept)
     module_name = Path(file).as_posix()  # 用相对路径当模块名,够唯一
 
-    return CodeChunk(
-        id=_chunk_id(file, "<module>"),
-        symbol=module_name,
-        kind="module",
-        file=file,
-        language=language,
-        start_line=start_line,
-        end_line=end_line,
-        text=text,
-        content_hash=_sha256(text),
-        fts_text=_module_fts_text(text),
-    )
+    # 贪心按行累积成 ≤ MAX_CHUNK_CHARS 的段
+    groups: list[list[tuple[int, str]]] = []   # 每段 = [(line_no, line), ...]
+    buf: list[tuple[int, str]] = []
+    for item in kept:
+        if buf and len("\n".join(line for _, line in buf + [item])) > MAX_CHUNK_CHARS:
+            groups.append(buf)
+            buf = [item]
+        else:
+            buf.append(item)
+    if buf:
+        groups.append(buf)
+
+    total = len(groups)
+    chunks: list[CodeChunk] = []
+    for idx, grp in enumerate(groups, start=1):
+        text = "\n".join(line for _, line in grp)
+        chunks.append(
+            CodeChunk(
+                id=_chunk_id(file, "<module>", idx),
+                symbol=module_name,
+                kind="module",
+                file=file,
+                language=language,
+                start_line=grp[0][0],
+                end_line=grp[-1][0],
+                text=text,
+                content_hash=_sha256(text),
+                fts_text=_module_fts_text(text),
+                part=idx,
+                total=total,
+            )
+        )
+    return chunks
+
+
+def _symbol_to_chunks(sym: Symbol, lines: list[str], start: int, end: int) -> list[CodeChunk]:
+    """把一个符号切成 1 个或多个 CodeChunk(超长符号按行区间二次切分,#58)。
+
+    为什么:#58 前一个符号 = 一个 chunk,巨 C 文件(driver_nl80211.c 单符号 ~300KB)整块
+    超过 embedder 输入上限(DashScope 33000 字符)→ 建索引报 400。这里按行区间把超长符号
+    切成 ≤ MAX_CHUNK_CHARS 的 sub-chunk,各带 part/total + 独立 content_hash + 真实行号。
+
+    切法(贪心):从符号首行起逐行累积,加入下一行会超 MAX_CHUNK_CHARS 就先封口开新段。
+    不超阈值 → 仍是整块一个 chunk(沿用原行为,绝大多数函数走这条)。
+    单行本身就超阈值(极罕见,如 vendor 头里的巨宏)无法按行再切,该段原样保留(记 backlog)。
+    """
+    body = lines[start - 1 : end]  # 该符号的代码行(0-indexed 切片 ↔ 1-indexed [start, end])
+    full_text = "\n".join(body)
+
+    # 不超阈值:整块一个 chunk(沿用原行为)
+    if len(full_text) <= MAX_CHUNK_CHARS:
+        return [_symbol_to_chunk(sym, full_text)]
+
+    # 超阈值:贪心按行累积,凑到不超 MAX_CHUNK_CHARS 就切一刀
+    parts: list[str] = []                # 各 sub-chunk 文本
+    ranges: list[tuple[int, int]] = []   # 各 sub-chunk 真实行号 [s,e](1-indexed)
+    buf: list[str] = []                  # 当前累积段
+    buf_start = start                    # 当前段起始行号
+    for offset, line in enumerate(body):
+        line_no = start + offset
+        # buf 非空且加入这行会超阈值 → 先封口,buf 重开为这行
+        if buf and len("\n".join(buf + [line])) > MAX_CHUNK_CHARS:
+            parts.append("\n".join(buf))
+            ranges.append((buf_start, line_no - 1))
+            buf = [line]
+            buf_start = line_no
+        else:
+            buf.append(line)
+    if buf:  # 收尾封口
+        parts.append("\n".join(buf))
+        ranges.append((buf_start, end))
+
+    total = len(parts)
+    return [
+        CodeChunk(
+            id=_chunk_id(sym.file, sym.qualified_name, idx),
+            symbol=sym.qualified_name,
+            kind=sym.kind,
+            file=sym.file,
+            language=sym.language,
+            start_line=s,
+            end_line=e,
+            text=text,
+            content_hash=_sha256(text),
+            fts_text=_build_fts_text(sym, text),
+            part=idx,
+            total=total,
+        )
+        for idx, (text, (s, e)) in enumerate(zip(parts, ranges, strict=True), start=1)
+    ]
 
 
 def _chunk_one_file(file: str, source: bytes, symbols: list[Symbol], language: str) -> list[CodeChunk]:
@@ -323,16 +407,14 @@ def _chunk_one_file(file: str, source: bytes, symbols: list[Symbol], language: s
         # 行号容错:钳到 [1, len(lines)](parser 给的行号理论上总在内,这里兜底)
         start = max(1, min(sym.start_line, len(lines))) if lines else 1
         end = max(start, min(sym.end_line, len(lines))) if lines else 1
-        text = "\n".join(lines[start - 1 : end])
-        chunk = _symbol_to_chunk(sym, text)
-        # 超长仅整块保留(P1.1 不切,见模块 docstring 的 backlog);将来切分时这里改成分段
-        chunks.append(chunk)
+        # #58:超长符号(巨 C 函数 / vendor 头)按行区间二次切分,否则整块超 embedder 上限报 400
+        for chunk in _symbol_to_chunks(sym, lines, start, end):
+            chunks.append(chunk)
         spans.append((start, end))
 
-    # 模块级兜底 chunk(含纯模块文件:symbols 为空时整文件都进这里)
-    mod = _module_chunk(file, language, lines, spans)
-    if mod is not None:
-        chunks.append(mod)
+
+    # 模块级兜底 chunk(含纯模块文件:symbols 为空时整文件都进这里);超长按行区间再切(#58)
+    chunks.extend(_module_chunks(file, language, lines, spans))
 
     return chunks
 

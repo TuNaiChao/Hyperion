@@ -214,9 +214,10 @@ GRAMMARS: dict[str, LanguageGrammar] = {
 }
 
 
-# 解析全仓时要跳过的目录名(非源码:缓存、虚环境、构建产物、版本控制)。
+# 解析全仓时要跳过的目录名(非源码:缓存、虚环境、构建产物、版本控制、quilt 补丁元数据)。
+# .pc = quilt 的补丁状态目录(wpa/bluez 等内核态项目用 quilt 管补丁,内部树非源码,别连带索引)。
 _SKIP_DIRS: frozenset[str] = frozenset(
-    {"__pycache__", "node_modules", ".venv", "venv", "build", "dist", ".git"}
+    {"__pycache__", "node_modules", ".venv", "venv", "build", "dist", ".git", ".pc"}
 )
 
 

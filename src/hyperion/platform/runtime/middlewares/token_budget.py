@@ -17,10 +17,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar, override
+from typing import Any, override
 
 from langchain.agents import AgentState
 from langchain.agents.middleware import AgentMiddleware
@@ -28,29 +27,9 @@ from langchain.agents.middleware.types import ModelCallResult, ModelRequest, Mod
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
+from hyperion.platform.runtime._bounded_dict import BoundedDict
+
 logger = logging.getLogger(__name__)
-
-_K = TypeVar("_K")
-_V = TypeVar("_V")
-
-
-# ── BoundedDict(内联;R3.2 LoopDetection 若也用,可抽到 _bounded_dict.py)——
-class BoundedDict(OrderedDict[_K, _V]):
-    """达到 maxsize 后淘汰最老条目的 OrderedDict(按插入序,LRU 式)。
-
-    用途:guard 中间件按 run_id 存"每run状态"(停止原因/待发警告/用量累计),长驻 lead agent
-    跨很多 run 不能无限涨 → 上限 1000 防 abandoned run 泄漏。
-    """
-
-    def __init__(self, maxsize: int = 1000, *args: Any, **kwds: Any) -> None:
-        self.maxsize = maxsize
-        super().__init__(*args, **kwds)
-
-        def __setitem__(self, key: _K, value: _V) -> None:
-            if key not in self:
-                if len(self) >= self.maxsize:
-                    self.popitem(last=False)
-            super().__setitem__(key, value)
 
 
 # ── 配置 ——

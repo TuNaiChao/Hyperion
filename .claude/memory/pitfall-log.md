@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-03T02:31:25.423Z
+  modified: 2026-08-03T06:55:38.934Z
 ---
 
 `docs/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。
@@ -21,3 +21,5 @@ metadata:
 **#4(2026-08)**:被外部进程拉起的服务,相对路径按"调用方 cwd"解析。opencode 把 MCP server cwd 设成 workspace/code → Hyperion config 里相对 `data/` 路径(memory SQLite / LanceDB)解析到 `workspace/code/data/` → ① git add -A 连带进补丁污染(validate_patch 挂)② 记忆写临时库不持久。修法:`cmd_mcp` build_server 前 `os.chdir(Hyperion 根)`。教训:被 spawn 的服务要么 chdir 回自家根,要么 config 路径绝对化。关联 [[opencode-mcp-wiring]]。
 
 **#5(2026-08)**:workflow 盲信 LLM 结构化输出 schema。glm-5.2 的 `evidence[].line` 偶尔给逗号多行串("3067,4105,5980")而非 int → `Evidence(line=<串>)` pydantic 崩整个 bug-rca。schema 是契约不是保证;LLM 输出→pydantic 严格模型边界必加防御 coerce(取首 int)+ 单条坏 try/except 跳过。这类方差性 bug e2e 才暴露(单测难复现),长尾逐个 coerce。同 #1-#4 通病:**没核前提**(LLM 会守 schema)。
+
+**#6(2026-08)**:chunker #58 只修符号路径、漏 module 路径。`hyperion index wpa` 撞 400(>33000 字符);backlog 写"driver_nl80211.c/qca-vendor.h 有超长符号"→ 照单给符号路径加 `_symbol_to_chunks`,离线扫 driver_nl80211.c max 12275 以为成了。**全仓扫才发现 qca-vendor.h 仍单 chunk 304044**(它无被解析符号 → 整文件落 `_module_chunk`,module 路径无上限)。driver_nl80211.c 是红鲱鱼。根因:① backlog 根因描述只点符号路径,没区分两条产 chunk 路径;② C 头文件常无符号(struct 故意跳过降噪)→ 全进 module chunk;③ 离线只验"点名文件"不验"全仓聚合"。教训:**修"无上限"类 bug 要把所有产该产物的路径都过一遍**;**离线验证用全仓聚合统计(max/over_cap)别只验点名样本**(红鲱鱼让你误判已修)。详见 [[r32-research-e2e-handoff]] 同批 R3.2 工作。

@@ -1,7 +1,7 @@
 # Memory Index
 
 - [Hyperion 项目总览](agent-project-overview.md) — **v2(2026-07-28 重规划)**:调度型 agent(编排+记忆+委托);三支柱 P1 调研/P2 bug-RCA★MVP/P3 记忆★特色;三锁定决策 + R0–R5 路线;deer-flow/oh-my-pi/code-review-graph 只读参考。
-- [踩坑记录文档](pitfall-log.md) — `docs/踩坑记录.md` 位置:项目走过的弯路汇总(每条 现象→弯路→根因→教训→现状);设计前先查、踩坑后往上加。#1 = patch 投票 rerank 三段反转;**#2 = Hyperion 侧定位漏斗与 opencode 重复(double localization)→ 改 MCP 工具驱动**。
+- [踩坑记录文档](pitfall-log.md) — `docs/踩坑记录.md` 位置:项目走过的弯路汇总(每条 现象→弯路→根因→教训→现状);设计前先查、踩坑后往上加。#1 patch rerank 三段反转;#2 漏斗与 opencode 重复→MCP 工具驱动;#3 delegate readline 64KB;#4 MCP cwd 污染;#5 LLM schema 不守;**#6 chunker #58 只修符号路径漏 module 路径(driver_nl80211.c 红鲱鱼、qca-vendor.h 真肇事)**。
 - [设计前先调研+参考 deer-flow](research-deerflow-first.md) — 每个模块设计前必须先深入调研前沿并精读 deer-flow 对应实现。
 - [设计前必查过度设计+最新最佳实践](avoid-overengineering.md) — 牢记:设计前充分评估是否过度设计(YAGNI)+ 查 2025-2026 最新最佳实践;用户对复杂度的直觉通常对(rerank 三段反转教训)。
 - [委托型 agent 不建平行管线](delegate-already-localizes.md) — 建 Hyperion 能力前先问"opencode 会不会?";会→做 MCP 工具给它调,别重造(opencode 本就强定位;漏斗→工具反转 = 踩坑 #2)。
@@ -18,3 +18,4 @@
 - [rerank 投票适用边界](rerank-mechanism-where-it-shines.md) — **2026-07-31 patch 投票 rerank 整体移除**(无 oracle 平凡白烧 token;现代 SOTA 转单轨迹+执行验证);检索 rerank 保留;有 oracle 再评估,不预建。
 - [runtime 中间件策略](runtime-middleware-policy.md) — 2026-07-30:不抄 deer-flow 30+,pull-by-need 加(R3.0=2/R3.2=5-8/R5选配);扩展口已留(middleware 列表+state_schema 自动合并+TypedDict+tool_output 沙箱钩子);将来 skills/MCP/鉴权/沙箱/artifacts/前端 R4/R5 加而不改;@Next/@Prev 链>7 再移植;记忆自建不抄。
 - [opencode MCP 接线硬细节](opencode-mcp-wiring.md) — 2026-08-03 源码核实:opencode 配置用顶层 `mcp` 键(非 mcpServers)、`command` 单数组、env 字段叫 `environment` 且 local **不展开 `{env:}`** → codebase 走进程 env 继承(HYPERION_CODEBASE);工具名 `server_tool`(单下划线);坑 #33397/#16491(子 agent)/listTools 5s+#17099/<8KB/PYTHONUNBUFFERED。R3.1 把 Hyperion 能力作 MCP 工具给 opencode 调。
+- [R3.2 research e2e 交接](r32-research-e2e-handoff.md) — **2026-08-03 R3.2 e2e GREEN**:`hyperion research` 三闸全过(§5报告/80引用0幻觉/recall命中codebase_fact/8条入记忆);跑通中修 4 真 bug:recursion_limit 单位错(superstep≠轮)、memorize 没 await、子agent不收敛全丢→**优雅降级(astream+强制收尾)**、@tool线程内懒导入死锁→提顶层。待办:踩坑记录补 #3/#4 + commit R3.2。

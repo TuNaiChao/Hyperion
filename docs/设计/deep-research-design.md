@@ -1,6 +1,6 @@
 # 代码仓深度调研工作流 — 设计文档(P1)
 
-> 状态:**outline(R3.2 未开,greenfield)** · 实现阶段:R3.2(PR 跟踪子项 R4)
+> 状态:**R3.2 ✅ 代码全完(2026-08-03)** — 六节点 workflow + CLI 已实现,单测全绿、#58 权威 index 回归绿;**只剩 research e2e 待跑**(退出闸见 §7)· 实现阶段:R3.2(PR 跟踪子项 R4)
 > 上位文档:[architecture.md §3/§7](architecture.md) · 参考:**DocAgent**(多 agent 代码文档生成)+ gpt-researcher(行内引用)+ code-review-graph(结构图)+ Aider repo-map + storm(多视角提问)
 >
 > **R3.2 起点**:复用 bug-RCA 已验的 **verify-refine 双循环骨架** + `memory.memorize` + 共享底座(code_index/CRG/MCP 工具),不重起炉灶。⚠️ ~~复用 localize 漏斗~~ —— bug-RCA 2026-07-31 已砍 Hyperion 侧漏斗(opencode 自定位),深度调研不复用它(各有各的 workflow,见 §1)。**事实一致性(原"rerank B 档")**:research 阶段采 N 条独立轨迹 → 事实 de-dup + 出现频次作置信度。⚠️ 原计划复用 `bug_rca/rerank.py`,但 **patch 投票 rerank 已于 2026-07-31 整体移除**;R3.2 若要事实一致性投票,**届时自建小原语,不预借已删的 rerank.py**(YAGNI;调研轨迹多样性高、与 patch 投票不同,到时按需评估)。
@@ -15,11 +15,16 @@
 
 **与 bug-RCA 的关系:** 同一套底座(记忆 + code_index + code-review-graph + 委托)。调研产出的"代码库知识"沉淀进记忆,**正好喂给后续的 bug-RCA** 用——两者形成闭环(P1 调研给 P2 RCA 铺地基)。
 
-**多语言:** 先 Python + C(bluez/wpa 是 C);C parser 已有(R2 为 wpa 补);code-review-graph 经 tree-sitter 已多语言;`c.tags.scm`(repomap 用)R3.2 补。
+**多语言:** 先 Python + C(bluez/wpa 是 C);C parser 已有(R2 为 wpa 补);code-review-graph 经 tree-sitter 已多语言;`c.tags.scm`(repomap 用)— **repomap 改 backlog(CRG 为主,见 §2 决策)**。
 
 ---
 
-## 1. 工作流(R3.2 实现,未开 — 自有六步;复用 bug-RCA 的 MCP 工具底座 + memorize)
+## 1. 工作流(R3.2 ✅ 已实现 — 自有六步;复用 bug-RCA 的 MCP 工具底座 + memorize)
+
+> **2026-08-03 落地状态**:六节点线性 workflow 已实现(`workflows/deep_research/{state,graph,nodes,report,_research,_verify}.py`),CLI `hyperion research --repo <path> --codebase <name>`。两处关键决策(均用户拍板):
+> ① **架构地图 = CRG 为主**(`code_graph.py`:detect_communities + architecture_overview + hub/bridge;repomap 列 backlog,见 §2);
+> ② **research = 每模块 ReAct 子 agent**(`create_hyperionagent` + 默认中间件 [Summarization+LoopDetection+TokenBudget] + 闭包 nav 工具,asyncio.gather 并发帽 3),**cited-reporter** 强制每结论锚 file:line(emit-concept 防幻觉),**Verifier** 写后回查文件存在。
+> 剩余中间件 / SubagentExecutor / 多轨迹一致性 / 逐符号 Verifier 均 pull-by-need(见 §8)。
 
 ```
 START → 1.ingest(git clone / 本地路径,注册 scope)
@@ -41,7 +46,9 @@ START → 1.ingest(git clone / 本地路径,注册 scope)
 
 ---
 
-## 2. Aider repo-map(R3 新增模块,关键借鉴)
+## 2. Aider repo-map(原 R3 新增 → **2026-08-03 改 backlog,CRG 为主**)
+
+> ⚠️ **2026-08-03 决策(用户拍板)**:本节原计划 R3.2 移植 aider repomap。核查发现 **aider `c-tags.scm` 没有 C 的引用查询**(只有定义)→ PageRank 对 wpa/bluez 这种 C 仓会因缺 ref 边而失真;而 **CRG 对 C 抽了 `call_expression` 调用边** + 自带 `detect_communities`/`get_architecture_overview`/`find_hub_nodes`/`find_bridge_nodes`,且 2026 趋势是持久图(CRG)非每次重算 map。故 **R3.2 架构地图改以 CRG 为主**(`services/code_index/code_graph.py` 已落地),repomap 移植列 backlog(planner 真需要"整仓一屏符号树"再评估)。下方原设计保留作 backlog 参考。
 
 > 借自 [Aider-AI/aider](https://github.com/Aider-AI/aider)(~48k,Apache-2.0)的 `aider/repomap.py` + `queries/<lang>/tags.scm`。这是 P1 调研的**最高杠杆单点借鉴**。
 
@@ -133,8 +140,15 @@ cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + 
 
 ## 8. 待办(记 backlog)
 
-- ~~`tree-sitter-c` 接入 parser~~(✅ 已有,R2 为 wpa 补);`c.tags.scm`(repomap 用)R3.2 补。
-- repomap 的 token 预算 / PageRank 阻尼参数调优。
+- ~~`tree-sitter-c` 接入 parser~~(✅ 已有,R2 为 wpa 补);`c.tags.scm`(repomap 用)— **repomap 改 backlog(CRG 为主,见 §2 决策)**。
+- repomap 的 token 预算 / PageRank 阻尼参数调优(若 backlog 启动)。
 - 多语言 grammar 扩展(Python+C 之外按需)。
 - PR tracker 的 GraphQL 增量 + 决策卡(R4)。
 - 调研报告"多视角提问"的视角集固化。
+- **R3.2 pull-by-need(2026-08-03 定,踩到痛点再补)**:
+  - 中间件:DynamicContext(注入日期 + 记忆 recall)/ DurableContext(summary 投影)/ ToolErrorHandling / LLMErrorHandling(factory.py:40-56 路线图已留槽位)。
+  - SubagentExecutor 精简版(research 现用 asyncio.gather + semaphore 最小 fan-out;可观测要求上来再升级成并发帽 + token rollup + registry)。
+  - 多轨迹事实一致性 rerank(N 条独立轨迹 → 出现频次作置信度;现 MVP 单轨迹 per module + Verifier fact-check 够防幻觉)。
+  - CRG 社区 → 文件覆盖率(现 Verifier 报「模块覆盖率」= 带引用的模块占比;社区级需成员节点 → 文件映射)。
+  - Verifier 逐符号 `parse_file` 核验(现只查「文件存在」;逐符号 symbol@line 更严)。
+  - LoopDetection 频次层 + consume_stop_reason + run_id 作用域(现单层 hash + thread_id)。
