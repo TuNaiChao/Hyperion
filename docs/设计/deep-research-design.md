@@ -163,7 +163,7 @@ cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + 
 
 > 4 个深挖 agent(STORM / DocAgent / 增量 / 防幻觉)+ deer-flow `deep-research`/`github-deep-research` SKILL.md。用户拍板范围 = **P2+P3 质量加深**;P4 增量顺延。原 R3.2.x P1(TurnBudget)已完成,算前置稳定化。原 R3.3(opencode serve + report 精修)顺延为 R3.5。
 >
-> **进度(2026-08-04)**:✅ R3.3.1(P2 plan LLM + STORM)已实现 + 6 测绿。⚠ R3.3.2(P3)/ P4 段为上轮调研初稿,所引 arXiv 待「重跑调研」核验后定稿(不替它背书)。
+> **进度(2026-08-04)**:✅ R3.3.1(P2 plan LLM + STORM)已实现 + 6 测绿。⚠ R3.3.2(P3)/ P4 段 arXiv 已逐一核验(4 篇全真,非编造):2512.12117 数字订正(100%→92% accuracy)、2607.00895「§4.3 引用接地」系张冠李戴已换 LSPRAG(2510.22210);2605.06635 / 2604.26523 精确吻合。
 
 **R3.3.1 = P2 plan 加深** ✅ 已实现(2026-08-04,`_plan.py` 核心 + `node_plan` 接线 + 6 测绿):
 - **① LLM plan batch(★本期核心)**:一次 batch 调用,喂每社区(member_files + key_symbols)→ 产 人话模块名 + 2-3 STORM 子问题。**p0 基础事实视角 always-on**(职责/公开面/入口,保 §5 骨架覆盖;STORM p0 模式)+ 1-2 附加视角(安全/性能/维护者,按模块类型选;**视角去重**——security/robustness 易重叠)。失败降级通用 focus。新 `_plan.py`(窗口展示·用户手敲)。
@@ -172,8 +172,8 @@ cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + 
 - **验证**:`uv run hyperion research --repo example/demo2/wpa --codebase wpa` → 模块名是人话、focus 按社区定制(p0 + 视角);单测 batch LLM(桩)+ 降级路径。
 
 **R3.3.2 = P3 Verifier 硬化**(现状:`_verify.py:31-38` 只查 `exists()`,不验 symbol@line;但 cited-reporter 把结构化 citations 存 state `findings[].citations[]`{file,line,symbol,claim},parse_file API 子 agent 已在用 `_research.py:155`):
-- **① 机械引用门控(核心 ~20 行)**([arXiv 2512.12117](https://arxiv.org/html/2512.12117v1),Citation-Grounded Code Comprehension):regex 抽 `[file:start-end]` + 区间重叠检查 → **100% precision、零幻觉**。Hyperion 落地:核 **state 结构化 citations**(非报告 regex)—— `parse_file(fp)` 验 symbol 存在且 `line ∈ [symbol.start, symbol.end]`。
-- **② 引用接地先于判假**([arXiv 2607.00895](https://arxiv.org/abs/2607.00895) §4.3):symbol 在 file:line 找不到时,**先 parse_file 全文件搜 / LSP go-to-def** 解析(防 pitfall #6:符号真但行偏移、或定义在头文件)再判假。降 false positive。
+- **① 机械引用门控(核心 ~20 行)**([arXiv 2512.12117](https://arxiv.org/html/2512.12117v1),Citation-Grounded Code Comprehension):regex 抽 `[file:start-end]` + 区间重叠检查 → **92% citation accuracy、0 幻觉**(原文实测,非"100% precision")。Hyperion 落地:核 **state 结构化 citations**(非报告 regex)—— `parse_file(fp)` 验 symbol 存在且 `line ∈ [symbol.start, symbol.end]`。
+- **② 引用接地先于判假**([LSPRAG arXiv 2510.22210](https://arxiv.org/abs/2510.22210),LSP 后端实时给精确符号定义/引用;原引 2607.00895「§4.3」经核验对不上——该文实为 span-level 幻觉检测 benchmark,非"引用接地",故换):symbol 在 file:line 找不到时,**先 parse_file 全文件搜 / LSP go-to-def** 解析(防 pitfall #6:符号真但行偏移、或定义在头文件)再判假。降 false positive。
 - **③ Existence Ratio 指标**([DocAgent §3.3](https://arxiv.org/abs/2504.08725)):抽报告每个 function/struct/macro/file 提及 → 对 CRG 节点集 + code_index symbols 核验 → `verified_symbols / extracted_symbols`,替粗粒度 `module_coverage`(`_verify.py:42`)。能机械抓 pitfall #6 红鲱鱼。
 - **④ 影子模式先量**:新门控与旧 exists() 并行跑,量「文件真 symbol 假」实际比例;**>5% 才转硬门控**(strip/标红),否则留透明统计(cited-reporter 已约束,可能虚惊)。
 - **⚠ 警示**([arXiv 2605.06635](https://arxiv.org/html/2605.06635),Cited but Not Verified):Fact Check 随检索量 2→150 反降 ~42%;Link/Relevance 保持。R3.2「80 引用」成功指标 **necessary-but-not-sufficient**,要补 Fact-Check 对应项——**不追更多引用,要每条都真**。
