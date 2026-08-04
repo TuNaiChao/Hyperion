@@ -159,6 +159,43 @@ async def memorize(report, scope):
 
 ---
 
+## 6.5 文档摄取与学习(R3.4 · P3 扩充)
+
+> 代码:`src/hyperion/services/memory/ingest.py` + CLI `hyperion memory ingest`。
+
+**干什么(面向小白)**:§5 的 `memorize` 吃的是「workflow 内部产出的报告」;ingest 把**外部文档**也吃进来——团队历史 bug 报告、调研报告、上游已合入的补丁——沉淀成可召回、带溯源的记忆。三类入口按扩展名分流,最后都汇到 `svc.memorize`(去重/合并/关联已在 native 后端就位,**零新存储**):
+
+```
+hyperion memory ingest <path> [--kind auto|report|patch] [--source-tier imported]
+ ├─ .md/.txt/.pdf → parse_issue(复用 trigger_parser)→ LongDocChunker(切节)→ 每块 svc.memorize_report(extract + memorize)
+ └─ .patch/.diff  → PatchIngestPipeline:解 hunk → retrieve 周围代码 → LLM 抽 root_cause/intent → 组装 bug_lesson → svc.memorize
+```
+
+**为什么不自造存储(调研定论)**:mem0/cognee/Zep/Letta 2026 格局 + mnemopi `veracity-consolidation.ts` 逐条核实——Hyperion 已走的结构化 KnowledgeItem 路线 = mnemopi Memory 式(bayesian 合并 step=0.3 / source_tier 权重 / 确定性 sha256 ID / bi-temporal + superseded_by 全就位)。Cognee 的 Extract→Cognify→Load 是**从零造整条管线**;Hyperion 复用已有 extract/memorize/retrieval,只补三块拼图:① 文档入口 ② 长文分块 ③ 补丁 retrieve-then-summarize。deer-flow/mnemopi **都没有**文档摄入/补丁理解(记忆源仅限对话消息)——这块是 Hyperion 新东西,但建在已对齐 mnemopi 的原语上。
+
+**补丁为什么要 retrieve-then-summarize**:裸 diff 缺周围代码上下文,LLM 难判根因/意图;先 `code_index.retrieve` 取被改符号周围代码再喂 LLM。依据(均 WebFetch 核验):[PATCH(ACM 2025)](https://dl.acm.org/doi/full/10.1145/3718739) / [SpecRover(ICSE 2025)](https://arxiv.org/abs/2408.02232) / [What-Do-They-Fix(NDSS 2026)](https://www.ndss-symposium.org/wp-content/uploads/2026-s328-paper.pdf)。(计划旧稿曾误引「Codeant/ICSE2026 arXiv:2503.15223」——该 id 实为 SWE-bench correctness 论文,Codeant 是商业产品非论文,已订正。)
+
+**五个设计决策(调研实锤,落地遵循)**:
+
+1. **不新增 kind**:补丁产出的教训用现有 `bug_lesson`(本就有 `symptom/root_cause/fix_patch/blast_radius_files`,schema.py:144)+ `tags=["patch_insight"]` + `source_tier=SourceTier.imported`(枚举里本就有,schema.py:50)。加新 kind 要动 extract prompt / `_same_subject` / consolidate / FTS,牵动大不值。
+2. **PDF/md/txt loader 复用**:`trigger_parser.parse_issue`(parser.py:25,pypdf 已在 uv.lock)通用,直接 import,**不重造** DocumentLoader。
+3. **CLI `memory ingest` = `memory add --from-report` 的泛化**:后者(cli.py:203)已支持「读一份 .md → memorize_report」;ingest 把它扩成「任意路径、按扩展名分流」,report 路复用同一条 `svc.memorize_report`。
+4. **补丁路 retrieve 降级**:`code_index.retrieve` 在 repo 未索引时自动返空 → PatchIngestPipeline 降级为「只喂 diff」(不阻塞),同 Verifier 降级哲学(不误杀、不硬挡)。
+5. **同 bug 报告 + 补丁不硬并**:根因叙事 vs 修复实现粒度不同 → 保持两条独立 KI,靠 `related`(evidence 文件交集,memorize.py:61 自动填)关联;冲突走 bi-temporal `superseded_by`。
+
+**维护参数不改**:`recall halflife=180 天`、`bayesian step=0.3`、`source_tier 权重`(stated 1.0 / inferred 0.7 / imported 0.6 / tool 0.5)与 mnemopi 校准值对齐,**ingest 侧不调这些**。
+
+**复用清单(别重造,均已 file:line 核实)**:
+- 写入:`svc.memorize_report`(manager.py:65,report 路)+ `svc.memorize`(manager.py:45,patch 路)。
+- 抽取:`extract_items`(extract.py:136,DeepSeek-safe `_extract_json_object`)+ `_EXTRACTION_PROMPT` 模板。
+- 检索(取周围代码):`code_index.retrieval.retrieve`(retrieval.py:236)→ `RetrievalHit{file,start_line,end_line,text}`。
+- hunk 行号防御解析:bug_rca `_coerce_evidence_line`(nodes.py:311);evidence 片段渲染:`_render_evidence_snippets`(nodes.py:162)。
+- 去重/合并/关联:`make_id`(sha256,schema.py:113)+ `_bayesian_update`(memorize.py:33)+ `_link_related`(memorize.py:61),全在 native 后端,ingest 侧零代码。
+
+**R3.4 交付**:① ingest.py(分发器 + LongDocChunker + PatchIngestPipeline)② CLI `memory ingest` ③ 本章节 ④ 测试(report 路离线单测 + patch 路 monkeypatch 接线 + e2e 三类文档 ingest→recall 命中 + 去重合并)。
+
+---
+
 ## 7. 接入方式(deer-flow 双模式)
 
 对应 deer-flow [middlewares/memory_middleware.py:30](../../deer-flow/backend/packages/harness/deerflow/agents/middlewares/memory_middleware.py)(自动注入)+ [agents/memory/tools.py:60](../../deer-flow/backend/packages/harness/deerflow/agents/memory/tools.py)(工具自管):
@@ -194,3 +231,6 @@ async def memorize(report, scope):
 - **CRG 结构路**:`native.structural=crg` 需 `uv sync --extra code-review-graph`(重依赖:tree-sitter-language-pack/networkx/igraph);wpa/bluez 的 C 图需 tree-sitter-c(R3)。R1 在小 Python 仓验(代码就绪,实测待跑)。
 - **CJK BM25 分词**:unicode61 不切中文(纯中文查询靠向量路兜底);jieba / 逐字切分待加。
 - **DashScope 端点**:专属 MaaS 端点时 `base_url` 走 `$DASHSCOPE_BASE_URL`/`$DASHSCOPE_RERANK_URL`(.env);未设回落 serverless 默认(create_embedder/create_reranker `or DEFAULT`)。
+- **ingest(R3.4)pull-by-need**:① LongDocChunker 现为 markdown-header + 段落切分(纯 stdlib);遇乱序长文换 RecursiveCharacterTextSplitter。② PatchIngestPipeline 的 retrieve 用 `code_index.retrieve`(符号级语义);跨文件/头文件符号加 LSP go-to-def 兜底(multilspy)。③ `consolidate()` 周期任务口已留(manager.py:79),范本 mnemopi veracity-consolidation —— R3.4 末评估启用。
+- **extract.py 逐条容错(R3.4 e2e 发现)**:`_ExtractionResult.model_validate(data)` 是**整批校验** —— LLM 偶把 `kind` 的值(`bug_lesson`)错塞进 `kind_detail`(只认 module/symbol/architecture,踩坑 #5 LLM schema 不守)→ 整批丢失、该次 ingest 写 0(降级不崩,report 重摄取时偶现)。改逐条 `_ExtractedItem.model_validate` + skip 坏条留好条更鲁棒(严格更优,不失更多)。补丁路不受影响(PatchIngestPipeline 自己组 KI,id 按 diff 内容算,见 §6.5)。
+- **patch 语义近邻去重**:当前 id 按 diff 内容算(同 .patch 摄取两次 → 合并 ✓);不同但修同一 bug 的两个补丁的"语义近邻去重"需 embedding 聚类,记 backlog(与上面的"语义近邻去重"同属一类难题)。

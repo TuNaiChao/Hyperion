@@ -6,7 +6,7 @@
   hyperion index <path> [name]   为一个代码仓库建/更新向量索引(P1)
   hyperion tools [--group X]     列出已加载的 agent 工具(验证声明式加载)
   hyperion lsp health|refs ...   L2 精确导航(clangd)自检 / 冒烟(P1.5)
-  hyperion memory recall|add|list|consolidate|invalidate ...   记忆核心(R1)
+  hyperion memory recall|add|ingest|list|consolidate|invalidate ...   记忆核心(R1)+ 文档摄取(R3.4)
   hyperion mcp serve             MCP server(把记忆暴露给 delegate,R1)
   hyperion bug-rca --repo X --trigger "..."   bug 根因定位 workflow(R2 ★MVP)
 """
@@ -167,12 +167,54 @@ def cmd_lsp(args) -> int:
     return 1
 
 
+def _cmd_memory_ingest(args, scope, repo) -> int:
+    """`hyperion memory ingest <path>` —— 摄取文档 → 记忆(R3.4)。
+
+      hyperion memory ingest <报告.md> [--kind auto|report|patch] [--source-tier imported|stated|inferred]
+      hyperion memory ingest <补丁.patch> [--commit-sha SHA]
+    按扩展名自动分流:.md/.txt/.pdf → 报告路(extract + memorize,长文自动分块);
+    .patch/.diff → 补丁路(PatchIngestPipeline,retrieve-then-summarize)。
+    """
+    import asyncio
+    from pathlib import Path
+
+    from hyperion.services.memory.ingest import ingest_document
+    from hyperion.services.memory.schema import SourceTier
+
+    p = Path(args.path)
+    if not p.exists():
+        print(f"错误:文件不存在: {p}", file=sys.stderr)
+        return 1
+    tier_map = {"imported": SourceTier.imported, "stated": SourceTier.stated, "inferred": SourceTier.inferred}
+    stier = tier_map.get(args.source_tier or "imported", SourceTier.imported)
+    try:
+        stats = asyncio.run(ingest_document(
+            p, scope=scope, repo=repo, source_tier=stier,
+            commit_sha=args.commit_sha, kind=args.kind,
+        ))
+    except NotImplementedError as e:
+        print(f"(该路径暂未实现: {e})", file=sys.stderr)
+        return 2
+    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
+        print(f"ingest 出错:{e}", file=sys.stderr)
+        return 1
+
+    route = stats.get("route")
+    if route == "patch":
+        print(f"补丁摄取:{p.name} → 产 {stats.get('items_produced', 0)} 条 → 写入 {stats.get('wrote', 0)} 条(scope={repo})。")
+    else:
+        warn = f"  ⚠️ {stats['warn']}" if stats.get("warn") else ""
+        print(f"报告摄取:{p.name} → {stats.get('chunks', 0)} 块 → 写入 {stats.get('wrote', 0)} 条(scope={repo})。{warn}")
+    return 0
+
+
 def cmd_memory(args) -> int:
     """记忆核心子命令(R1):recall 翻记忆 / add 记一条(或从报告抽)/ list / consolidate / invalidate。
 
       hyperion memory recall "<query>" [--top-k N] [--repo X]
       hyperion memory add --kind bug_lesson --summary "..." [--file F --line L] [--root-cause "..."]
       hyperion memory add --from-report <报告.md> [--commit-sha SHA]
+      hyperion memory ingest <文档或补丁> [--kind auto|report|patch] [--source-tier imported]  # R3.4
       hyperion memory list [--kind K] [--include-invalid]
       hyperion memory consolidate          # 巩固:升级 mental_model
       hyperion memory invalidate <id>
@@ -225,6 +267,10 @@ def cmd_memory(args) -> int:
         n = asyncio.run(svc.memorize([item], scope))
         print(f"已记入(id={item.id}, kind={args.kind}, 合并/新增 {n} 条)。")
         return 0
+
+    if sub == "ingest":
+        # 摄取外部文档(bug 报告/调研报告 .md/.txt/.pdf 或补丁 .patch/.diff)→ 记忆(R3.4)。
+        return _cmd_memory_ingest(args, scope, repo)
 
     if sub == "list":
         items = asyncio.run(svc.list_items(scope, kind=args.kind, include_invalid=args.include_invalid))
@@ -373,6 +419,14 @@ def main(argv: list[str] | None = None) -> int:
     m_add.add_argument("--from-report", default=None, help="从报告文件抽(走 LLM extract)")
     m_add.add_argument("--commit-sha", default=None)
     m_add.add_argument("--repo", default=None)
+    m_ingest = sub_memory_sub.add_parser("ingest", help="摄取文档(bug 报告/调研报告/补丁)→ 记忆(R3.4)")
+    m_ingest.add_argument("path", help="文档路径(.md/.txt/.pdf/.patch/.diff)")
+    m_ingest.add_argument("--kind", default="auto", choices=["auto", "report", "patch"],
+                          help="auto=按扩展名判定(补丁走 retrieve-then-summarize,报告走 extract)")
+    m_ingest.add_argument("--source-tier", default="imported", choices=["imported", "stated", "inferred"],
+                          help="来源可信度(默认 imported)")
+    m_ingest.add_argument("--commit-sha", default=None)
+    m_ingest.add_argument("--repo", default=None)
     m_list = sub_memory_sub.add_parser("list", help="列知识项")
     m_list.add_argument("--kind", default=None)
     m_list.add_argument("--include-invalid", action="store_true")
