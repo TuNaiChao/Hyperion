@@ -171,7 +171,7 @@ cron(每天) → GraphQL 增量拉上游 bluez/wpa 近期 PR(updatedAt 过滤 + 
 - **编辑模式**:plan LLM prompt + batch 解析 **窗口展示·用户手敲**(`_plan.py`);node_plan wiring(`nodes.py:80-117`)/ config / test 我改。
 - **验证**:`uv run hyperion research --repo example/demo2/wpa --codebase wpa` → 模块名是人话、focus 按社区定制(p0 + 视角);单测 batch LLM(桩)+ 降级路径。
 
-**R3.3.2 = P3 Verifier 硬化**(现状:`_verify.py:31-38` 只查 `exists()`,不验 symbol@line;但 cited-reporter 把结构化 citations 存 state `findings[].citations[]`{file,line,symbol,claim},parse_file API 子 agent 已在用 `_research.py:155`):
+**R3.3.2 = P3 Verifier 硬化** ✅ P3.1 已实现(2026-08-04,commit 2e5747b:逐符号@行 + Existence@Line Ratio;P3.2 LSP fallback / P3.3 打分块 pull-by-need)。原现状:`_verify.py:31-38` 只查 `exists()`,不验 symbol@line;但 cited-reporter 把结构化 citations 存 state `findings[].citations[]`{file,line,symbol,claim},parse_file API 子 agent 已在用 `_research.py:155`):
 - **① 机械引用门控(核心 ~20 行)**([arXiv 2512.12117](https://arxiv.org/html/2512.12117v1),Citation-Grounded Code Comprehension):regex 抽 `[file:start-end]` + 区间重叠检查 → **92% citation accuracy、0 幻觉**(原文实测,非"100% precision")。Hyperion 落地:核 **state 结构化 citations**(非报告 regex)—— `parse_file(fp)` 验 symbol 存在且 `line ∈ [symbol.start, symbol.end]`。
 - **② 引用接地先于判假**([LSPRAG arXiv 2510.22210](https://arxiv.org/abs/2510.22210),LSP 后端实时给精确符号定义/引用;原引 2607.00895「§4.3」经核验对不上——该文实为 span-level 幻觉检测 benchmark,非"引用接地",故换):symbol 在 file:line 找不到时,**先 parse_file 全文件搜 / LSP go-to-def** 解析(防 pitfall #6:符号真但行偏移、或定义在头文件)再判假。降 false positive。
 - **③ Existence Ratio 指标**([DocAgent §3.3](https://arxiv.org/abs/2504.08725)):抽报告每个 function/struct/macro/file 提及 → 对 CRG 节点集 + code_index symbols 核验 → `verified_symbols / extracted_symbols`,替粗粒度 `module_coverage`(`_verify.py:42`)。能机械抓 pitfall #6 红鲱鱼。
