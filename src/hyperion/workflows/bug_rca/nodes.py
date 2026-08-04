@@ -30,13 +30,26 @@ from hyperion.tools.delegate import CodingAgentDelegate
 from hyperion.workflows.bug_rca.state import BugRcaState
 
 # 阶段① 定位契约:root_cause/evidence + verdict/falsification(自审),**无 patch**。
+# R3.5 #46 加 4 个 optional 字段(problem_summary/impact/scope_notes/log_evidence)喂报告的
+# 「问题描述/定位定界/关键证据」段。required 不变(只 root_cause/verdict)→ 缺字段报告优雅降级。
+# 关键:prompt 嵌 str(schema)(见 _build_localize_prompt),加字段自动告知 delegate,不用改 prompt 结构。
+# description 写死长度上限 + 客观陈述 —— 否则字段越多 delegate 输出越长,撞 token 上限、报告冗长。
 LOCALIZE_SCHEMA: dict = {
     "type": "object",
     "properties": {
-        "root_cause": {"type": "string"},
-        "trigger_chain": {"type": "array", "items": {"type": "string"}},
-        "evidence": {"type": "array", "items": {"type": "object"}},  # [{file, line, snippet, why}]
+        "root_cause": {"type": "string"},  # 为什么出 bug(为什么句)
+        "problem_summary": {"type": "string", "description": "现象一句话,≤80字(出什么错;区别于 root_cause 讲为什么;客观,禁数字/禁覆盖率)"},
+        "impact": {"type": "string", "description": "影响面/严重度,≤120字(客观,禁数字/禁覆盖率)"},
+        "trigger_chain": {"type": "array", "items": {"type": "string"}},  # 触发链:因果步骤,每步可内嵌 file:line
+        "evidence": {"type": "array", "items": {"type": "object", "properties": {
+            "file": {"type": "string"}, "line": {"type": "integer"},
+            "snippet": {"type": "string"}, "why": {"type": "string"}},
+            "description": "代码证据:每条锚到 file:line + 原文片段 snippet + 为何相关 why(别只给文件名)"}},  # [{file, line, snippet, why}]
         "blast_radius_files": {"type": "array", "items": {"type": "string"}},
+        "scope_notes": {"type": "string", "description": "定位定界:为何这些文件/符号是根因落点+范围边界,≤200字(客观)"},
+        "log_evidence": {"type": "array", "items": {"type": "object", "properties": {
+            "line": {"type": "integer"}, "event": {"type": "string"}, "note": {"type": "string"}},
+            "description": "关键日志行,≤8条,仅日志驱动时填:[{line,event,note}]"}},
         "verdict": {"type": "string", "enum": ["confirmed", "needs_revisit"]},  # B:自审判定
         "falsification": {"type": "string"},  # B:证伪式自审找的反例(或"找了 X 处无反例")
     },
@@ -44,12 +57,15 @@ LOCALIZE_SCHEMA: dict = {
 }
 
 # 阶段② 修复契约:delegate 直接 edit code/(补丁由 git diff 观察);自审 verdict/falsification。
+# R3.5 #46 加 patch_rationale/next_steps(optional)喂报告的「补丁说明/下一步建议」段。
 REPAIR_SCHEMA: dict = {
     "type": "object",
     "properties": {
         "confidence": {"type": "number"},  # 0-1,delegate 对这次修复的自评
         "verdict": {"type": "string", "enum": ["verified", "needs_fix"]},  # B:自审判定
         "falsification": {"type": "string"},  # B:证伪式自审(改完仍可能出问题的地方)
+        "patch_rationale": {"type": "string", "description": "补丁说明:改了啥+为啥这么改+正确性论证(如NULL守卫/无double-free/正常路径不变),≤300字(客观)"},
+        "next_steps": {"type": "array", "items": {"type": "string"}, "description": "下一步建议,≤5条(人工review重点/回归用例/邻近风险)"},
     },
     "required": ["verdict"],
 }
@@ -340,31 +356,16 @@ async def node_report_memorize(state: BugRcaState) -> dict:
     root_cause = loc.get("root_cause", "")
     evidence_raw = loc.get("evidence", [])
 
-    # 把 root_cause/evidence 塞进 repair_result.data,供 render_report 读(不改 report.py)
-    if isinstance(repair_result.data, dict):
-        repair_result.data.setdefault("root_cause", root_cause)
-        repair_result.data.setdefault("evidence", evidence_raw)
-
     try:
         from hyperion.workflows.bug_rca.report import render_report
 
-        report_md = render_report(state, repair_result)
+        # R3.5 #46:render_report 单一数据源 state(直读 localization_json/delegate_result.data);
+        # 不再把 root_cause/evidence mutate 进 repair_result.data(旧 hack 已删);verify-refine/METR 已在报告 §六。
+        report_md = render_report(state)
     except ImportError:
         report_md = (
             f"# bug-RCA 报告(降级)\n\n## 根因\n{root_cause or '(无)'}\n\n"
             f"## 补丁\n```diff\n{patch}\n```\n"
-        )
-
-    # R3.1 #54-rework B:verify-refine 过程 + METR 警示(诚实准确率:verify 过 ≠ 对)
-    vchain = state.get("verdict_chain") or []
-    if vchain:
-        report_md += (
-            f"\n\n## verify-refine 过程\n"
-            f"- localize 轮数:{state.get('localize_loops', '?')} | repair 轮数:{state.get('repair_loops', '?')}\n"
-            f"- verdict 链:{' → '.join(str(v) for v in vchain)}\n"
-            f"- 执行门控(validate_patch Tier0):{state.get('verified', False)}\n"
-            f"- ⚠️ **准确率警示**:verify-refine 自审 + apply-check 通过 ≠ 补丁正确(约半数 test-passing "
-            f"PR 不会被合,METR);需人工 / 日志 repro 终审。\n"
         )
 
     out_dir = Path("data/bug_rca")

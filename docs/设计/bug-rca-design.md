@@ -137,29 +137,39 @@ class ClaudeDelegate(CodingAgentDelegate):    # 可选高档后端(需另装 cla
 
 ---
 
-## 5. 报告渲染(基于 demo 金标准骨架)
+## 5. 报告渲染(R3.5 #46 精修:8 段去重结构)
 
-> 金标准:`example/demo1`(漏洞 PDF 驱动)、`example/demo2`(日志驱动,271 行)。**证据纪律是签名:每条结论锚 file:line、原文引用 C、日志按行号、覆盖率用 %。**
+> 金标准:`example/demo1`(漏洞 PDF 驱动)、`example/demo2`(日志驱动,271 行手写旗舰版)。
+> **自动生成版比金标紧凑**(不堆砌;金标的多方案对比表/环境详表 workflow 无数据不伪造)。
+> **证据纪律是签名**:每条结论锚 file:line、补丁 unified diff、数字从结构化聚合来(不让 LLM 凭空报)。
+> 渲染器 `workflows/bug_rca/report.py::render_report(state)` —— 单一数据源 state(localize 侧
+> `localization_json` + repair 侧 `delegate_result.data` + patch/verified/loops/verdict_chain)。
 
-中文报告骨架(渲染器按此填):
+**8 段 + 附录骨架**(每段标数据源;缺字段优雅降级,不堆占位符海洋):
+
 ```
-元数据表(编号/等级/组件/时间窗/产出补丁)
-→ TL;DR(现象+根因+修复,3-5 条)
-→ 环境/影响
-→ 现象
-→ 定位与根因
-    ├ trigger-chain 图(ASCII/编号,内嵌 file:line)
-    ├ 引用 C 原文(file:line)
-    └ (日志驱动时)日志时间线表(时间 → 日志行号 → 事件 → 含义)
-→ 修复方案(方案对比表)
-→ 补丁 + 补丁分析(正确性/TOCTOU/覆盖率/兼容性 表)
-→ 验证(编译 / apply-revert / PoC 或日志回放覆盖率%)
-→ 集成方式 / 风险评估与选型
-→ 复现 & 回归用例
-→ 附录(代码位置表 / 日志行号表 / 术语表 / 交付清单)
+元数据表 + TL;DR(根因+修复一句话 + ⚠️ METR 警示前置:verify 过 ≠ 对)
+→ 一、问题描述       problem_summary(现象,≤80字)+ impact(影响,禁数字)
+→ 二、根因分析       root_cause + trigger_chain(编号,内嵌 file:line 叙事)+ falsification(自审)
+→ 三、定位定界       scope_notes + 根因落点/影响半径/补丁改动(in-scope)文件级表【无 snippet】
+→ 四、关键证据       4.1 代码证据表(file|line|snippet|why)+ 4.2 日志证据表(line|event|note)【snippet 只在此段】
+→ 五、补丁说明       patch diff(>200 行截断为前 50 行 + 引 .patch)+ patch_rationale + apply/revert 门控
+→ 六、验证与过程     verified + validate_log + verify-refine verdict 链本身 + ⚠️ METR 警示
+→ 七、下一步建议     next_steps(delegate)+ 兜底模板(verified=False→强烈建议人工复核+日志 repro)
+→ 附录               代码锚点速查表(file:line→含义,从 evidence 派生)+ 生成溯源 + 记忆沉淀
 ```
 
-> 借 deer-flow 2.0 报告的"证据/引用前置(放第 2 位)"防幻觉规则:证据靠前摆,别埋文末,模型不易编造来源。
+**去重规则(规避 AI 味,签名)**:代码 snippet 只在「四、关键证据」出现一次;「三、定位定界」只列
+文件/范围(file 级,无 snippet/无 line);「二、根因分析」触发链内嵌 file:line 是因果叙事(非表格
+重复)→ 同一 file:line 不重复罗列。「附录·代码锚点速查表」是 file:line→含义 的一行速查(工程师 grep 用)。
+
+**反 AI 味规则**:① schema description 写死字段长度上限 + 客观陈述禁形容词(防 delegate 输出膨胀撞
+token、报告冗长);② prompt nudge 给 problem_summary(现象句)vs root_cause(为什么句)对比防同义重复;
+③ METR 警示 TL;DR 前置(读者只看 TL;DR 也知 verify 非复现级);④ 标题禁 emoji 装饰(METR ⚠️ 警示可用)。
+
+> 喂报告的 optional 字段(LOCALIZE_SCHEMA +`problem_summary/impact/scope_notes/log_evidence`,
+> REPAIR_SCHEMA +`patch_rationale/next_steps`)由 delegate 产(prompt 嵌 str(schema) 自动告知 + agent
+> prompt nudge);全字段优雅降级,缺则兜底模板。借 deer-flow 2.0「证据/引用前置」防幻觉。
 
 ---
 
