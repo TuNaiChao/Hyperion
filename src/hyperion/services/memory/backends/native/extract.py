@@ -159,17 +159,30 @@ def extract_items(
         ])
         raw = msg.content if isinstance(msg.content, str) else str(msg.content)
         data = _extract_json_object(raw)
-        if data is None:
-            logger.warning("memory.extract: 模型回复里抠不到 JSON,跳过。原始回复前 200 字: %s", raw[:200])
-            return []
-        result = _ExtractionResult.model_validate(data)
-    except Exception as e:  # noqa: BLE001 - 抽取失败(provider 限流/网络/格式)→ 不崩,返空
-        logger.warning("memory.extract: 抽取失败,跳过该报告: %s", e)
+    except Exception as e:  # noqa: BLE001 - 调用失败(provider 限流/网络)→ 不崩,返空
+        logger.warning("memory.extract: 调用失败,跳过该报告: %s", e)
         return []
-    out = [
-        _to_ki(it, repo=repo, scope=scope, commit_sha=commit_sha, source=source, source_tier=source_tier)
-        for it in result.items
-        if it.summary.strip()
-    ]
+    if data is None:
+        logger.warning("memory.extract: 模型回复里抠不到 JSON,跳过。原始回复前 200 字: %s", raw[:200])
+        return []
+
+    # 逐条校验(LLM schema 不守时只丢坏条、留好条,不连坐全盘 —— 踩坑 #5):
+    # 例:LLM 偶把 kind 的值("bug_lesson")塞进 kind_detail(只认 module/symbol/architecture),
+    # 旧实现整批 model_validate 会因此全丢;现在逐条 try,坏条跳过、好条照留。
+    raw_items = data.get("items", []) if isinstance(data, dict) else []
+    out: list[KnowledgeItem] = []
+    for it in raw_items:
+        if not isinstance(it, dict):
+            continue
+        try:
+            item = _ExtractedItem.model_validate(it)
+        except Exception:  # noqa: BLE001 - 单条 schema 不守 → 跳过这条,继续
+            logger.debug("memory.extract: 跳过一条 schema 不守的候选: %s", str(it)[:120])
+            continue
+        if item.summary.strip():
+            out.append(_to_ki(item, repo=repo, scope=scope, commit_sha=commit_sha, source=source, source_tier=source_tier))
+    if len(raw_items) != len(out):
+        logger.info("memory.extract: %d 条候选 → 留 %d 条(逐条校验,%d 条 schema 不守被跳过)",
+                    len(raw_items), len(out), len(raw_items) - len(out))
     logger.debug("memory.extract: 报告 %d 字 → 抽出 %d 条", len(text), len(out))
     return out
