@@ -15,7 +15,7 @@ from pathlib import Path
 
 from hyperion.platform.config import get_app_config
 from hyperion.workflows.deep_research.report import render_report
-from hyperion.workflows.deep_research.state import DeepResearchState, ModuleFinding, ModulePlan
+from hyperion.workflows.deep_research.state import DeepResearchState, ModuleFinding
 
 logger = logging.getLogger(__name__)
 
@@ -74,16 +74,20 @@ def node_index(state: DeepResearchState) -> dict:
     }
 
 
-# ── 3. plan:CRG 社区 → 模块清单 ───────────────────────────────────────────
+# ── 3. plan:CRG 社区 → 候选 → LLM 命名 + STORM focus(R3.3.1)──────────────
 
 
 def node_plan(state: DeepResearchState) -> dict:
-    """CRG communities + hub_nodes → 模块清单(社区 = 自然模块边界)。
+    """CRG communities + hub_nodes → 候选 → ``plan_modules`` 一次 LLM batch 命名 + STORM focus。
 
-    MVP 确定性:取最大的 N 个社区,各成一个 ModulePlan(member_files + key_symbols + 焦点模板)。
-    LLM 命名 / storm 多视角发问 = pull-by-need(社区名 + 通用焦点够首版报告用)。
+    社区 = 自然模块边界:取最大的 N 个社区,各成一个候选(id + 原社区名 + 成员文件 + hub 符号),
+    喂给 ``_plan.plan_modules`` 做一次 LLM batch → 每模块拿到**人话名 + 针对性调研焦点**
+    (STORM 多视角,p0 基础事实 always-on)。LLM 失败/坏 JSON → plan_modules 内部降级通用 focus
+    (等同 R3.2 行为,不阻断)。
     """
+    from hyperion.platform.models import create_chat_model
     from hyperion.services.code_index.code_graph import CodeGraph
+    from hyperion.workflows.deep_research._plan import plan_modules
 
     codebase = state["codebase"]
     overview = state.get("architecture_overview", {})
@@ -92,7 +96,7 @@ def node_plan(state: DeepResearchState) -> dict:
     communities.sort(key=lambda c: len(c.get("members", [])), reverse=True)
     communities = communities[:_MAX_MODULES]
 
-    # hub 节点按 community_id 分桶,给每个模块填 key_symbols
+    # hub 节点按 community_id 分桶,给每个候选填 key_symbols(高连接枢纽 = 该模块的核心)
     cg = CodeGraph.open(codebase)
     hubs = cg.hub_nodes(top_n=60)
     by_comm: dict = {}
@@ -102,18 +106,31 @@ def node_plan(state: DeepResearchState) -> dict:
             continue
         by_comm.setdefault(cid, []).append(h["qualified_name"])
 
-    plan: list[ModulePlan] = []
+    # 备候选:_plan.plan_modules 的输入形状(id + 原社区名 + 成员文件样本 + hub 符号)
+    candidates: list[dict] = []
     for comm in communities:
         cid = comm.get("id")
-        plan.append(
-            ModulePlan(
-                name=comm.get("name") or f"community-{cid}",
-                focus="梳理该模块的职责、公开接口(导出函数/类型)、关键数据结构与调用关系;指出值得注意的设计决策。",
-                member_files=list(comm.get("members", []))[:40],
-                key_symbols=by_comm.get(cid, [])[:15],
-            )
+        candidates.append(
+            {
+                "id": cid,
+                "raw_name": comm.get("name") or f"community-{cid}",
+                "member_files": list(comm.get("members", []))[:40],
+                "key_symbols": by_comm.get(cid, [])[:15],
+            }
         )
-    logger.info("plan: %d 个模块(从 %d 个社区取 top-%d)", len(plan), len(overview.get("communities", [])), _MAX_MODULES)
+
+    # 规划用模型(planner 角色,没有则首个模型)→ 一次 LLM batch 命名 + STORM focus
+    cfg = get_app_config()
+    role_model = cfg.model_roles.get("planner") or cfg.models[0].name
+    model = create_chat_model(role_model)
+
+    plan = plan_modules(candidates, codebase, model)
+    logger.info(
+        "plan: %d 个模块(从 %d 个社区取 top-%d;LLM 命名 + STORM focus)",
+        len(plan),
+        len(overview.get("communities", [])),
+        _MAX_MODULES,
+    )
     return {"plan": plan}
 
 
