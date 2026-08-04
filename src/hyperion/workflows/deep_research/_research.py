@@ -47,12 +47,27 @@ logger = logging.getLogger(__name__)
 _CONCURRENCY = 3   # 同时跑几个模块子 agent
 _MAX_TURNS = 20    # 每子 agent 最多几轮 ReAct(model 调一次工具 + 工具回 = 一轮;防跑飞)。
 # TurnBudgetMiddleware(max_turns=_MAX_TURNS)主管"轮数":第 _MAX_TURNS-1 轮 warn、第 _MAX_TURNS 轮
-# strip tool_calls,让 run 干净自收尾。recursion_limit 在 _research_one_module 里按【中间件数】动态算
-# (见那里的注释)——不能用固定值:LangGraph 的 recursion_limit 按 *superstep*(图节点执行次数)计,
-# 而每个中间件的 after_model/before_model/before_agent 都是【独立的图节点】= 各算 1 superstep,所以
-# 一轮 ReAct 实际消耗 1(model) + N(after_model 链) + 1(tools) ≈ N+2 superstep,不是 2。
-# (踩坑 #7 进阶:早版 _RECURSION_LIMIT=(_MAX_TURNS+2)*2 按"每轮 2 superstep"算,漏算了中间件节点 →
-# 真实每轮 ~7 superstep,44 的 limit 只够 ~6 轮就撞墙,TurnBudget 的 max_turns=20 永远到不了 → 全撞墙。)
+# strip tool_calls,让 run 干净自收尾。recursion_limit 不能用固定值(每轮消耗的 superstep 随中间件数
+# 变),由下面的 _recursion_limit_for 按真实中间件数动态算(推导 + 踩坑 #9 见 docstring)。
+
+
+def _recursion_limit_for(max_turns: int, n_middleware: int) -> int:
+    """算 ReAct 子 agent 的 recursion_limit(superstep 计),确保 TurnBudget 在 max_turns 轮先收尾。
+
+    LangGraph 的 recursion_limit 按*图节点执行次数(superstep)*计,不是"轮"。``create_agent`` 给每个
+    中间件 hook(after_model / before_model / before_agent 等)各 ``add_node`` 一个独立图节点,各算 1
+    superstep。所以一轮 ReAct 实际消耗 ≈ 1(model 节点) + n_middleware(after_model 链) + 1(tools 节点)
+    = n_middleware + 2 superstep(不是早版以为的 2)。
+
+    要让 TurnBudget 在第 max_turns 轮 strip 收尾、recursion 硬墙不抢先撞,recursion_limit 必须 >
+    max_turns × (n_middleware + 2);再加 2 × n_middleware 的 startup/teardown(before/after_agent 各跑
+    一次)+ 20 安全 buffer。
+
+    踩坑 #9:早版 ``(_MAX_TURNS+2)*2`` 按"每轮 2 superstep"算,5 中间件下真实每轮 ~7 superstep,limit=44
+    只够 ~6 轮 → TurnBudget 的 max_turns=20 永远到不了 → 全撞墙。本公式按真实中间件数算,不变量由
+    ``tests/runtime/test_recursion_limit_probe.py`` 的集成测锁(真 create_agent + 全链 + 桩模型)。
+    """
+    return max_turns * (n_middleware + 2) + 2 * n_middleware + 20
 
 # 子 agent 系统提示。注意:不用 ``` 围栏(会和外层 markdown 冲突),JSON 形状用纯文本描述。
 _RESEARCHER_PROMPT = """\
@@ -219,14 +234,9 @@ async def _research_one_module(plan_item: ModulePlan, repo_root: str, codebase: 
     # 给子 agent 默认中间件链 + 紧 TurnBudget(max_turns=_MAX_TURNS):管轮数,让模型在 _MAX_TURNS-1
     # 轮被警告、_MAX_TURNS 轮自收尾,常规情形不再撞 recursion_limit 硬墙(见 turn_budget.py)。
     middleware = build_default_middlewares(model, turn_budget=TurnBudgetConfig(max_turns=_MAX_TURNS))
-    # recursion_limit 按 *superstep*(图节点执行次数)计,不是"轮"。每轮 ReAct 消耗的 superstep 数 ≈
-    # 1(model 节点) + len(middleware)(每个中间件的 after_model 是独立图节点) + 1(tools 节点) = N+2。
-    # 必须让 recursion_limit > _MAX_TURNS × (N+2),否则递归墙会在 TurnBudget 的 max_turns 之前先撞
-    # (踩坑 #7 进阶,见模块顶部)。这里按真实中间件数算 + 2×N 的 startup/teardown(before/after_agent
-    # 各 N 节点各跑一次)+ 20 安全 buffer,确保 TurnBudget 在 _MAX_TURNS 轮先 strip 收尾;recursion_limit
-    # 仅作 TurnBudget 万一失效的硬墙兜底(理论上不触达)。
-    _n_mw = len(middleware)
-    recursion_limit = _MAX_TURNS * (_n_mw + 2) + 2 * _n_mw + 20
+    # recursion_limit 按真实中间件数动态算(每轮 = N+2 superstep,见 _recursion_limit_for 推导):
+    # 确保 TurnBudget 在 _MAX_TURNS 轮先 strip 收尾,recursion 硬墙仅作兜底(理论上不触达)。
+    recursion_limit = _recursion_limit_for(_MAX_TURNS, len(middleware))
     agent = create_hyperion_agent(
         model,
         tools,
