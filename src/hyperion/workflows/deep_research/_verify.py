@@ -29,18 +29,22 @@ from pathlib import Path
 from hyperion.services.code_index.parser import parse_file
 from hyperion.workflows.deep_research.state import DeepResearchState
 
-# 核验等级(三档):strict 最强(真·逐符号@行);file 是降级(只确认文件存在);bad 是疑似编造。
+# 核验等级(四档):strict=真·逐符号@行;line 在体外但 ±_LINE_TOLERANCE 内=near(近似,算通过);file=降级(只确认文件存在);bad=疑似编造。
 _LEVEL_STRICT = "strict"
+_LEVEL_NEAR = "near"
 _LEVEL_FILE = "file"
 _LEVEL_BAD = "bad"
+# 行容差(P3.1.1):子 agent 常把行号引到函数体附近(调用点/声明行),±N 行内算「近似命中」而非幻觉。
+_LINE_TOLERANCE = 5
 
 
 def _check_one_citation(repo_root: Path, cite: dict) -> tuple[str, str]:
     """核一条 citation。返 (等级, 原因说明)。
 
     strict = 文件存在 + symbol 存在 + line ∈ [symbol.start, symbol.end];
+    near   = line 在体外但 ±_LINE_TOLERANCE 内(子 agent 引到函数体附近 → 近似,不判幻觉);
     file   = 文件存在但降级(缺 symbol/line、或 parse_file 拿不到符号 → 不误杀);
-    bad    = 核验失败(文件不存在 / symbol 找不到 / line 出界 → 疑似编造)。
+    bad    = 核验失败(文件不存在 / symbol 找不到 / line 远离体内 → 疑似编造)。
     """
     file = cite.get("file") or ""
     fp = repo_root / file
@@ -75,7 +79,11 @@ def _check_one_citation(repo_root: Path, cite: dict) -> tuple[str, str]:
         return _LEVEL_FILE, "文件存在 + 符号存在(line 非数字,跳过区间核验)"
     if hit.start_line <= ln <= hit.end_line:
         return _LEVEL_STRICT, f"✓ {hit.qualified_name} 占 {hit.start_line}-{hit.end_line} 行"
-    return _LEVEL_BAD, f"符号 `{symbol}` 存在但 line {ln} 不在体内({hit.start_line}-{hit.end_line})"
+    # 不在体内、但在 ±_LINE_TOLERANCE 容差带内 → 近似(子 agent 常把行号引到函数体附近的调用点/声明,
+    # 差几行不算幻觉);超出容差才判编造。
+    if hit.start_line - _LINE_TOLERANCE <= ln <= hit.end_line + _LINE_TOLERANCE:
+        return _LEVEL_NEAR, f"line {ln} 在 ±{_LINE_TOLERANCE} 容差内({hit.start_line}-{hit.end_line})"
+    return _LEVEL_BAD, f"符号 `{symbol}` 存在但 line {ln} 远离体内({hit.start_line}-{hit.end_line})"
 
 
 def _verify_report_citations(report_md: str, state: DeepResearchState) -> tuple[str, dict]:
@@ -93,12 +101,14 @@ def _verify_report_citations(report_md: str, state: DeepResearchState) -> tuple[
         for c in f.get("citations") or []:
             to_check.append((f.get("module") or "?", c))
 
-    strict = file_only = bad_n = 0
+    strict = near = file_only = bad_n = 0
     bad: list[tuple[str, dict, str]] = []  # (module, cite, 原因)
     for mod, cite in to_check:
         level, why = _check_one_citation(repo_root, cite)
         if level == _LEVEL_STRICT:
             strict += 1
+        elif level == _LEVEL_NEAR:
+            near += 1
         elif level == _LEVEL_FILE:
             file_only += 1
         else:
@@ -106,17 +116,21 @@ def _verify_report_citations(report_md: str, state: DeepResearchState) -> tuple[
             bad.append((mod, cite, why))
 
     total = len(to_check)
-    verified = strict + file_only  # 至少文件存在的(含降级)
-    # Existence@Line Ratio = 严格 symbol@line 通过 / 总条数(DocAgent Existence Ratio 的行级强化版)。
+    verified = strict + near + file_only  # 算通过:严格 + ±容差近似 + 文件存在降级
+    # Existence@Line Ratio = 严格 symbol@line 通过 / 总(DocAgent Existence Ratio 的行级强化)。
     existence_at_line = round(strict / total, 3) if total else 0.0
+    # 含 ±_LINE_TOLERANCE 容差(子 agent 常引到函数体附近,容差内不算幻觉)。
+    existence_at_line_lenient = round((strict + near) / total, 3) if total else 0.0
     module_coverage = round(sum(1 for f in findings if f.get("citations")) / len(plan), 2) if plan else 0.0
 
     stats = {
         "citations": total,
         "verified": verified,
         "unverified": bad_n,
-        "existence_at_line": existence_at_line,  # 新:防幻觉硬指标(symbol@line 通过率)
+        "existence_at_line": existence_at_line,  # 严格(防幻觉硬指标)
+        "existence_at_line_lenient": existence_at_line_lenient,  # 含 ±N 容差
         "symbol_strict": strict,
+        "near": near,
         "module_coverage": module_coverage,  # 保留:模块广度
     }
 
@@ -125,8 +139,8 @@ def _verify_report_citations(report_md: str, state: DeepResearchState) -> tuple[
         "",
         "## Verifier(逐符号@行回查)",
         "",
-        f"- 引用总数 **{total}**;通过 **{verified}**(其中严格 symbol@line 核验 **{strict}**);疑似幻觉 **{bad_n}**。",
-        f"- **Existence@Line Ratio = {existence_at_line:.1%}**(symbol 存在且 line 落在符号体内)。",
+        f"- 引用总数 **{total}**;通过 **{verified}**(严格 symbol@line **{strict}** + ±{_LINE_TOLERANCE} 容差近似 **{near}**);疑似幻觉 **{bad_n}**。",
+        f"- **Existence@Line Ratio = {existence_at_line:.1%}**(严格;含 ±{_LINE_TOLERANCE} 容差 = **{existence_at_line_lenient:.1%}**)。",
         f"- 模块覆盖率(产出带 citation 的模块占比):**{module_coverage:.0%}**。",
         "- ⚠️ 调研警示「Cited but Not Verified」(arXiv 2605.06635):引用数本身不降幻觉,每条都需翻书核。",
     ]

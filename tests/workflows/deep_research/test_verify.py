@@ -88,7 +88,7 @@ def test_bad_line_out_of_range(tmp_path, monkeypatch):
     report, stats = _verify_report_citations("r", _state(tmp_path, findings, plan=[{}]))
 
     assert stats["unverified"] == 1
-    assert "不在体内" in report
+    assert "远离体内" in report
 
 
 # ── 5. file 降级:citation 缺 symbol → 不判假,verified 计入但 strict 不计 ──────
@@ -164,3 +164,21 @@ def test_verifier_section_appended(tmp_path, monkeypatch):
     assert "原始报告内容" in report  # 原文保留
     assert "## Verifier(逐符号@行回查)" in report
     assert "Cited but Not Verified" in report  # 警示语
+
+
+# ── 10. near:line 在体外但 ±_LINE_TOLERANCE 内 → 近似(算通过,不判幻觉)─────
+def test_near_tolerance(tmp_path, monkeypatch):
+    """line 在 symbol 体外但在 ±_LINE_TOLERANCE 内 → near(算通过,不计严格 Ratio,不判幻觉)。"""
+    (tmp_path / "a.c").write_text("x")
+    monkeypatch.setattr(_PARSE, lambda fp: [_sym("foo", 100, 120)])  # 函数占 100-120 行
+    findings = [{"module": "M", "citations": [
+        {"file": "a.c", "line": 124, "symbol": "foo", "claim": ""},  # 124 在 [100-5,120+5]=[95,125] → near
+    ]}]
+    _, stats = _verify_report_citations("r", _state(tmp_path, findings, plan=[{}]))
+
+    assert stats["near"] == 1
+    assert stats["symbol_strict"] == 0
+    assert stats["verified"] == 1  # near 算通过
+    assert stats["unverified"] == 0  # 不判幻觉
+    assert stats["existence_at_line"] == 0.0  # 严格 Ratio 不含 near
+    assert stats["existence_at_line_lenient"] == 1.0  # 含容差 = 1.0
