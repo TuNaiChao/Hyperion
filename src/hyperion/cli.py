@@ -298,10 +298,17 @@ def cmd_memory(args) -> int:
 
 
 def cmd_mcp(args) -> int:
-    """启动 MCP server(把记忆/检索/日志过滤暴露给 delegate,stdio)。需 `uv sync --extra mcp`。"""
+    """启动 MCP server(把 Hyperion 能力做成工具给 coding agent 调;stdio 或 http)。
+
+    需 `uv sync --extra mcp`。transport:
+      - stdio(默认):agent 拉起子进程 1:1 接入(delegate 老路径 / 本地单机最简)。
+      - http:warm 长进程,多 agent 共用,省每 bug 重启加载 ~1.2GB 的 cold-boot(③)。
+        先 `hyperion mcp serve --transport http` 跑起来,再把 opencode/codex 指向
+        http://<host>:<port>/mcp。
+    """
     import os as _os
 
-    from hyperion.platform.config import _default_config_path
+    from hyperion.platform.config import _default_config_path, get_app_config
     from hyperion.tools.mcp_memory import build_server
 
     # MCP server 被 opencode 拉起时 cwd 通常是 workspace/code(≠ Hyperion 根)→ config 里相对
@@ -310,12 +317,28 @@ def cmd_mcp(args) -> int:
     # 工具都用绝对路径/名查(log_path 绝对、codebase 走 env、index 走 repo 表名),不依赖 cwd。
     _os.chdir(_default_config_path().parent.parent)
 
+    # transport 优先级:CLI 标志 > config.mcp.transport > 默认 stdio。http 模式要把 host/port
+    # 焊进 FastMCP 构造(run() 不收 host/port,见 mcp_memory.build_server 注释)。
+    mcp_cfg = get_app_config().mcp
+    transport = (getattr(args, "transport", None) or mcp_cfg.transport).lower()
+    http_mode = transport in ("http", "streamable-http", "streamable_http")
+    build_kwargs: dict = {}
+    if http_mode:
+        build_kwargs["host"] = args.host or mcp_cfg.host
+        build_kwargs["port"] = args.port or mcp_cfg.port
+
     try:
-        server = build_server(codebase=args.codebase)
+        server = build_server(codebase=args.codebase, **build_kwargs)
     except ImportError as e:
         print(f"错误:MCP 依赖未装。装它: uv sync --extra mcp\n  ({e})", file=sys.stderr)
         return 2
-    server.run()  # 阻塞:stdio 循环,delegate 接入用
+
+    if http_mode:
+        print(f"Hyperion MCP(streamable-http)→ http://{build_kwargs['host']}:{build_kwargs['port']}/mcp"
+              f"  (Ctrl-C 停;opencode/codex 指过来即可)", file=sys.stderr)
+        server.run(transport="streamable-http")  # 阻塞:uvicorn 服务
+    else:
+        server.run()  # 阻塞:stdio 循环
     return 0
 
 
@@ -323,12 +346,19 @@ def cmd_bug_rca(args) -> int:
     """bug-RCA workflow(R3.1 ★MVP):输入 repo + trigger(和/或 log)→ 报告 + 补丁。
 
       hyperion bug-rca --repo <path> --trigger "<线索>" [--log <日志文件>]
-    五步:ingest→[delegate_localize_loop(opencode 自定位 + MCP 工具)]→assemble_repair
+    六步:ingest→recall_lessons→[delegate_localize_loop(opencode 自定位 + MCP 工具)]→assemble_repair
          →[delegate_repair_loop]→report+memorize。真调 opencode(delegate),较慢(数分钟)。
+
+    ⚠️ post-pivot(2026-08-06)参考路径:bug-RCA 主路径已改成 opencode + bug-rca skill +
+    hyperion MCP 工具(见 docs/设计/harness-pivot-design.md)。本命令保留向后兼容,仍可用。
     """
     import asyncio
 
     from hyperion.workflows.bug_rca.graph import run
+
+    print("⚠️ 提示:bug-RCA 主路径已转向 opencode + bug-rca skill + hyperion MCP 工具"
+          "(tool+skill server / 领域 harness)。本 orchestrator 命令保留向后兼容,仍可跑。"
+          "见 docs/设计/harness-pivot-design.md。", file=sys.stderr)
 
     if not args.trigger and not args.log:
         print("错误:至少给 --trigger(线索)或 --log(日志文件)之一。", file=sys.stderr)
@@ -439,10 +469,13 @@ def main(argv: list[str] | None = None) -> int:
     m_inv.add_argument("--repo", default=None)
     sub_memory.set_defaults(func=cmd_memory)
 
-    sub_mcp = sub.add_parser("mcp", help="MCP server(把记忆/检索/日志过滤暴露给 delegate)")
+    sub_mcp = sub.add_parser("mcp", help="MCP server(把 Hyperion 能力做成工具给 coding agent 调)")
     sub_mcp_sub = sub_mcp.add_subparsers(dest="mcp_cmd", required=True)
-    mcp_serve = sub_mcp_sub.add_parser("serve", help="启动 stdio MCP server")
+    mcp_serve = sub_mcp_sub.add_parser("serve", help="启动 MCP server(stdio 默认;--transport http 起 warm 长进程)")
     mcp_serve.add_argument("--codebase", default=None, help="查哪个代码库的索引/记忆(= 建索引时的 name);默认 config.code_index.repo")
+    mcp_serve.add_argument("--transport", default=None, choices=["stdio", "http"], help="stdio(默认,子进程 1:1)| http(streamable-http,warm 多客户端,解 cold-boot)")
+    mcp_serve.add_argument("--host", default=None, help="http 绑定地址(默认 127.0.0.1;config.mcp.host)")
+    mcp_serve.add_argument("--port", type=int, default=None, help="http 端口(默认 8765;config.mcp.port)")
     sub_mcp.set_defaults(func=cmd_mcp)
 
     sub_bug = sub.add_parser("bug-rca", help="bug 根因定位 workflow(★MVP,委托 opencode)")

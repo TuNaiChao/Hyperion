@@ -265,6 +265,24 @@ class RuntimeConfig(BaseModel):
     tool_output: RuntimeToolOutputConfig = Field(default_factory=RuntimeToolOutputConfig)
 
 
+class MCPConfig(BaseModel):
+    """MCP server 对外暴露的 transport 配置(harness 转向 D0)。
+
+    面向小白:Hyperion 当"工具+菜谱服务"给别的 coding agent(opencode 主 / codex / claude
+    code)调。这层控制 MCP server 怎么对外"开门"——
+      - stdio(默认):每次 agent 拉起一个子进程,1:1,本地单机最简,零配置(delegate 老路径用它)。
+      - http(streamable-http):一个长期开着的 warm 进程,所有 agent 共用,省掉每修一个 bug
+        都重启加载 ~1.2GB(sentence-transformers)的冷启动(= 解掉老 ③ 号 cold-boot 痛)。
+    host/port 只有 http 模式用。CLI `hyperion mcp serve --transport/--host/--port` 覆盖这里的默认值。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    transport: str = "stdio"  # stdio(默认,本地 1:1)| http(streamable-http,warm 多客户端)
+    host: str = "127.0.0.1"  # http 绑定地址(本机;对外暴露改 0.0.0.0 + 鉴权留 R4/R5)
+    port: int = 8765  # http 端口
+
+
 class AppConfig(BaseModel):
     """顶层配置(models / model_roles / tools / sandbox)。"""
 
@@ -278,6 +296,7 @@ class AppConfig(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # 记忆核心(R1,P3 差异化)
     delegate: DelegateConfig = Field(default_factory=DelegateConfig)  # 委托层(R2,P2 MVP)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)  # agent 运行时 harness(R3)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)  # MCP 对外 transport(harness 转向 D0)
 
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。

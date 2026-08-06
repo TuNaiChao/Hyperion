@@ -1,18 +1,23 @@
 """Hyperion MCP server —— 把 Hyperion 的差异化能力做成工具,给 delegate(opencode)现场调。
 
 不是"MCP 驱动 delegate",而是"delegate 查 Hyperion":opencode 干活时经 MCP 调本服务暴露的
-工具(见 bug-rca-design.md §6 反向 MCP)。四个工具:
+工具(见 bug-rca-design.md §6 反向 MCP)。六个工具(harness 转向:精炼工具面,只做 coding agent
+做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证;定位推理+改代码留给 opencode):
   - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
   - filter_logs       大日志按 关键字∩时间窗 过滤成有界摘录。
+  - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
+  - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
 
 防幻觉契约(§6.1 search_codebase):模型传一个**概念/自然语言**(不是猜的文件名/函数名),
 工具从**真实索引**里检索 → 只回**索引中确实存在**的 file:symbol:line。因为结果来自实际索引,
 模型拿不到一个编造的文件路径 —— 幻觉在结构上不可能。这正是 2026 主流(Claude Code 弃向量库
 改 agentic search / Cursor codebase indexing):agent 发概念,工具回验过的真实符号。
 
-入口:`hyperion mcp serve [--codebase NAME]`(stdio transport)。需 `uv sync --extra mcp`。
+入口:`hyperion mcp serve [--codebase NAME]`。需 `uv sync --extra mcp`。
+  transport:stdio(默认,agent 拉起子进程 1:1)| http(`--transport http`,warm 长进程,
+             多 agent 共用,省 cold-boot —— 解 ③;端点 http://host:port/mcp)。
 --codebase:查哪个代码库的索引/记忆(= LanceDB 表名 + memory scope);不传则按
             config.code_index.repo → 进程 cwd 目录名 兜底(opencode 常在项目根拉起 MCP)。
 """
@@ -45,11 +50,13 @@ def _resolve_codebase(explicit: str | None) -> str:
     return Path.cwd().name
 
 
-def build_server(codebase: str | None = None):
-    """构造 FastMCP server,暴露四个工具给 delegate(opencode)。
+def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
+    """构造 FastMCP server,暴露六个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此一次解析,烘焙进各工具闭包(工具内不再各自猜仓名)。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
+    host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
+       `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
     """
     from mcp.server.fastmcp import FastMCP
 
@@ -57,7 +64,13 @@ def build_server(codebase: str | None = None):
 
     repo = _resolve_codebase(codebase)
     scope = Scope(owner="default", codebase=repo)
-    mcp = FastMCP("hyperion")
+    # host/port 只在给定时透传给 FastMCP(stdio 模式用不上,但给了也无害)
+    fastmcp_kwargs: dict = {}
+    if host is not None:
+        fastmcp_kwargs["host"] = host
+    if port is not None:
+        fastmcp_kwargs["port"] = port
+    mcp = FastMCP("hyperion", **fastmcp_kwargs)
     svc = get_memory_service()
 
     # ── ① memory_recall:翻长期记忆(R1 已有,这里薄封一层 scope)────────────
@@ -167,11 +180,72 @@ def build_server(codebase: str | None = None):
         n = len(excerpt.splitlines())
         return f"过滤出 {n} 行(上限 {max_lines};全量日志仍在 {log_path}):\n\n{excerpt}"
 
+    # ── ⑤ blast_radius:改动影响面(结构图 BFS —— 改这些文件会波及谁)──────────
+    # harness 转向:把 CodeGraph.impact_radius 暴露成工具,让 agent 改代码前查"动了这些会断哪"。
+    @mcp.tool()
+    async def blast_radius(changed_files: list[str], codebase: str | None = None) -> str:
+        """Structural blast-radius: given a set of changed files, return what else gets hit
+        (callers / callees / dependents via code-graph BFS) — the "if I touch these, what breaks" view.
+
+        Pass the file paths a patch/PR modifies. Graph-driven, no LLM. Needs the codebase graph built
+        (`uv run hyperion index <path> <name>`); returns a "not built" hint otherwise.
+        codebase: override which codebase's graph (default = this server's codebase).
+        """
+        try:
+            from hyperion.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"blast_radius 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        if not changed_files:
+            return "未传 changed_files(传会被改动的文件路径列表)。"
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.impact_radius(list(changed_files))
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run hyperion index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算影响面失败({target}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return f"blast-radius(codebase={target},输入 {len(changed_files)} 文件):\n{body[:8000]}"
+
+    # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
+    # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
+    @mcp.tool()
+    async def validate_patch(patch: str, repo_path: str) -> str:
+        """Execution gate (non-LLM): does this unified-diff patch apply cleanly to the repo working tree?
+
+        Runs `git apply --check` forward (strict → --3way → patch -p1 fallback) — a deterministic hard
+        gate before trusting a patch. Returns applies + method + git diagnostic. Use it to confirm a
+        patch/PR you're about to merge, or a fix you just wrote, actually fits the target repo.
+        repo_path: absolute path of the repo working tree to check against. (No reverse check here —
+        that needs the already-patched tree; the bug_rca workflow has the full forward+reverse validate.)
+        """
+        from pathlib import Path
+
+        from hyperion.services.workspace.validate import validate_patch as _validate
+
+        if not Path(repo_path).is_dir():
+            return f"repo_path 不是目录: {repo_path}"
+        try:
+            r = _validate(patch, forward_dir=repo_path)  # reverse_dir=None:本工具只 forward --check
+        except Exception as e:  # noqa: BLE001
+            return f"validate_patch 执行失败: {e}"
+        applies = bool(r.get("verified"))
+        method = r.get("forward_method")
+        log = (r.get("log") or "").strip()[-600:]
+        flag = "✅ 能干净 apply" if applies else "❌ apply 失败(路径/格式/context 不匹配)"
+        return f"{flag}\nmethod={method}  applies={applies}\n诊断:\n{log}"
+
     return mcp
 
 
 def main() -> None:
-    """MCP server 入口(stdio)。`hyperion mcp serve` 或 `python -m hyperion.tools.mcp_memory` 调。"""
+    """MCP server 入口(stdio 默认)。`hyperion mcp serve` 或 `python -m hyperion.tools.mcp_memory` 调。
+
+    http(streamable-http)模式走 CLI `hyperion mcp serve --transport http`(cmd_mcp 里建带 host/port 的 server)。
+    """
     build_server().run()
 
 

@@ -1,0 +1,21 @@
+# Codex CLI 的 Hyperion MCP 配置模板(把 Hyperion 当工具给 Codex 调)。
+#
+# 用法:把下面某一段并进 ~/.codex/config.toml(codex CLI 的全局配置;Codex IDE 扩展同文件)。
+# ⚠️ 键名是 [mcp_servers](下划线!),不是 mcp.servers —— codex 社区高频踩坑(见 issue #3441)。
+# ⚠️ codex 的 /mcp 自检有时显示 "Tools: (none)" 但工具仍可调用(issue #17021),以实际调用为准。
+#
+# 先决条件:`uv sync --extra mcp` 装好 Hyperion 的 MCP 依赖;`hyperion` 在 PATH 里(或写绝对路径)。
+
+# ── 方案 A:stdio(最简;Codex 每次 拉起一个 hyperion 子进程,1:1)─────────────
+# 本地单机推荐起步用这个。command 是数组;env 透传给子进程。
+[mcp_servers.hyperion]
+command = ["hyperion", "mcp", "serve"]
+env = { PYTHONUNBUFFERED = "1" }
+
+# ── 方案 B:http streamable(多 agent 共用一个 warm 长进程,省 cold-boot)──────
+# 推荐当 opencode/codex/多个 agent 都要用 Hyperion 时改这个:
+#   1) 先在另一窗口跑起来:`hyperion mcp serve --transport http --port 8765`
+#   2) 注释掉上面方案 A,取消下面注释,把 url 指过去(端点路径 /mcp 是 FastMCP 默认):
+# [mcp_servers.hyperion]
+# url = "http://127.0.0.1:8765/mcp"
+# (http 字段以 codex 官方 config 文档为准:learn.chatgpt.com/docs/config-file/config-reference)
