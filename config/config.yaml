@@ -262,3 +262,17 @@ runtime:
   tool_output:                  # 工具输出外化(超阈值写盘 + synopsis 摘要;模型需要细节 read_file 取)
     externalize_min_chars: 30000
     outputs_dir: data/runtime/tool-outputs
+
+# ── MCP 对外暴露(harness 转向 D0)─────────────────────────────────────
+# 面向小白:Hyperion 把自己的能力(记忆/代码检索/日志/影响面/补丁验证)做成 MCP 工具,
+# 给别的 coding agent(opencode 主 / codex / claude code)调。这层控制怎么"开门":
+#   stdio(默认)= 每次 agent 拉起一个子进程,本地最简(delegate 老路径用它);
+#   http = 一个长期开着的 warm 进程,所有 agent 共用,省掉每修一个 bug 都重启加载
+#          ~1.2GB(sentence-transformers)的冷启动(= 解掉老 ③ 号 cold-boot 痛)。
+# CLI `hyperion mcp serve --transport http --host --port` 覆盖这里的默认值。
+# 用 http:先 `hyperion mcp serve --transport http` 跑起来,再把 opencode/codex 指向
+#        http://<host>:<port>/mcp(端点路径 /mcp 是 FastMCP 默认 streamable_http_path)。
+mcp:
+  transport: stdio            # stdio(默认)| http(streamable-http)
+  host: 127.0.0.1             # http 绑定地址(本机;对外暴露改 0.0.0.0 + 鉴权留 R4/R5)
+  port: 8765                  # http 端口

@@ -4,13 +4,13 @@
 
 ## Hyperion 是什么
 
-**给系统软件代码库做"带记忆的 bug 根因定位 + 深度调研"的调度型 agent。** 差异化在「记忆 + 持续学习 + 精准调度」,不在重造一个 coding agent——重活委托给成熟 coding agent(omp/opencode),Hyperion 自做记忆 + 调度。三大支柱:
+**给系统软件代码库做「带记忆的 bug 根因定位 + 深度调研」的领域 harness —— 记忆 + 代码情报 + 日志取证 + 补丁验证 + 标准流程 skill,作为 MCP tool/skill server 供 opencode(主)/ codex / claude code 调用。** 不再自己调度 coding agent 跑固定管线(老 bug-RCA orchestrator 降级留参考,见 [docs/设计/harness-pivot-design.md](docs/设计/harness-pivot-design.md));差异化在「记忆 + 持续学习 + 精准的工具与菜谱」,重活(读码/改代码)仍归成熟 coding agent(omp/opencode/codex/claude code)。三大支柱:
 
 1. **(P1)代码仓深度调研** — 任意语言仓库(git/本地)→ 详细准确的架构/模块文档;含开源 PR 持续跟踪 + 合入建议(R4)。
 2. **(P2)bug 根因定位** ★MVP — 源码 + 日志/漏洞报告 → 根因 + 补丁 + 分析报告;**重活委托** omp/opencode,Hyperion 负责召回+组装精确上下文+调度+沉淀。
 3. **(P3)记忆与持续学习** ★特色 — 把"代码库调研知识"和"bug 分析报告"沉淀成可检索、带溯源、团队共享、持续学习的记忆。
 
-三者共享一个**平台 + 共享服务层**(代码理解、记忆、沙箱、检索、可观测),解决三大痛点:① 记忆跨会话;② 省 token(委托前组装手术刀级上下文);③ 流水线(一条命令跑完)。Tagline:*Light on every root cause.*
+三者共享一个**平台 + 共享服务层**(代码理解、记忆、沙箱、检索、可观测),解决三大痛点:① 记忆跨会话;② 省 token(精炼 MCP 工具 + just-in-time 上下文,agent 按需取、不预塞全量);③ 流水线(一条命令跑完 / 一套 skill+工具复用)。Tagline:*Light on every root cause.*
 
 > v2(2026-07-28)产品重规划:从 v0.1"先建深地基再接场景"改为"编排 + 记忆 + 委托"。已建的 code_index(P1.0–P1.5)作为资产保留。完整架构见 [docs/设计/architecture.md](docs/设计/architecture.md);三支柱详细设计见 [memory-design.md](docs/设计/memory-design.md) / [bug-rca-design.md](docs/设计/bug-rca-design.md) / [deep-research-design.md](docs/设计/deep-research-design.md)。
 

@@ -1,5 +1,13 @@
 """bug-RCA workflow StateGraph 组装(多阶段委托 + 迭代 verify-refine,R3.1)。
 
+⚠️ **post-pivot(2026-08-06)参考实现,不再是主路径。** Hyperion 已从「调度型 orchestrator」转向
+「tool+skill server / 领域 harness」(见 docs/设计/harness-pivot-design.md):bug-RCA 的主路径改成
+**opencode + bug-rca skill(.claude/skills/bug-rca/SKILL.md)+ 6 个 hyperion MCP 工具**,agent 自己驱动、
+能自纠;不再走这条固定六节点管线(它脆弱:踩坑 #7 recursion_limit / #8 线程死锁 / #9 keying,且产次优补丁)。
+本文件保留作参考 —— verify-refine 收敛、报告渲染、结构化 memorize 的逻辑值得日后抢救成独立工具;
+CLI `hyperion bug-rca` 也保留(向后兼容,加了 deprecate 提示)。**不要**把本 workflow 暴露成 MCP 工具。
+
+---
 六节点线性流水线(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— 旧 recall/localize/
 assemble_localize 三节点与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具。
 R3 收尾 ②[b] 又加回 recall_lessons —— 但它**只翻记忆预注入先验、不定位**,和被砍的旧 recall
