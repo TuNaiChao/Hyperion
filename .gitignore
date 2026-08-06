@@ -48,3 +48,6 @@ opencode/
 
 # 另一个项目,误落在 Hyperion 目录树(非本项目代码)
 oh-my-pi/
+
+# opencode 本地 session/artifact 目录(`opencode run` 生成,机器相关不提交)
+.omo/
