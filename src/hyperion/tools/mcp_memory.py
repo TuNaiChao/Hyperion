@@ -1,14 +1,15 @@
 """Hyperion MCP server —— 把 Hyperion 的差异化能力做成工具,给 delegate(opencode)现场调。
 
 不是"MCP 驱动 delegate",而是"delegate 查 Hyperion":opencode 干活时经 MCP 调本服务暴露的
-工具(见 bug-rca-design.md §6 反向 MCP)。六个工具(harness 转向:精炼工具面,只做 coding agent
-做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证;定位推理+改代码留给 opencode):
+工具(见 bug-rca-design.md §6 反向 MCP)。七个工具(harness 转向:精炼工具面,只做 coding agent
+做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证/补丁落盘;定位推理+改代码留给 opencode):
   - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
   - filter_logs       大日志按 关键字∩时间窗 过滤成有界摘录。
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
+  - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
 
 防幻觉契约(§6.1 search_codebase):模型传一个**概念/自然语言**(不是猜的文件名/函数名),
 工具从**真实索引**里检索 → 只回**索引中确实存在**的 file:symbol:line。因为结果来自实际索引,
@@ -237,6 +238,69 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         log = (r.get("log") or "").strip()[-600:]
         flag = "✅ 能干净 apply" if applies else "❌ apply 失败(路径/格式/context 不匹配)"
         return f"{flag}\nmethod={method}  applies={applies}\n诊断:\n{log}"
+
+    # ── ⑦ export_patch:把补丁落盘成 .patch 文件(交付硬门 —— 聊天回复不算交付)────────
+    # bug-RCA 跑完,agent 的改动若只在聊天里 = 没交付。这步把 git diff 写成磁盘文件,且自检
+    # 非空(治"agent 改错树 / 假装改完"——纯 bash `git diff > file` 会静默吞掉空 diff,2026 调研:
+    # deer-flow 用结构化 present_files tool + 事后交付验证,正是治这个)。格式 unified diff(git diff),
+    # 对齐整条管线(validate 用 git apply / ingest 解析 unified diff / report 渲染 ```diff);不污染 repo
+    # (无需建 commit —— format-patch 留生产级迭代)。落 data/bug_rca/<repo>.patch(最新一份快照,
+    # 同 bug_rca workflow 约定;同仓重跑覆盖,历史在记忆库)。
+    # apply 验证**不在这做** —— forward --check 对"已改过的树"必失败(见 validate.py:context 已变,
+    # 反向 --check 才证必要);那是 validate_patch(第⑥步,对干净树)的活。export 只保证"有非空 diff 落盘"。
+    @mcp.tool()
+    async def export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str:
+        """Finalize your fix as an on-disk .patch file — a bug-RCA run is NOT complete until the
+        patch is on disk (chat is not a deliverable).
+
+        Captures ALL your uncommitted changes in repo_path (``git add -A && git diff --cached``,
+        including new files), writes the unified diff to ``<out_dir>/<repo-name>.patch``, and REFUSES
+        to write an empty diff — catches "edited the wrong tree / changes not saved / gitignored",
+        failures a bare ``git diff > file`` silently swallows. Run ``validate_patch`` first to confirm
+        the diff applies; this tool only guarantees a non-empty patch lands on disk at the canonical path.
+
+        repo_path: absolute path of the repo whose working tree holds your fix.
+        out_dir:   output directory (default ``data/bug_rca`` = "latest snapshot" location, matching
+                   the bug_rca workflow convention; created if missing).
+        """
+        import subprocess
+        from pathlib import Path
+
+        repo = Path(repo_path)
+        if not repo.is_dir():
+            return f"repo_path 不是目录: {repo_path}"
+
+        def _git(args: list[str]) -> tuple[int, str, str]:
+            p = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True, text=True, timeout=60,
+            )
+            return p.returncode, p.stdout, p.stderr
+
+        try:
+            rc, _, err = _git(["rev-parse", "--is-inside-work-tree"])
+            if rc != 0:
+                return f"repo_path 不是 git 工作树: {(err or '').strip()[-300:]}"
+            # git add -A 再 diff --cached:含新增文件(对齐 bug_rca workflow 的 observe 约定)。
+            # 副作用:会 stage repo_path 的改动(可 git reset 撤;agent 已在改其工作树,同量级)。
+            _git(["add", "-A"])
+            rc, diff, err = _git(["diff", "--cached"])
+            if rc != 0:
+                return f"git diff 失败: {(err or diff).strip()[-300:]}"
+        except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001 —— git 不可用给可操作错误
+            return f"export_patch 执行失败(git 不可用?): {e}"
+
+        if not diff.strip():
+            return ("❌ 空 diff:git 看不到你的改动。可能改错了树(repo_path 指错)、改动没保存、"
+                    "或被 .gitignore 忽略。export_patch 不写空补丁 —— 回去确认你真的改对了文件。")
+
+        repo_name = repo.name
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        patch_path = out / f"{repo_name}.patch"
+        patch_path.write_text(diff, encoding="utf-8")
+        n = len(diff.splitlines())
+        return f"✅ 已落盘\npath={patch_path}\nlines={n}  (unified diff;apply 验证见 validate_patch)"
 
     return mcp
 

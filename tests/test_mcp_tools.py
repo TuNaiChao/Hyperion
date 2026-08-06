@@ -1,4 +1,4 @@
-"""harness 转向 D0:2 新 MCP 工具 blast_radius + validate_patch 单测。
+"""harness 转向 D0/D1:MCP 工具 blast_radius + validate_patch + export_patch 单测。
 
 不真起 transport —— 用 FastMCP.call_tool(name, dict) 直接调工具闭包(call_tool 返回
 ([TextContent,...], structured),取第一个 TextContent.text 拿工具返回的 str)。验包装逻辑
@@ -82,3 +82,42 @@ def test_blast_radius_not_built():
     assert "Traceback" not in out, out
     # 三种友好提示之一:图未建 / 后端未装 / 失败
     assert any(k in out for k in ("未建", "不可用", "失败")), out
+
+
+# ════════════════════════ export_patch 工具 ════════════════════════
+
+def test_export_patch_not_a_dir():
+    """repo_path 不存在 → 友好提示,不抛。"""
+    mcp = build_server()
+    out = _call(mcp, "export_patch", {"repo_path": "/no/such/dir/xyz_abc"})
+    assert "不是目录" in out
+
+
+def test_export_patch_empty_diff(tmp_path):
+    """git 仓但工作树无改动 → 空 diff → 拒绝写(治改错树 / 没保存)。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_repo(repo)  # 干净 commit,工作树无改动
+    mcp = build_server()
+    out = _call(mcp, "export_patch",
+                {"repo_path": str(repo), "out_dir": str(tmp_path / "out")})
+    assert "空 diff" in out, out
+    assert "已落盘" not in out  # 拒绝写空补丁
+
+
+def test_export_patch_writes_file(tmp_path):
+    """git 仓 + 有未提交改动 → 写 <out_dir>/<repo-name>.patch(unified diff,非空)。"""
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    _git_repo(repo)
+    (repo / "f.c").write_text("int main(void){return 1;}\n", encoding="utf-8")  # 未提交改动
+    out_dir = tmp_path / "out"
+    mcp = build_server()
+    out = _call(mcp, "export_patch",
+                {"repo_path": str(repo), "out_dir": str(out_dir)})
+    assert "已落盘" in out, out
+    patch_file = out_dir / "myrepo.patch"  # 命名 = repo 目录名
+    assert patch_file.is_file(), f"没写到 {patch_file}"
+    content = patch_file.read_text(encoding="utf-8")
+    assert "diff --git" in content, "落盘的不是 unified diff"
+    assert "return 1" in content, "diff 没含改动"
