@@ -6,7 +6,7 @@
       "command": ["hyperion", "mcp", "serve"],
       "environment": { "PYTHONUNBUFFERED": "1" },
       "enabled": true,
-      "timeout": 10000
+      "timeout": 120000
     }
   },
   "agent": {
