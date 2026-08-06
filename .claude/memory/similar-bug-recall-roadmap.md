@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-06T01:43:32.757Z
+  modified: 2026-08-06T05:28:38.619Z
 ---
 
 2026-08-06 深度调研结论(用户问"定位**类似**问题要不要记忆/检索机制")。
@@ -39,3 +39,13 @@ demo2 wpa e2e:recall 命中 5 条同类 bug,delegate 当先验用,**还主动抓
 
 ## 归属决策:P0 → R3 收尾,不放 R4.1
 理由:① 两 P0 都是 bug_rca workflow 自己的改动,R3 管 bug-RCA,R4.1 是另一个 workflow(pr_review),塞进去=耦合;② e2e 已验证只是欠强度,现在补就闭环 R3 的 P3 卖点;③ R4.1 白捡(同 memory_recall);④ symptom gap 跨切面但代码按生产者各归各位(bug_rca→R3、ingest→R4.1.1、pr_review→R4.1 建时)。exact-duplicate short-circuit 不进任何阶段。关联 [[r35-report-handoff]] [[pr-review-design-decision]](symptom gap 同源) [[delegate-already-localizes]] [[avoid-overengineering]]。
+
+## ⚠️ 2026-08-06 实测复核:P0 已落地,但 recall→定位 的**价值仍未证实**
+P0(②[a] 填字段 + ②[b] 确定性预注入)已实现(commit `d70b40d`)。但用 demo2 真实数据复盘,**"能动"≠"有用"**:
+- recall 正确返回先验(top1 带根因+file:line),delegate 也调了 hyperion_recall —— 机制成立。
+- 但 delegate 照样 26 read+17 grep、撞步数上限、**照样产次优补丁**;先验和最终结论几乎逐字一致(冗余 or 锚定分不清)。recall 没省工、没提质量。
+- **同 bug 是 recall 最弱场景**(先验=上次答案);真正的卖点"类似 bug"我们从没测过(只有 demo2)。
+- ②[b] 在 demo2 上还 dormant(纯日志驱动 trigger="" → 跳过)。
+- 去重失效:8 条同 demo2 bug 近似 lesson 没合并(content-addressed 对不同措辞太严)。
+
+**修正本 memory 早先的乐观**:recall→定位 是"未证实的假设",ahead of validation 做了(踩"先建后证"边)。**下一步是验证实验(类似 bug 基线对比),不是加机关**(P1 自动 query 暂缓)。详见 backlog #59 + [[r3-memory-closure-handoff]]。基础设施(检索栈)依然最强且合理,问题只在"反馈这条具体链路的价值"。
