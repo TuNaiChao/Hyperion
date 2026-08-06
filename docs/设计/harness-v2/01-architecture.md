@@ -20,7 +20,7 @@ Hyperion 的价值按三层组织:**共享底座 → skill 层 → agent enforce
 ### 第 2 层:skill(方法论 playbook)
 `.claude/skills/<name>/SKILL.md`,跨平台标准(agentskills.io)。skill = "这本菜谱怎么做这个用例",advisory(灵活自纠)但 mandate 关键硬门(如 validate/memorize)。agent 按任务翻开对应 skill。
 
-- `bug-rca/SKILL.md` ✅ —— 8 步:recall→search→filter→假设+证伪→blast→改+validate(硬门)→落盘 patch(硬门)→memorize(硬门)。
+- `bug-rca/SKILL.md` ✅ —— 9 步:recall→search→filter→假设+证伪→blast→改+validate(硬门)→落盘 patch(硬门)→memorize(硬门)→落盘 report(硬门)。
 - `patch-rca/SKILL.md` ⏳(阶段 1)—— 抓 PR→读补丁→apply 门→build 门→blast→LLM 鉴定→memorize。
 - `research/SKILL.md` ⏳(阶段 3-4)—— 调用链查询 / 跨版本对比。
 - opencode 原生发现 `.claude/skills/`(走项目根向上找);agent 调 `skill(name=)` 按需加载(非 auto-inject)。
@@ -28,13 +28,13 @@ Hyperion 的价值按三层组织:**共享底座 → skill 层 → agent enforce
 ### 第 3 层:agent enforcement(opencode 专用 agent)
 opencode 配置里把 playbook 烙进 agent 的 system prompt(常驻 > 等 skill 自动触发)+ 给够步数 + 把硬门写成"不做完不算完成"。skill(方法论,可移植)与 agent(enforcement,opencode 专属)正交。配置:[config/opencode_hyperion.json](../../../config/opencode_hyperion.json)。
 
-- `hyperion-bug-rca` ✅ —— steps=25,edit/bash/hyperion* allow,validate+export_patch+memorize 硬门。
+- `hyperion-bug-rca` ✅ —— steps=25,edit/bash/hyperion* allow,validate+export_patch+memorize+export_report 硬门。
 - `hyperion-localize` / `hyperion-repair` —— 老 delegate 两阶段 agent(降级 orchestrator 用,保留)。
 - `hyperion-patch-rca` ⏳(阶段 1)。
 
 ## 工具目录(MCP server 暴露的全部工具)
 
-**共享工具(所有用例复用,7 个已落 + build_check 待落):**
+**共享工具(所有用例复用,8 个已落 + build_check 待落):**
 
 | 工具 | 签名要点 | wrap 的服务 | 状态 |
 |---|---|---|---|
@@ -45,6 +45,7 @@ opencode 配置里把 playbook 烙进 agent 的 system prompt(常驻 > 等 skill
 | `hyperion_blast_radius(changed_files, codebase=None)` | 改动影响面 BFS | `CodeGraph.impact_radius` | ✅ |
 | `hyperion_validate_patch(patch, repo_path)` | 补丁能否 apply(Tier 0 硬门) | `validate_patch`(git apply --check) | ✅ |
 | `hyperion_export_patch(repo_path, out_dir="data/bug_rca")` | 把补丁落盘成 `.patch`(交付硬门;空 diff 自检) | `git add -A && git diff --cached` → 写文件 | ✅ |
+| `hyperion_export_report(content, repo_path, out_dir="data/bug_rca")` | 把报告落盘成 `-rca.md`(交付硬门;空内容自检) | agent 传 content → 写文件 | ✅ |
 
 **专家工具(特定用例,随阶段加):**
 

@@ -1,4 +1,4 @@
-"""harness 转向 D0/D1:MCP 工具 blast_radius + validate_patch + export_patch 单测。
+"""harness 转向 D0/D1:MCP 工具 blast_radius + validate_patch + export_patch + export_report 单测。
 
 不真起 transport —— 用 FastMCP.call_tool(name, dict) 直接调工具闭包(call_tool 返回
 ([TextContent,...], structured),取第一个 TextContent.text 拿工具返回的 str)。验包装逻辑
@@ -121,3 +121,31 @@ def test_export_patch_writes_file(tmp_path):
     content = patch_file.read_text(encoding="utf-8")
     assert "diff --git" in content, "落盘的不是 unified diff"
     assert "return 1" in content, "diff 没含改动"
+
+
+# ════════════════════════ export_report 工具 ════════════════════════
+
+def test_export_report_empty(tmp_path):
+    """空内容(或纯空白)→ 拒绝写(治 agent 假装写报告 / 传空串糊弄)。"""
+    mcp = build_server()
+    out = _call(mcp, "export_report",
+                {"content": "   \n  ", "repo_path": str(tmp_path / "repo"),
+                 "out_dir": str(tmp_path / "out")})
+    assert "空报告" in out, out
+    assert "已落盘" not in out  # 拒绝写空报告
+
+
+def test_export_report_writes_file(tmp_path):
+    """有内容 → 写 <out_dir>/<repo-name>-rca.md(内容逐字一致;repo 目录不存在也能取名)。"""
+    repo = tmp_path / "myrepo"  # 故意不 mkdir:export_report 不依赖 repo 目录存在,只取目录名
+    out_dir = tmp_path / "out"
+    report_md = ("# 根因\n\nradio work 泄漏:abort 失败分支不释放 p2p_scan_work。\n\n"
+                 "patch: data/bug_rca/myrepo.patch\nmemorize id=abc")
+    mcp = build_server()
+    out = _call(mcp, "export_report",
+                {"content": report_md, "repo_path": str(repo),
+                 "out_dir": str(out_dir)})
+    assert "已落盘" in out, out
+    report_file = out_dir / "myrepo-rca.md"  # 命名 = <repo 目录名>-rca.md
+    assert report_file.is_file(), f"没写到 {report_file}"
+    assert report_file.read_text(encoding="utf-8") == report_md

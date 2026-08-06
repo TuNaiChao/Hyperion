@@ -1,6 +1,6 @@
 ---
 name: bug-rca
-description: Root-cause a bug in a C / system-software codebase (Linux kernel, BlueZ, wpa_supplicant, systemd, dbus, network stacks …). Use when the user asks to find the root cause of a bug / crash / hang / regression / CVE, or asks "why does X break / leak / deadlock". You drive the reasoning + edit; Hyperion supplies memory + code intelligence + log forensics + patch validation + patch finalization via MCP tools. Delivers a root cause, a validated on-disk patch, and a memorized lesson.
+description: Root-cause a bug in a C / system-software codebase (Linux kernel, BlueZ, wpa_supplicant, systemd, dbus, network stacks …). Use when the user asks to find the root cause of a bug / crash / hang / regression / CVE, or asks "why does X break / leak / deadlock". You drive the reasoning + edit; Hyperion supplies memory + code intelligence + log forensics + patch validation + patch finalization + report finalization via MCP tools. Delivers a root cause, a validated on-disk patch, an on-disk report, and a memorized lesson.
 allowed-tools:
   - hyperion_memory_recall
   - hyperion_search_codebase
@@ -8,6 +8,7 @@ allowed-tools:
   - hyperion_blast_radius
   - hyperion_validate_patch
   - hyperion_export_patch
+  - hyperion_export_report
   - hyperion_memorize
   - read
   - grep
@@ -19,21 +20,23 @@ allowed-tools:
 # Bug 根因定位 playbook(Hyperion bug-RCA)
 
 面向小白:你在给一个 C/系统软件仓库(Linux 内核 / BlueZ / wpa_supplicant / systemd 这类)定位一个
-bug 的**根因**,并给出**能干净打上、落了盘的补丁**。Hyperion 不抢你的活 —— **读码、推理、改代码是你(opencode)
-的强项**;Hyperion 只递工具:翻历史记忆、语义搜代码、过滤大日志、算改动影响面、验证补丁能不能 apply、
-把补丁落成文件、把教训沉淀进记忆。你拿着这把"手术刀 + 记忆",自己开刀。
+bug 的**根因**,并给出**能干净打上、落了盘的补丁 + 落了盘的报告**。Hyperion 不抢你的活 —— **读码、推理、
+改代码是你(opencode)的强项**;Hyperion 只递工具:翻历史记忆、语义搜代码、过滤大日志、算改动影响面、
+验证补丁能不能 apply、把补丁落成文件、把报告落成文件、把教训沉淀进记忆。你拿着这把"手术刀 + 记忆",
+自己开刀。
 
-**这条 playbook 是灵活的**(中途发现走错随时拐弯、自己纠正),但有**三道必须过的硬门**:
+**这条 playbook 是灵活的**(中途发现走错随时拐弯、自己纠正),但有**四道必须过的硬门**:
 - ⑥ 改完必须 `hyperion_validate_patch` 过(apply 不了的补丁不是修复);
 - ⑦ 必须把补丁**落盘** `hyperion_export_patch`(没产 `.patch` 文件 = 没交付,聊天回复不算补丁);
-- ⑧ 结束必须 `hyperion_memorize` 沉淀教训(不记 = 下次还得从头来)。
+- ⑧ 结束必须 `hyperion_memorize` 沉淀教训(不记 = 下次还得从头来);
+- ⑨ 必须把报告**落盘** `hyperion_export_report`(没产 `-rca.md` = 没交付,聊天回复不算报告)。
 
-> **"硬门"的诚实边界**:这三步的工具本身是确定性执行(真 git / 文件 / DB 操作),但"你必须调它"靠本
+> **"硬门"的诚实边界**:这四步的工具本身是确定性执行(真 git / 文件 / DB 操作),但"你必须调它"靠本
 > playbook + 专用 agent 的 prompt 强制(软,~95%)。opencode 驱动模式下 Hyperion 不驱动模型,拿不到 API
-> 级强制(`tool_choice` / Stop hook);靠专用 agent + 给够步数 + "步数将尽优先这三步"语言保证可靠(e2e 实证)。
+> 级强制(`tool_choice` / Stop hook);靠专用 agent + 给够步数 + "步数将尽优先这四步"语言保证可靠(e2e 实证)。
 > 详见 [02-bug-rca.md](../../docs/设计/harness-v2/02-bug-rca.md) §硬门的诚实边界。
 
-## 七把 Hyperion 工具(各自啥时候调)
+## 八把 Hyperion 工具(各自啥时候调)
 
 | 工具 | 啥时候调 | 关键提醒 |
 |---|---|---|
@@ -43,9 +46,10 @@ bug 的**根因**,并给出**能干净打上、落了盘的补丁**。Hyperion �
 | `hyperion_blast_radius(changed_files)` | 动手改之前,看你打算动的文件会**连带波及谁**(调用方/被调用方) | 结构图驱动(BFS),非 LLM;图没建会提示先 `hyperion index` |
 | `hyperion_validate_patch(patch, repo_path)` | **改完必调**。`git apply --check` 验证补丁能干净打到目标仓 | 执行硬门,零 LLM 判;过不了说明路径/格式/context 不匹配,别信 |
 | `hyperion_export_patch(repo_path)` | **validate 过后必调**。把补丁写成磁盘文件 `data/bug_rca/<repo>.patch` | 空 diff 会报错(改错树/没保存);**没落盘 = 没交付** |
-| `hyperion_memorize(kind, summary, ...)` | **收尾必调**。把本次根因/修法/影响面记进长期记忆 | kind: `bug_lesson`;下次类似 bug 能召回先验、少走弯路 |
+| `hyperion_memorize(kind, summary, ...)` | **落盘补丁后必调**。把本次根因/修法/影响面记进长期记忆 | kind: `bug_lesson`;下次类似 bug 能召回先验、少走弯路 |
+| `hyperion_export_report(content, repo_path)` | **memorize 后必调(收尾)**。把完整报告写成 `data/bug_rca/<repo>-rca.md` | 空内容会报错;报告要含根因+证据+补丁要点+validate 结果+**patch 路径**+**memorize id**;**没落盘 = 没交付** |
 
-## 八步流程
+## 九步流程
 
 ### ① 先 recall(定位之前)
 改任何东西之前,先 `hyperion_memory_recall(<bug 线索/现象>)`。这个仓库以前踩过类似的坑吗?
@@ -88,15 +92,24 @@ validate 过后,**必须** `hyperion_export_patch(repo_path=<repo 绝对路径>)
 file=<主根因文件>, line=<行>)`。把本次 symptom/root_cause/fix/影响面记进长期记忆 —— 下次类似 bug
 第一步 recall 就能命中、少走弯路。**不记 = 下次从零开始,白干。**
 
+### ⑨ 落盘报告(**硬门**)
+memorize 过后,**必须** `hyperion_export_report(content=<你的完整 markdown 报告>, repo_path=<repo 绝对路径>)`
+把报告写成磁盘文件 `data/bug_rca/<repo>-rca.md`。报告是**最终交付物**,排在最后 —— 要把前面的成果都收进去:
+一句话根因(why 句)+ `file:line` 证据 + 证伪结果 + 补丁要点 + `validate_patch` 结果 + **`export_patch` 落盘路径**
++ **`memorize` 返回的 id**。空内容会报错(治"假装写报告")。**没落盘 = 没交付** —— 聊天里吐的报告不算交付,
+`-rca.md` 文件才是给人 / 归档看的产物,跟 `.patch` 同等。
+
 ## 收尾汇报(给用户)
-一句话讲清:① 根因(why 句 + `file:line` 证据 + 你证伪的结果);② 补丁(validate 结果 + **`export_patch` 落盘路径**);③ 记了啥教训。
+一句话讲清:① 根因(why 句 + `file:line` 证据 + 你证伪的结果);② 补丁(validate 结果 + `export_patch` 落盘路径);
+③ 记了啥教训(memorize id);④ 报告(`export_report` 落盘路径)。
 
 ## 反模式(别这么干)
 - ❌ 一上来 grep 整个树盲找 —— 先 search_codebase 用概念拿锚点。
 - ❌ 把记忆当答案照抄 —— 它是先验,必须对着本次证据证伪。
 - ❌ 改完不 validate 就说"修好了" —— apply 不了的补丁不是修复。
-- ❌ 改完不落盘就收工 —— 没产 `.patch` 文件 = 没交付,聊天回复不算补丁。
+- ❌ 改完不落盘补丁就收工 —— 没产 `.patch` 文件 = 没交付,聊天回复不算补丁。
 - ❌ 不 memorize 就收工 —— 不沉淀等于没学习,下次重踩。
+- ❌ 写了报告只在聊天里吐、不落盘 —— 没产 `-rca.md` = 没交付,报告跟补丁同等。
 - ❌ 顺手重构 / 无谓探索 —— 只修这个 bug,最小改动。
 
 ---

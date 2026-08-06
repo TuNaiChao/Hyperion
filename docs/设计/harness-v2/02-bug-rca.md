@@ -10,7 +10,7 @@
 delegate_repair_loop→report_memorize`)。改成:**opencode 自己驱动**,Hyperion 只递工具(记忆/代码情报/
 日志/影响面/补丁验证)+ 菜谱(skill)。agent 干它擅长的(读码推理 + 改代码),Hyperion 不重复定位(踩坑 #2)。
 
-### skill:[bug-rca/SKILL.md](../../../.claude/skills/bug-rca/SKILL.md)(8 步,3 硬门)
+### skill:[bug-rca/SKILL.md](../../../.claude/skills/bug-rca/SKILL.md)(9 步,4 硬门)
 1. **先 recall** `hyperion_memory_recall(线索)` —— 翻历史同类 bug 教训。**先验非答案**,与证据矛盾以证据为准。
 2. **语义搜入口** `hyperion_search_codebase(概念)` —— 用概念别盲 grep;拿真实 file:symbol:line 锚点再精读。
 3. **过滤日志** `hyperion_filter_logs(path, since/until=故障窗)` —— 别读全量。
@@ -19,16 +19,17 @@ delegate_repair_loop→report_memorize`)。改成:**opencode 自己驱动**,Hype
 6. **改代码 + validate【硬门】** `hyperion_validate_patch(补丁, repo_path)` —— apply 不了不算修复。
 7. **落盘补丁【硬门】** `hyperion_export_patch(repo_path)` —— 写成 `data/bug_rca/<repo>.patch`(没产文件=没交付)。
 8. **memorize【硬门】** `hyperion_memory_memorize(kind=bug_lesson, ...)` —— 沉淀教训(不记=白干)。
+9. **落盘报告【硬门】** `hyperion_export_report(content, repo_path)` —— 写成 `data/bug_rca/<repo>-rca.md`(没产文件=没交付;报告含根因+证据+patch 路径+memorize id)。
 
-advisory(灵活自纠)但 **mandate 三道硬门**(validate / export_patch / memorize)。确定性靠 **skill 强制步骤 + 工具硬门**,不靠固定图。
+advisory(灵活自纠)但 **mandate 四道硬门**(validate / export_patch / memorize / export_report)。确定性靠 **skill 强制步骤 + 工具硬门**,不靠固定图。
 
 ### agent enforcement:[hyperion-bug-rca](../../../config/opencode_hyperion.json)(opencode 专用 agent)
-skill 是 advisory,glm-5.2 不一定严格照走(实测见下)。所以用 opencode 专用 agent 做 enforcement:把 8 步 playbook **烙进 system prompt**(常驻 > 等 skill 自动触发)+ `steps=25`(给够走完)+ 把 validate/export_patch/memorize 写成**"不做完不算完成 + 步数将尽优先做这三步"**。permission:`edit/bash/read/grep/glob/list/hyperion*/skill` allow。
+skill 是 advisory,glm-5.2 不一定严格照走(实测见下)。所以用 opencode 专用 agent 做 enforcement:把 9 步 playbook **烙进 system prompt**(常驻 > 等 skill 自动触发)+ `steps=25`(给够走完)+ 把 validate/export_patch/memorize/export_report 写成**"不做完不算完成 + 步数将尽优先做这四步"**。permission:`edit/bash/read/grep/glob/list/hyperion*/skill` allow。
 
 > skill(方法论,可移植到任何 agent)与 agent(enforcement,opencode 专属)正交。两者协同:skill 是源,agent 是 opencode 上的强制壳。
 
-### 工具(7 共享,见 [01-architecture.md](01-architecture.md) §工具目录)
-recall / search_codebase / filter_logs / blast_radius / validate_patch / export_patch / memory_memorize。
+### 工具(8 共享,见 [01-architecture.md](01-architecture.md) §工具目录)
+recall / search_codebase / filter_logs / blast_radius / validate_patch / export_patch / memory_memorize / export_report。
 
 ## e2e 实证(2026-08-06,demo2 wpa_supplicant P2P scan 孤儿 radio work 泄漏)
 
@@ -48,10 +49,10 @@ bug-RCA 补丁质量:apply 过(Tier 0,validate_patch)= "**plausible**"(合法、
 
 ## 已知 gap
 - **✅ 补丁落盘(2026-08-06 解决)**:加了第 7 个 MCP 工具 `hyperion_export_patch`(wrap `git add -A && git diff --cached` → 写 `data/bug_rca/<repo>.patch` + 空 diff 自检),进 SKILL.md 第⑦步 + `hyperion-bug-rca` agent 第 8 步硬门。格式 unified diff(对齐 validate/ingest/report 整条管线;**不污染 repo**——无需建 commit)。**认识兑现**:memorize 存根因+修法(可检索),export_patch 补上给人/CI 看的 `.patch` 文件。
-- **报告不落盘(仍开)**:agent 给聊天总结,不写 `report.md`。下轮可让 agent 收尾把总结写 `data/bug_rca/<repo>-rca.md`(对齐老 workflow 的 render_report 输出位)。
+- **✅ 报告落盘(2026-08-06 解决)**:加了第 8 个 MCP 工具 `hyperion_export_report(content, repo_path)` —— agent 把报告 markdown 作参数传入 → 写 `data/bug_rca/<repo>-rca.md` + 空内容自检(治"假装写报告")。进 SKILL.md 第⑨步 + `hyperion-bug-rca` agent 第 10 步硬门。**跟 export_patch 对称**:补丁内容 git 生成(工具自己 diff),报告内容 agent 生成(传 content);报告排 memorize 之后(含 memorize id,是最终交付物)。对齐老 workflow 的 render_report 输出位。
 
 ### "硬门"的诚实边界(2026 前沿调研结论)
-skill/playbook 文字指令是 **soft(~95%),非确定性硬门**——Anthropic 自己文档承认("use hooks to enforce behavior deterministically")。三层 enforcement:**text skill(软)< 结构化 tool(更硬)< 事后交付验证(deer-flow 用 RunJournal 比对"产出 vs present",不匹配 = run ERROR)**。Hyperion post-pivot 是 **opencode 驱动**,Hyperion 不驱动模型 → 拿不到 `tool_choice` 强制 / Stop hook 那层确定性(那需要 Hyperion 自己跑 lead agent)。所以这里三道"硬门" = **确定性 tool(真 git/DB/文件操作)+ prompt 强制必调(软,靠 `hyperion-bug-rca` 专用 agent + steps + "步数将尽优先"语言,e2e #2 实证可靠)**。要真·确定性门,要么 Hyperion 自己跑 lead(违背转向),要么 opencode 出 Stop-hook 等价物(待观察)。本轮 export_patch 走"结构化 tool"层(比纯 bash `git diff > file` 硬:bash 会静默吞空 diff/改错树)。
+skill/playbook 文字指令是 **soft(~95%),非确定性硬门**——Anthropic 自己文档承认("use hooks to enforce behavior deterministically")。三层 enforcement:**text skill(软)< 结构化 tool(更硬)< 事后交付验证(deer-flow 用 RunJournal 比对"产出 vs present",不匹配 = run ERROR)**。Hyperion post-pivot 是 **opencode 驱动**,Hyperion 不驱动模型 → 拿不到 `tool_choice` 强制 / Stop hook 那层确定性(那需要 Hyperion 自己跑 lead agent)。所以这里四道"硬门" = **确定性 tool(真 git/DB/文件操作)+ prompt 强制必调(软,靠 `hyperion-bug-rca` 专用 agent + steps + "步数将尽优先"语言,e2e #2 实证可靠)**。要真·确定性门,要么 Hyperion 自己跑 lead(违背转向),要么 opencode 出 Stop-hook 等价物(待观察)。本轮 export_patch + export_report 走"结构化 tool"层(比纯 bash 硬:`git diff > file` 会静默吞空 diff/改错树,纯写文件会吞空报告)。
 
 ### 生产级迭代(留 backlog,本轮不做)
 - **`git format-patch`(mbox)+ `Assisted-by:` AI 标签**:kernel/wpa/bluez 上游贡献用 mbox(可 `git am` / `git send-email` / checkpatch),kernel 2025-8 落地 AI 代码政策要 `Assisted-by: Hyperion: <model> [bug-rca] [validate_patch]`(**绝不**让 AI 签 `Signed-off-by`,DCO 只人类签)。mbox 需建 commit(污染 repo,post-pivot 无 workspace 时麻烦),留 P-A/生产级迭代做(配 workspace commit 策略)。本轮 unified diff 够用(SWE-bench/OpenHands/SWE-agent 的 agent 产物也都是 unified diff,`git apply` 链直接吃)。
