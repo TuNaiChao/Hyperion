@@ -4,7 +4,7 @@ description: opencode 接 MCP server 的硬细节(2026-08-03 源码核实):配�
 metadata: 
   node_type: memory
   type: reference
-  modified: 2026-08-03T02:20:16.400Z
+  modified: 2026-08-06T12:40:08.522Z
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
 ---
 
@@ -28,3 +28,5 @@ R3.1 把 Hyperion 差异化能力做成 MCP 工具(`hyperion mcp serve` → sear
 **Hyperion 侧落地(都对齐了):** `_resolve_codebase` 四段兜底(--codebase > HYPERION_CODEBASE env > config.code_index.repo > cwd);delegate 注入 HYPERION_CODEBASE(从 workspace `<repo>__<bugid>` 推导)+ PYTHONUNBUFFERED;_parse_stream 审计 tool_use 进 `DelegateResult.tool_calls`。详见 [bug-rca-design.md §6](docs/设计/bug-rca-design.md)。关联 [[delegate-already-localizes]] [[pitfall-log]]。
 
 **⚠ 又一个 cwd 坑(2026-08-03 e2e 踩到):** opencode 把 MCP server 的 **cwd 设成 workspace/code**(InstanceState.directory),不是 Hyperion 根 → Hyperion config 里**相对的 `data/` 路径**(`store_path: data/memory`、LanceDB `data/code_index`)全解析到 `workspace/code/data/`,① 污染补丁(`git add -A` 连带 `data/memory/memory.db` + lancedb 进 diff,`validate_patch` apply --check 挂 → verified=False 不写 patch)② 记忆写到临时 workspace 库不持久(recall 查空)。**修法:`cmd_mcp` 在 `build_server` 前 `os.chdir(Hyperion 根)`**(_default_config_path().parent.parent)—— MCP server 是独立进程,工具都用绝对路径/表名(log_path 绝对、codebase 走 env、index 走 repo 名),不依赖 cwd。教训:被外部进程拉起的服务,其相对路径默认按"调用方 cwd"解析,要么 chdir 到自家根,要么 config 路径绝对化。
+
+**⚠ http transport 不注册原生工具(2026-08-06 e2e #3 实测,踩坑 #10 候选):** 想用 streamable-http(warm 长进程,解 ③ cold-boot)给 opencode 接,配 `mcp.hyperion = {type:"http", url:"http://127.0.0.1:8765/mcp"}`,warm server 起活(/mcp 返 406)。**但 opencode 1.18.11 的 http MCP 客户端没把工具注册成原生** —— agent 看不到 `hyperion_*` 原生工具,只能读 config + 写 curl 脚本手工握 initialize→tools/call 绕(warm server 收到的 POST 是 agent 的 curl,非 opencode 原生 MCP 客户端;浪费一整轮 token)。**改回 local stdio 立刻原生注册**(opencode 日志 `evaluated permission=hyperion_memory_recall ... action=allow`,agent 直接 `tool_use` hyperion_*)。**机理**:listTools 只列工具定义(便宜,不加载 embedder)→ stdio 冷启也能在 timeout 内完成注册,工具原生可见;首次 recall/search *调用* 才冷启 embedder(慢),故 `timeout` 要 ≥120000ms(模板默认 10000 不够 → 首次调用超时)。**结论:opencode↔hyperion 走 local stdio(原生工具全触发,e2e #3 证 7 工具全原生);http 留作 cold-boot 优化但需先解 opencode http MCP 注册问题(config 格式?1.18.11 bug?)——未深究,stdio 够用。** ✅ 模板 `config/opencode_hyperion.json` 的 `timeout` 已 10000→120000(commit `6338e85`,防首次 recall/search 冷启超时)。
