@@ -8,7 +8,7 @@
 
 三大场景,共享一个 harness(同一个 MCP server + 记忆 + 代码情报),各配一本 skill(菜谱):
 
-- **bug 根因定位** ✅ —— opencode + `bug-rca` skill + 6 个 hyperion 工具,agent 自驱定位根因、改代码、验证补丁、沉淀教训(不走固定管线,能自纠)。
+- **bug 根因定位** ✅ —— opencode + `bug-rca` skill + 7 个 hyperion 工具,agent 自驱定位根因、改代码、验证补丁、落盘补丁、沉淀教训(不走固定管线,能自纠)。
 - **补丁/PR 分析** ⏳ —— 给个补丁文件 / GitHub PR 链接 → 结合代码库分析(正确?作用?该不该合?)+ 存知识库;本地没仓自动 clone。批量聚合报告 + 检索 + Gerrit(留接口)。
 - **代码库深度调研** ⏳ —— 函数调用链(如"蓝牙连接流程涉及哪些函数")+ 跨版本差异(5.50 vs 5.85,上游修了?给参考代码)。
 
@@ -51,8 +51,8 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
    ↓ 加载 skill(playbook)         ↓ 调 MCP 工具(手术刀)
 [ skills: bug-rca ✅ | patch-rca ⏳ | research ⏳ ]
    ────────────────→  Hyperion MCP server(hyperion mcp serve)
-                          6 共享工具(recall / search_codebase / filter_logs /
-                          blast_radius / validate_patch / memorize)+ 专家工具(⏳ build_check / call_chain / cross_version_diff)
+                          7 共享工具(recall / search_codebase / filter_logs /
+                          blast_radius / validate_patch / export_patch / memorize)+ 专家工具(⏳ build_check / call_chain / cross_version_diff)
                           ↓
                   code_index + CRG(代码情报)· MemoryService(记忆,recall 4 路)· workspace(补丁验证)
                           ↓
@@ -61,7 +61,7 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
 
 一个 MCP server、N 个 skill、N+M 个工具,所有 agent 都能用。Hyperion 不抢 agent 的活,只递工具 + 菜谱。
 
-## 六个 MCP 工具(共享,已落)
+## 七个 MCP 工具(共享,已落)
 
 | 工具 | 作用 |
 |---|---|
@@ -70,6 +70,7 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
 | `hyperion_filter_logs` | 大日志按 关键字 ∩ 时间窗 过滤成有界摘录 |
 | `hyperion_blast_radius` | 改动影响面(结构图 BFS:改这些文件会波及谁) |
 | `hyperion_validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
+| `hyperion_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错) |
 | `hyperion_memory_memorize` | 写记忆 / 沉淀教训 |
 
 ## 文档
@@ -85,4 +86,4 @@ Python 3.12 · LangGraph + LangChain · uv 管理依赖 · **mcp** SDK(MCP serve
 
 ## 状态
 
-post-pivot 地基已落(commit `47654bd`,已 push):D0 MCP 双 transport + 6 工具 + `bug-rca` skill + `hyperion-bug-rca` opencode agent(validate/memorize 硬门,e2e 绿)+ 老 orchestrator 降级留参考。**下一步**:补丁分析(1a)→ 批量报告(1b)→ 调用链(2a)→ 跨版本(2b)。详见 [docs/设计/harness-v2/README.md](docs/设计/harness-v2/README.md) 路线表。
+post-pivot 地基已落(commit `47654bd`,已 push):D0 MCP 双 transport + 7 工具 + `bug-rca` skill + `hyperion-bug-rca` opencode agent(validate/export_patch/memorize 硬门,e2e 绿)+ 老 orchestrator 降级留参考。**下一步**:补丁分析(1a)→ 批量报告(1b)→ 调用链(2a)→ 跨版本(2b)。详见 [docs/设计/harness-v2/README.md](docs/设计/harness-v2/README.md) 路线表。
