@@ -368,3 +368,18 @@ metadata:
 
 - **#58** ✅ 已修(2026-08-03,R3.2):`_symbol_to_chunks`(符号路径)+ `_module_chunks`(模块路径,这才是真正肇事点——vendor 头无被解析符号 → 整文件落 module chunk)按行区间二次切分,复用预留 part/total + 独立 content_hash + 真实行号;`MAX_CHUNK_CHARS` 改总字符数=16000(留 DashScope 33000 安全余量);`_SKIP_DIRS` 加 `.pc`;6 单测绿 + wpa 全仓扫描 max=16000/0超限。
     - 原详情(留档):现象 = `hyperion index wpa` 挂 400 "Range of input length should be [1, 33000]";根因 = chunker 按 Symbol 整块切无 max-chunk-size 兜底。**离线扫描发现 driver_nl80211.c 其实没事(符号各<12K),肇事的是 qca-vendor.h(300KB 无符号头 → 单 module chunk 304044 字符)→ module 路径(`_module_chunk`)也得切,光修符号路径不够。**
+
+## ★ recall→定位 反馈闭环:价值未证实(2026-08-06 实测复盘,待验证)
+
+59. **recall→bug-RCA 定位 的反馈闭环价值需先验证,再决定加机关** — `node_recall_lessons`(②[b])+ delegate 调 `hyperion_recall`。
+    - 背景:R3 收尾建了 ②[b](确定性 recall 预注入)+ 填 BugLesson 字段(②[a]),roadmap([[similar-bug-recall-roadmap]])背书"该做"。但 2026-08-06 用 demo2 真实数据复盘:**"能动"但"有用"未证实,且唯一实测偏弱/偏负**。
+    - 实测发现(demo2 同 bug 反复跑):
+      ① **机制成立**:recall 正确返回先验(top1 带根因+file:line),delegate 也调了 hyperion_recall。
+      ② **但没带来增益**:delegate 照样 26 read+17 grep、撞步数上限被强制收尾、**照样产次优补丁**(35s 超时兜底,非金标 `scan_only_handler` 落点)。recall 既没省工、也没提质量。
+      ③ **同 bug 是 recall 价值最弱场景**:先验=上次答案 → 要么冗余(delegate 本就能定位)要么**锚定**(先验和最终结论几乎逐字一致;上次次优修法的痕迹可能代代相传)。recall 真正卖点"类似 bug"我们**从没测过**(只有 demo2)。
+      ④ **去重失效**:memory 里 8 条同 demo2 bug 的近似 lesson 没合并(content-addressed id 对"同 bug 不同措辞"太严),conf 都停 0.35(从未同 id 重提 bump),memory 在积近似项。
+      ⑤ **②[b] 在 demo2 上 dormant**:demo2 纯日志驱动(trigger="")→ recall_lessons 按设计跳过;recall 实际只靠 delegate 自觉调 MCP 工具(软 nudge)。
+    - **结论(诚实)**:基础设施(store/recall 4 路/memorize)合理且参考仓最强;但 **recall→定位 这条具体反馈的价值是"未证实的假设"**,我们 ahead of validation 地把注入做出来了(踩"先建后证"边)。
+    - **该做的(验证优先,别再加机关)**:找个**和 demo2 不同但相关**的 wpa bug(如另一个 radio work 泄漏 / p2p 扫描别的症状),清空或隔离 memory 跑基线 vs 带 demo2 lesson 跑,对比定位步数/根因准确度/补丁质量。**有增益 → 设计证实,B(P1 自动 query)才值得做;无增益 → recall 用途转向(喂报告/补丁选型而非定位)或降级 dormant。**
+    - **暂不做(避免重复过度设计)**:B(P1 自动 query 构造)—— 给未证实机制加更多机关 = 沉没成本驱动加复杂度,先验证。A(给 demo2 加 --trigger)—— 只让机关动起来给观测用,不改善同 bug 质量、反增锚定,别常驻(最多一次性观测)。
+    - 目标阶段:**R3 收尾后的验证实验**(在动 P1 自动 query / 加 recall 机关之前必做)。关联 [[r3-memory-closure-handoff]] [[similar-bug-recall-roadmap]] [[avoid-overengineering]] [[pitfall-log]]。
