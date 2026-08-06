@@ -39,6 +39,8 @@ def _ki_to_hit(ki: KnowledgeItem, score: float) -> RecallHit:
         evidence=ki.evidence,
         confidence=ki.confidence,
         valid_at=ki.valid_at,
+        created_at=ki.created_at,
+        superseded_by=ki.superseded_by,
         item_id=ki.id,
     )
 

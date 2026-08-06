@@ -208,6 +208,8 @@ class RecallHit(BaseModel):
     evidence: list[Evidence] = Field(default_factory=list)
     confidence: float = 0.0
     valid_at: datetime | None = None
+    created_at: datetime | None = None  # 写入时间(让消费方判新旧、偏好最新;对标 mem0 v3 时序排序)
+    superseded_by: str | None = None  # 非空 = 这是被取代的旧版本(R3.5+ 仍可召回作参考;手动 invalidate 走 invalid_at 不在此列)
     item_id: str | None = None  # 命中的 KI id(memory 路;code/structural 路为 None)
     # code/structural 路的定位字段(memory 路用 evidence)
     file: str | None = None
@@ -225,5 +227,8 @@ class RecallHit(BaseModel):
             ev = ""
         loc = f"  @{ev}" if ev else ""
         conf = f"  conf={self.confidence:.2f}" if self.confidence else ""
+        # R3.5+(2026-08-06):显写入日期 + 旧版本标记,让模型判新鲜度、偏好最新(对标 mem0 v3 时序排序)。
+        dt = f"  {self.created_at:%Y-%m-%d}" if self.created_at else ""
+        old = "  (旧版本)" if self.superseded_by else ""
         tag = f"[{self.source}]" if self.source != "memory" else ""
-        return f"- {tag}{self.summary}{loc}{conf}".rstrip()
+        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}".rstrip()

@@ -1,7 +1,7 @@
 """R1 记忆核心 native 后端 · 离线逻辑测试(tests/services/memory/test_memory_native.py)。
 
 不依赖任何外部 API:embedding 用手工向量、抽取(memorize_report)不测(需 LLM)。
-覆盖:store 往返 / memorize 合并+冲突取代 / recall 多路 RRF+衰减 / consolidate 升级。
+覆盖:store 往返 / memorize 合并+冲突追加(R3.5+ 不再 supersede)/ recall 多路 RRF+衰减 / consolidate 升级。
 """
 
 from __future__ import annotations
@@ -83,14 +83,16 @@ def test_memorize_remention_merges_confidence(store, scope):
     assert store.get(a.id).confidence > 0.5     # Bayes 累加(delegate 初始 0.5 → 0.65)
 
 
-def test_memorize_conflict_supersedes(store, scope):
+def test_memorize_conflict_appends_both(store, scope):
+    """R3.5+(2026-08-06,对标 mem0 v3):同主题不同结论 → 不再 supersede,新旧都 active 并存(检索时最新为主)。"""
     old = _ki("结论A radio work 阻塞", scope=scope, symptom="扫描挂起", root_cause="旧结论未释放")
     memorize_items([old], store=store)
     new = _ki("结论B 真因死锁", scope=scope, symptom="扫描挂起", root_cause="新结论死锁")  # 同症状不同根因
     memorize_items([new], store=store)
-    assert store.get(old.id).active is False                       # 旧被取代
-    assert store.get(old.id).superseded_by == new.id
-    assert store.get(new.id).active is True
+    assert store.get(old.id).active is True                        # 旧不再被取代,保持 active
+    assert store.get(old.id).superseded_by is None                 # 没盖戳作废
+    assert store.get(new.id).active is True                        # 新也 active
+    assert store.count(scope) == 2                                 # 两条并存(追加,非取代)
 
 
 # ── recall 多路 RRF + 衰减 ──────────────────────────────────────
@@ -116,6 +118,28 @@ def test_recall_fuses_bm25_and_vector(store, scope):
     hits = recall("radio work", scope, store=store, embedder=FakeEmb(), reranker=None, top_k=2)
     assert hits
     assert all(h.source == "memory" for h in hits)
+
+
+def test_recall_surfaces_conflict_both_and_hides_invalidated(store, scope):
+    """R3.5+(2026-08-06):冲突两条都召回(旧版本作参考,created_at 可见);手动 invalidate(invalid_at)仍隐藏。"""
+    a = _ki("根因A 扫描挂起", scope=scope, symptom="扫描挂起", root_cause="结论A", embedding=[0.1, 0.9, 0.0])
+    b = _ki("根因B 扫描挂起", scope=scope, symptom="扫描挂起", root_cause="结论B", embedding=[0.1, 0.9, 0.0])
+    memorize_items([a, b], store=store)                           # 同主题不同结论 → 都 active 并存(不再 supersede)
+    assert store.count(scope) == 2
+
+    class FakeEmb:
+        def embed_query(self, q):
+            return np.asarray([0.1, 0.88, 0.0], dtype=np.float32)
+
+    hits = recall("扫描挂起", scope, store=store, embedder=FakeEmb(), reranker=None, top_k=5)
+    assert len(hits) == 2                                         # 冲突两条都召回(superseded_by 不再过滤)
+    assert all(h.created_at is not None for h in hits)            # created_at 可见(消费方判新旧)
+
+    # 手动 invalidate 一条(invalid_at)→ recall 隐藏(错 fact 该藏);另一条仍在
+    assert store.set_invalid(a.id) is True
+    hits2 = recall("扫描挂起", scope, store=store, embedder=FakeEmb(), reranker=None, top_k=5)
+    assert all(h.item_id != a.id for h in hits2)
+    assert any(h.item_id == b.id for h in hits2)
 
 
 # ── consolidate 升级 mental_model ───────────────────────────────

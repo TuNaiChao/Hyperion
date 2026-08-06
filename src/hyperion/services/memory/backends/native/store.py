@@ -373,7 +373,9 @@ class MemoryStore:
             f"SELECT {_cols('ki')}, -bm25(ki_fts) AS score "
             "FROM ki_fts JOIN knowledge_items ki ON ki.rowid = ki_fts.rowid "
             f"WHERE ki_fts MATCH ? AND {' AND '.join(clauses)} "
-            "AND ki.invalid_at IS NULL AND ki.superseded_by IS NULL "
+            "AND ki.invalid_at IS NULL "
+            # R3.5+(2026-08-06):不再过滤 superseded_by —— 旧版本重见天日作参考,靠 recall decay 排"最新为主"。
+            # 仅手动 invalidate(invalid_at 非空,错 fact)仍隐藏。list/count(管理视图)仍 active-only。
             "ORDER BY score DESC LIMIT ?"
         )
         try:
@@ -393,7 +395,8 @@ class MemoryStore:
         if query_vec is None:
             return []
         clauses, params = _scope_filter(scope, repo)
-        clauses += ["embedding IS NOT NULL", "invalid_at IS NULL", "superseded_by IS NULL"]
+        # R3.5+(2026-08-06):不再过滤 superseded_by(旧版本可召回作参考);只排除手动 invalidate。
+        clauses += ["embedding IS NOT NULL", "invalid_at IS NULL"]
         rows = self._conn.execute(f"SELECT {_KI_COLS} FROM knowledge_items WHERE {' AND '.join(clauses)}", params).fetchall()
         if not rows:
             return []

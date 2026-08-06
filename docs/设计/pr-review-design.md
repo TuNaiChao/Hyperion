@@ -59,7 +59,7 @@ PR URLs / 文件 / gh api
 | 能力 | 位置 | 复用方式 |
 |---|---|---|
 | 单补丁→记忆 | `ingest.py:274` PatchIngestPipeline(解析 :160 / retrieve :329 / 抽根因 :366 / 组装 KI :391 / **id 按 diff 算** :415) | 直用,补 `pr_url`/`pr_number`/`symptom` 字段 |
-| 记忆去重/合并 | `memorize.py`:Bayes 合并 :33 / related 连边 :61 / supersede :109 / 出口 :135 | 直用;**补 symptom 让 `_same_subject` :79 跨 PR 去重生效(现 gap)** |
+| 记忆去重/合并 | `memorize.py`:Bayes 合并 :33(同事实重提)/ related 连边 :61 / 出口 :135 | 直用。**R3.5+(2026-08-06)已去 supersede**(对标 mem0 v3):冲突只追加、检索时 decay 排"最新为主、旧作参考"(recall 不过滤 `superseded_by`)。**仍须补 `symptom`** → 检索侧 `_same_subject` :79 分组取最新要用 |
 | 批量并发 | `deep_research/_research.py:290` `Semaphore(3)`+`gather`,单条失败不连坐 | 直用 |
 | 报告 + 防幻觉 | `deep_research/report.py:14` 渲染 + `_verify.py:89` Existence@Line | 套结构、换维度 |
 | 检索 | `code_index/retrieval.py:236` retrieve | 直用(repo 需先 `hyperion index`) |
@@ -67,8 +67,8 @@ PR URLs / 文件 / gh api
 
 ## 3. 关键设计决策
 
-- **D1 数据模型 —— 不加 kind、不加 scope 维度**。PR 标识塞进 `tags=["patch_insight","pr:<o>/<r>#<n>","module:<x>"]` + `source`=PR URL + `commit_sha`=merge commit;`SourceTier.imported`(0.6)直用。Scope 是"记忆空间隔离=(人,库)"(schema.py:71),PR 号是单条知识属性不是隔离维度,不该进 Scope。kind 用现有 `bug_lesson`(单条 PR 教训)+ `codebase_fact`(聚合结论),不新增(ingest.py 顶部已论证加 kind 要动 schema/extract/consolidate/FTS,不值)。**但必须补 `symptom` 字段**(bug_lesson 专用字段 schema.py:144-147 已有,只是 PatchIngestPipeline 没填)—— 否则 `_same_subject`(memorize.py:79)对补丁 KI 返 False → 跨 PR 修同根因不会触发 supersede。这是 R4.1.1 要修的真 gap。
-- **D2 去重 —— id 按 diff 内容算**(R3.4 已验证:同 patch 重抓 → 同 id → Bayes 合并,conf 0.30→0.43)。同 PR 重抓自动合并。**跨 PR 语义近邻去重(不同 PR 修同一 bug)→ backlog**,需 embedding 聚类,不在 R4.1 首发。
+- **D1 数据模型 —— 不加 kind、不加 scope 维度**。PR 标识塞进 `tags=["patch_insight","pr:<o>/<r>#<n>","module:<x>"]` + `source`=PR URL + `commit_sha`=merge commit;`SourceTier.imported`(0.6)直用。Scope 是"记忆空间隔离=(人,库)"(schema.py:71),PR 号是单条知识属性不是隔离维度,不该进 Scope。kind 用现有 `bug_lesson`(单条 PR 教训)+ `codebase_fact`(聚合结论),不新增(ingest.py 顶部已论证加 kind 要动 schema/extract/consolidate/FTS,不值)。**但必须补 `symptom` 字段**(bug_lesson 专用字段 schema.py:144-147 已有,只是 PatchIngestPipeline 没填)—— 否则 `_same_subject`(memorize.py:79)对补丁 KI 返 False → 检索侧无法按主题分组。这是 R4.1.1 要修的真 gap。
+- **D2 去重 —— id 按 diff 内容算 + 检索时最新为主**(对标 mem0 v3,R3.5+ 2026-08-06)。① 同 patch 重抓 → 同 id → Bayes 合并(R3.4 验证:conf 0.30→0.43);② 跨 PR 修同根因(同 symptom 不同结论)**不再写时 supersede**,改**只追加 + 检索时 decay 排"最新为主、旧作参考"**(recall 已去 `superseded_by` 过滤,RecallHit 带 `created_at`)。`_same_subject`/:79 留给检索侧按主题分组取最新(将来 pull-by-need)。
 - **D3 影响面 —— 扩 `CrgStructuralBackend`**(`structural.py:59`)接 `get_impact_radius` + `analyze_changes`。现在手握每个 PR 的 `changed_files`,正是 structural.py:44 注释里挂了半年的 backlog("get_impact_radius 吃 changed_files 不吃自然语言,放 R3")的天然入口。全图预算 `find_hub_nodes`/`find_bridge_nodes`/`get_all_community_ids`(graph.py:1274)跨 PR 复用(只算一次)。
 - **D4 模块归属** —— `get_community_ids_by_qualified_names`(graph.py:1227,450 条一批)把每个 PR 的 changed 节点归到模块;`get_architecture_overview`(communities.py:1020)的 `cross_community_edges` = **模块耦合热力图**(一个 PR 改多个社区 = 高耦合改动,架构级信号)。
 - **D5 安全分析 —— 分层省 token**(对齐"执行信号分层"哲学)。① CRG `compute_risk_score`(六因子,**名字命中 `SECURITY_KEYWORDS` → +0.20**,changes.py:312)给每条 PR 一个 risk_score;② 关键词/risk 预筛出"安全相关"子集;③ **只对子集**送 LLM 深分类(CWE 类别 / 引入还是修复漏洞 / taint 路径,仿 vulnerability-spoiler-alert-action)。不全量 LLM —— 几百条 PR 才烧得起。
@@ -104,7 +104,7 @@ PR URLs / 文件 / gh api
 | 步 | 内容 | 复用 / 新 | 退出标准 |
 |---|---|---|---|
 | **R4.1.0** | `services/github/pr_fetcher.py`:URL/文件/`gh api` → `[(pr_meta, diff_text)]`;watermark 断点续传(几百条挂了能续);GITHUB_TOKEN 走 .env | 新(借 deer-flow `github_api.py:51` + robomp `github_backend.py:28` + `issue_index.py:102`) | mock gh 单测 + 真仓小批量抓取成功率 |
-| **R4.1.1** | PatchIngestPipeline 直用 + 补 `pr_url`/`pr_number`/`symptom` 字段 + tags 带 `pr:`/`module:` 键 | 扩 `ingest.py:391` `_assemble_ki` | 同 PR 重抓合并(id 不重复);跨 PR 修同根因触发 supersede(symptom 修复) |
+| **R4.1.1** | PatchIngestPipeline 直用 + 补 `pr_url`/`pr_number`/`symptom` 字段 + tags 带 `pr:`/`module:` 键 | 扩 `ingest.py:391` `_assemble_ki` | 同 PR 重抓合并(id 不重复);跨 PR 修同根因 → **检索时最新为主**(R3.5+ 不 supersede;symptom 让检索侧 `_same_subject` 分组取最新) |
 | **R4.1.2** | 扩 `CrgStructuralBackend`(`structural.py:59`)接 `get_impact_radius`+`analyze_changes`+全图预算 hub/bridge/community 索引(跨 PR 复用) | 扩 structural.py | 单 PR changed_files → 模块归属 + blast radius + risk_score 对得上人工 |
 | **R4.1.3** | 聚合层:按 module+theme 分桶 + CRG risk_score/keyword 预筛安全子集→LLM 深分类 + 每桶 map-reduce summary | 新 | 桩 KI 聚合单测;安全子集只命中预期那几条 |
 | **R4.1.4** | `workflows/pr_review/`(套 deep_research 五件套 graph/state/fan-out/report/verify)+ §5 模板 + cited-reporter + Verifier + 聚合结论抽 codebase_fact 入记忆 | 新(套模板) | 报告渲染 + 虚假引用=0 + 记忆 recall 命中 |
@@ -126,12 +126,12 @@ PR URLs / 文件 / gh api
 | 几百条 PR 的 token 成本 | 分层深度(默认轻量 ~1 LLM/PR,只子集深挖);安全分类只跑预筛子集;聚合 map-reduce 而非全量塞一个 context |
 | CRG 图未建/iggraph 缺 | 前置 `hyperion index` + `CodeGraph.full_build`;igraph 缺则社区降级文件聚类(deep_research 已处理,F9);文档标注 |
 | LLM 聚合幻觉(编 PR 不存在的改动) | cited-reporter 锚 PR#:file:line + `_verify_report_citations` 硬闸;数字从结构化聚合来不让 LLM 报 |
-| 跨 PR 语义重复(不同 PR 修同 bug) | D2:id 按 diff 去重只管同 patch;语义近邻去重进 backlog(embedding 聚类),首发不做、文档标清 |
+| 跨 PR 语义重复(不同 PR 修同 bug) | D2:id 按 diff 去重只管同 patch;跨 PR 同根因走"检索时最新为主"(R3.5+ 已落地,recall decay 排序);**显式按 `_same_subject` 分组取最新**进 backlog(pull-by-need,观测到刷屏再做) |
 | 私有仓鉴权 | GITHUB_TOKEN 走 .env(gitignore);只做布尔/非空检查,永不打印值 |
 
 ## 8. backlog(pull-by-need,踩到痛点再补)
 
-- 跨 PR 语义近邻去重(embedding 聚类,"不同 PR 修同一 bug"合并)。
+- 跨 PR 显式按 `_same_subject` 分组取最新(检索侧 dedup;R3.5+ 已转"检索时最新为主",此条是加显式分组避免同主题刷屏,pull-by-need)。
 - PR review 评论 / CI 状态接入(robomp `github_backend.py` 的 `list_pr_reviews`/`list_review_comments` 接口形状已备)。
 - "PR 一开就自动分析"的 webhook 触发(deer-flow `backend/app/gateway/github/` 是单 PR 事件路由范式,参考价值低,按需)。
 - changelog 风格章节(oh-my-pi `scripts/ci-release-notes.ts` 是 TS,逻辑可瞄)。
