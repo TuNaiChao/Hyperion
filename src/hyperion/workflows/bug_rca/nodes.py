@@ -1,8 +1,10 @@
 """bug-RCA 多阶段委托 + 迭代 verify-refine(R3.1 #54-rework,B)+ 工具驱动(踩坑 #2)。
 
-五步(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— recall/localize/assemble_localize 三节点
-与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具):
-  ingest → delegate_localize_loop  (阶段① 定位:opencode 自定位 + 调 hyperion_* 工具,verify-refine 循环,max K1 轮,同会话)
+六步(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— 旧 recall/localize/assemble_localize 三节点
+与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具。R3 收尾 ②[b] 又加回
+recall_lessons —— 但它只翻记忆预注入先验、不定位,和被砍的旧 recall 本质不同,不算重造漏斗):
+  ingest → recall_lessons  (1.5 确定性预注入:翻记忆 top-K 同类 bug 教训 → 预进 localize prompt,②[b])
+        → delegate_localize_loop  (阶段① 定位:opencode 自定位 + 调 hyperion_* 工具,verify-refine 循环,max K1 轮,同会话)
         → assemble_repair
         → delegate_repair_loop    (阶段② 修复:verify-refine 循环,max K2 轮,同会话 + git diff 观察 + validate_patch 门控)
         → report_memorize
@@ -80,6 +82,42 @@ async def node_ingest(state: BugRcaState) -> dict:
     return {"scope": Scope(owner="default", codebase=codebase), "workspace": str(ws)}
 
 
+# 预注入召回的条数(顶 K 条先验;P0 写死,日后要调再进 config)
+_PREINJECT_TOP_K = 3
+
+
+async def node_recall_lessons(state: BugRcaState) -> dict:
+    """1.5 确定性 recall 预注入:从记忆召回 top-K 同类 bug 教训,渲染成"先验"段预进 localize prompt。
+
+    面向小白:外勤(opencode)出发定位前,Hyperion 先翻一遍"历史案卷"(长期记忆),把和这个 bug
+    可能相关的历史教训**确定性地**塞进它的任务单开头(不用外勤自己想起去查)。这是"0 决策轮"的
+    廉价预取 —— 对标 deer-flow DynamicContextMiddleware(hybrid:预取 + 工具)。
+
+    为什么不算"重造漏斗"(踩坑 #2):漏斗是 Hyperion 自己**定位**(file→function→line)再喂,和
+    opencode 重复;这里**只翻记忆、不定位**,opencode 仍全权自主定位。bug-rca-design.md §2 末尾
+    明确预留了这条路("召回的历史教训可预进 prompt,0 决策 turn")。
+
+    安全:先验≠答案。verify-refine + 证伪式自审纪律拦得住盲信旧记忆(e2e 实证)。recall 失败/空
+    → 返空段(绝不阻断 workflow;delegate 还能调 MCP `hyperion_recall` 工具按需深挖)。
+    """
+    scope = state.get("scope")
+    trigger = (state.get("trigger") or "").strip()
+    if scope is None or not trigger:  # 没 scope(ingest 没跑)或无线索 → 跳过
+        return {"recalled_lessons_ctx": "", "recalled_lessons": []}
+    try:
+        svc = get_memory_service()
+        # 用 search(memory-only,不 bump):预取是被动,不计入 mental_model 巩固指标;delegate
+        # 主动调 hyperion_recall(走 recall,会 bump)才算"真命中"。一行可切回 recall。
+        hits = await svc.search(trigger, scope, top_k=_PREINJECT_TOP_K)
+    except Exception:  # noqa: BLE001 —— recall 失败绝不阻断 bug-RCA 主流程
+        return {"recalled_lessons_ctx": "", "recalled_lessons": []}
+    if not hits:
+        return {"recalled_lessons_ctx": "", "recalled_lessons": []}
+    # 各 hit 自带 file:line 溯源 + 置信度 + 日期(render() 已就绪),消费方判新鲜度、偏好最新。
+    ctx = "\n".join(h.render() for h in hits)
+    return {"recalled_lessons_ctx": ctx, "recalled_lessons": hits}
+
+
 def _code_dir(state: BugRcaState) -> str:
     """delegate 的工作目录:有 workspace → workspace/code(opencode 在此 read+edit);
     无 workspace(兼容/降级)→ repo_root。
@@ -93,13 +131,14 @@ def _code_dir(state: BugRcaState) -> str:
     return state["repo_root"]
 
 
-def _build_localize_prompt(trigger: str, schema: dict, log_path: str | None = None) -> str:
+def _build_localize_prompt(trigger: str, schema: dict, log_path: str | None = None,
+                           prior_lessons: str = "") -> str:
     """阶段① 定位 prompt:线索 + 自主定位 + 证伪自审 + 契约。
 
-    砍漏斗后(踩坑 #2,2026-07-31):不再预喂「锚点/历史教训」—— opencode 自主定位,**优先调
-    Hyperion 的 MCP 工具**(search_codebase 语义找码 / recall 翻教训 / filter_logs 筛大日志)缩范围,
-    比 grep 整库又准又省;再 read/grep 精读、追调用链。**工具名 + 优先级写在 opencode agent 持久
-    prompt 里**(config/opencode_hyperion.json),这里只给任务 + 契约,不硬编码工具名(免得前缀对不上)。
+    砍漏斗后(踩坑 #2):**不预喂「定位锚点」**(那是和 opencode 重复的定位漏斗,已砍);但
+    **预喂「历史同类 bug 教训」**(②[b],hybrid 的廉价预取那段:0 决策 turn 先验,opencode 仍
+    全权自主定位)。**工具名 + 优先级写在 opencode agent 持久 prompt 里**,这里只给任务 + 契约 +
+    先验,不硬编码工具名。
     """
     log_hint = ""
     if log_path:
@@ -110,7 +149,20 @@ def _build_localize_prompt(trigger: str, schema: dict, log_path: str | None = No
             f"until=\"<故障窗止 HH:MM:SS>\")` 取时间窗内的精华行(默认封顶 400 行)。"
             f"故障窗起止从日志/线索里读出;需要更细再缩窗调一次。\n###\n"
         )
-    return f"""你是 C/系统软件 bug 根因定位专家。**只定位根因,不要写补丁**。
+    # R3 收尾 P0(②[b]):确定性预注入历史同类 bug 教训(0 决策 turn 先验)。对标 deer-flow
+    # DynamicContextMiddleware(hybrid:预取廉价上下文 + 工具按需深挖);区别于踩坑 #2 的定位
+    # 漏斗——这里**不定位**,只把记忆先验预进 prompt。verify-refine + 证伪纪律拦盲信(e2e
+    # 证 delegate 会主动证伪旧记忆偏差),故"先验非答案"安全。
+    prior_block = ""
+    if prior_lessons:
+        prior_block = (
+            "### 历史同类 bug 教训(Hyperion 记忆先验)###\n"
+            "下面是 Hyperion 从历史 bug 分析中沉淀的、可能与本次相关的教训。"
+            "**这是先验/聚焦线索,不是答案** —— 可能与本次 bug 不完全一致,"
+            "务必结合本次日志/代码自行核验(与证据矛盾时以证据为准)。\n"
+            f"{prior_lessons}\n###\n\n"
+        )
+    return f"""{prior_block}你是 C/系统软件 bug 根因定位专家。**只定位根因,不要写补丁**。
 
 ### Bug 线索 ###
 {trigger or "(见日志,自行提取故障现象)"}
@@ -139,7 +191,11 @@ async def node_delegate_localize_loop(state: BugRcaState) -> dict:
     localization = None            # 最后一次拿到的 localization_json(喂阶段②)
     last_result = None             # 最后一次 delegate 回执(report 用)
     verdict_chain: list[str] = []  # 每轮 verdict(report 显示 verify-refine 过程)
-    prompt = _build_localize_prompt(state["trigger"], schema, state.get("log_path"))
+    # prior_lessons 来自 node_recall_lessons(②[b] 确定性预注入);revisit 轮不重塞(同 session 已注入)。
+    prompt = _build_localize_prompt(
+        state["trigger"], schema, state.get("log_path"),
+        prior_lessons=state.get("recalled_lessons_ctx", ""),
+    )
 
     for i in range(k1):
         # iter0 新 session(continue_session=False);其后 --continue 续同一个 session —— 复用 opencode
@@ -345,6 +401,28 @@ def _coerce_evidence_line(v) -> int | None:
     return None
 
 
+def _resolve_commit_sha(repo_root: str) -> str | None:
+    """取原仓当前 HEAD 的 commit sha(BugLesson 的"保质期锚点")。
+
+    面向小白:一条 bug 教训要锚到一个具体的代码版本——就像病历写"基于第几版药典诊断"。
+    以后代码改了、这条教训可能过时,有 commit_sha 就能判断它还适不适用。
+
+    取**原仓 repo_root** 的 HEAD(不是 workspace/code —— 后者在建 workspace 时被额外
+    commit 成 'workspace base',不是真正的代码状态锚点)。原仓不是 git 仓(如 example
+    片段)或 git 不可用 → 返 None(schema 接受 None,不崩)。
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo_root, "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode == 0:
+            return proc.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):  # noqa: BLE001 —— git 不可用/非 git 仓 → None
+        pass
+    return None
+
+
 async def node_report_memorize(state: BugRcaState) -> dict:
     """5. report + memorize:patch 从 repair loop 观察;root_cause/evidence 从阶段① localization_json。"""
     repair_result = state.get("delegate_result")
@@ -368,7 +446,7 @@ async def node_report_memorize(state: BugRcaState) -> dict:
             f"## 补丁\n```diff\n{patch}\n```\n"
         )
 
-    out_dir = Path("data/bug_rca")
+    out_dir = Path("data/bug_rca")  # 全局:最新一份快照(CLI 输出指向"最新",方便直接看)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo_name = Path(state["repo_root"]).name
     report_path = out_dir / f"{repo_name}-rca.md"
@@ -376,6 +454,20 @@ async def node_report_memorize(state: BugRcaState) -> dict:
     patch_path = out_dir / f"{repo_name}.patch"
     if patch:
         patch_path.write_text(patch, encoding="utf-8")
+    # 同时归档到**本次 workspace** 的 report/ + patch/(manager.py 预留的目录):每 bug 一份,
+    # 不被下次同仓跑覆盖(全局 data/bug_rca/ 按仓名覆盖会丢历史,这里保每次归档)。失败不阻断主流程。
+    ws = state.get("workspace")
+    if ws:
+        try:
+            ws_report = Path(ws) / "report" / f"{repo_name}-rca.md"
+            ws_report.parent.mkdir(parents=True, exist_ok=True)
+            ws_report.write_text(report_md, encoding="utf-8")
+            if patch:
+                ws_patch = Path(ws) / "patch" / f"{repo_name}.patch"
+                ws_patch.parent.mkdir(parents=True, exist_ok=True)
+                ws_patch.write_text(patch, encoding="utf-8")
+        except OSError:  # noqa: BLE001 —— workspace 归档失败不阻断(全局那份已写)
+            pass
 
     svc = get_memory_service()
     evidence = []
@@ -391,9 +483,21 @@ async def node_report_memorize(state: BugRcaState) -> dict:
             evidence.append(Evidence(file=efile, line=_coerce_evidence_line(e.get("line"))))
         except Exception:  # noqa: BLE001 —— 坏 evidence 跳过,不崩整个 workflow
             continue
+    # R3 收尾 P0(②[a]):填齐 BugLesson 的 symptom/fix_patch/blast_radius_files/commit_sha ——
+    # 召回先验才含完整修复图景(对类似 bug 定位最有用);commit_sha 锚原仓代码状态(保质期)。
+    blast_radius = loc.get("blast_radius_files") or []
+    if not blast_radius:  # 兜底:delegate 没给 blast_radius → 用 evidence 文件去重
+        blast_radius = []
+        for e in evidence:
+            if e.file and e.file not in blast_radius:
+                blast_radius.append(e.file)
     lesson = KnowledgeItem(
         kind="bug_lesson", repo=repo_name, scope=scope,
         summary=root_cause[:200], root_cause=root_cause, detail="", evidence=evidence,
+        symptom=(loc.get("problem_summary") or (state.get("trigger") or "")[:200]),
+        fix_patch=patch,
+        blast_radius_files=blast_radius,
+        commit_sha=_resolve_commit_sha(state["repo_root"]),
         source="bug_rca", source_tier=SourceTier.inferred,
     )
     await svc.memorize([lesson], scope)

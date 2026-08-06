@@ -24,12 +24,15 @@
 
 ---
 
-## 1. 工作流(StateGraph;2026-07-31 简化为五步)
+## 1. 工作流(StateGraph;六步 = 2026-07-31 简化为五步 + R3 收尾加确定性 recall 预注入)
 
 > 旧版八步(ingest→recall→localize→assemble_localize→delegate_localize_loop→assemble_repair→delegate_repair_loop→report)里,**recall / localize / assemble_localize 三步是 Hyperion 自己跑的定位漏斗**——与 opencode 重复,已**砍掉合并**。现在 opencode 在定位阶段自主完成(调 Hyperion 的 MCP 工具缩范围),Hyperion 只负责调度 + 验证 + 报告 + 记忆。
+>
+> **R3 收尾(②[b],2026-08-06)又加回一个 `recall_lessons` 节点** —— 但它和被砍的旧 recall **本质不同**:旧 recall 是定位漏斗的一部分(圈锚点喂 opencode,重复定位);新 `recall_lessons` **只翻记忆、不定位**,把历史同类 bug 教训**确定性地预进** localize prompt(0 决策 turn 先验),opencode 仍全权自主定位。对标 deer-flow `DynamicContextMiddleware`(hybrid:预取廉价上下文 + 工具按需深挖)。详见 §2 末 token 取舍提示。
 
 ```
 START → ingest
+   → recall_lessons              确定性预注入:翻记忆 top-K 同类 bug 教训 → 渲染成"先验"段预进 localize prompt(②[b],0 决策 turn)
    → [delegate_localize_loop]   阶段① 定位:opencode 自主定位(调 hyperion_recall/search_codebase/filter_logs 工具)
                                   + 证伪式自审 verdict → 没把握就 --continue 同会话重定位(max K1)
    → assemble_repair
@@ -41,22 +44,24 @@ START → ingest
 | 步 | 中文名 | 干啥(大白话) |
 |---|---|---|
 | **1 ingest** | 立案 | 接案,给外勤搭独立工位(workspace),放全量代码 + 问题描述(PDF/md/txt 经 `trigger_parser.parse_issue` 转纯文本)+ 契约,不污染原仓 |
-| **2 delegate_localize_loop** | 派外勤定位(+自审) | opencode 定位根因;**优先调 Hyperion 工具缩范围**(recall 翻记忆、search_codebase 语义找代码、filter_logs 筛日志);**证伪式自审**(verdict);没把握就同会话重定位 |
-| **3 assemble_repair** | 组修复卷宗 | 锁死的根因 + evidence 代码片段 + 修复契约 |
-| **4 delegate_repair_loop** | 派外勤修复(+验活) | opencode 直接改 code/;**git diff 观察补丁 + `validate_patch` 门控**;没过就同会话再修 |
-| **5 report+memorize** | 写报告+记笔记 | 金标准骨架中文报告;根因+修法沉淀进记忆 |
+| **2 recall_lessons** | 翻档案递参考(②[b]) | 出发前 Hyperion **主动**翻历史案卷(记忆),把和这个 bug 最像的几条教训钉在外勤任务单开头(确定性预注入,不靠外勤自觉查);**先验非答案**,外勤须自行核验 |
+| **3 delegate_localize_loop** | 派外勤定位(+自审) | opencode 定位根因;**优先调 Hyperion 工具缩范围**(recall 翻记忆、search_codebase 语义找代码、filter_logs 筛日志);**证伪式自审**(verdict);没把握就同会话重定位 |
+| **4 assemble_repair** | 组修复卷宗 | 锁死的根因 + evidence 代码片段 + 修复契约 |
+| **5 delegate_repair_loop** | 派外勤修复(+验活) | opencode 直接改 code/;**git diff 观察补丁 + `validate_patch` 门控**;没过就同会话再修 |
+| **6 report+memorize** | 写报告+记笔记 | 金标准骨架中文报告;根因+修法沉淀进记忆(**BugLesson 字段填齐**:②[a] 补 symptom/fix_patch/blast_radius/commit_sha) |
 
-> 一句话:**立案→[定位+自审]→[修复+验活]→写报告+记笔记**。Hyperion 全程调度 + 提供情报工具;重活(读码/改码/定位)委托 opencode;**同一 opencode 会话贯穿定位+修复**(`--continue` 链,复用上下文免冷启动)。
+> 一句话:**立案→翻档案递参考→[定位+自审]→[修复+验活]→写报告+记笔记**。Hyperion 全程调度 + 提供情报工具;重活(读码/改码/定位)委托 opencode;**同一 opencode 会话贯穿定位+修复**(`--continue` 链,复用上下文免冷启动)。
 
 **技术细节:**
 
 | 步 | 动作 | 关键点 |
 |---|---|---|
 | **1 ingest** | 问题描述(PDF/md/txt)→ `parse_issue` 转纯文本;建 workspace | 见 [workspace-design.md](workspace-design.md) §5 |
-| **2 delegate_localize_loop** | `delegate.run(prompt, cwd, schema=LOCALIZE_SCHEMA, agent="hyperion-localize", continue_session=...)`;opencode 经 MCP 调 `hyperion_recall`/`hyperion_search_codebase`/`hyperion_filter_logs`(prompt 提示优先用) | verify-refine 双循环细节见 §7.6;工具见 §6 |
-| **3 assemble_repair** | 组装修复 prompt = 锁死根因 + evidence 片段 + REPAIR_SCHEMA | 手术刀级——只喂相关片段 |
-| **4 delegate_repair_loop** | opencode edit code/;git diff 观察 patch;`validate_patch` Tier0 门控 | verdict 自审 + 执行硬门控,见 §7.6 |
-| **5 report+memorize** | demo 骨架渲染中文报告;抽 `BugLesson` 入记忆 | 闭环 |
+| **2 recall_lessons** | `svc.search(trigger, scope, top_k=3)`(memory-only,不 bump)→ 渲染成先验段预进 localize prompt | **确定性预注入**(②[b]):失败/空 → 空段(不阻断);先验非答案,verify-refine 拦盲信。对标 deer-flow DynamicContextMiddleware |
+| **3 delegate_localize_loop** | `delegate.run(prompt, cwd, schema=LOCALIZE_SCHEMA, agent="hyperion-localize", continue_session=...)`;prompt 含预注入先验段;opencode 经 MCP 调 `hyperion_recall`/`hyperion_search_codebase`/`hyperion_filter_logs`(prompt 提示优先用) | verify-refine 双循环细节见 §7.6;工具见 §6 |
+| **4 assemble_repair** | 组装修复 prompt = 锁死根因 + evidence 片段 + REPAIR_SCHEMA | 手术刀级——只喂相关片段 |
+| **5 delegate_repair_loop** | opencode edit code/;git diff 观察 patch;`validate_patch` Tier0 门控 | verdict 自审 + 执行硬门控,见 §7.6 |
+| **6 report+memorize** | demo 骨架渲染中文报告;抽 `BugLesson` 入记忆(②[a] 填齐 symptom/fix_patch/blast_radius_files/commit_sha) | 闭环 |
 
 ---
 
@@ -74,7 +79,7 @@ START → ingest
 - 但现在这"廉价手术级检索"做成 **`hyperion_search_codebase` 工具**:opencode 调它拿**紧凑的真实符号锚点**(带 file:line provenance),而不是自己 grep 整库。**既守住了 Agentless 的省 token 红利,又不重复 opencode 的活。**
 - 关键:**抽概念不抽标识符**(§6 防幻觉契约)——opencode 的查询经工具回**真实存在的符号**(validated against index),幻觉不出不存在的函数。
 
-> **token 取舍提示:** 永远相关的廉价件(召回的历史教训)也可考虑**预进 prompt**(0 决策 turn,比工具调用省一次 turn);重/钻取件(深检索、日志过滤)做工具按需调。这是 Anthropic hybrid(CLAUDE.md 预取 + glob/grep 工具)。当前先全做工具(更纯粹、贯彻"工具>固定流程"),后续按实测调。
+> **token 取舍提示(已落地):** 永远相关的廉价件(召回的历史教训)**预进 prompt**(0 决策 turn,比工具调用省一次 turn);重/钻取件(深检索、日志过滤)做工具按需调。这是 Anthropic hybrid(CLAUDE.md 预取 + glob/grep 工具)。**R3 收尾 ②[b](2026-08-06)已落地**:`recall_lessons` 节点把 top-K 同类 bug 教训确定性预注入 localize prompt(`svc.search` memory-only);代码深检索/日志过滤仍走 MCP 工具按需调。对标 deer-flow `DynamicContextMiddleware`。
 
 ---
 

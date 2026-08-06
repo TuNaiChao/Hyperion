@@ -1,8 +1,10 @@
 """bug-RCA workflow StateGraph 组装(多阶段委托 + 迭代 verify-refine,R3.1)。
 
-五节点线性流水线(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— recall/localize/
-assemble_localize 三节点与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具):
-  ingest → delegate_localize_loop → assemble_repair → delegate_repair_loop → report_memorize
+六节点线性流水线(踩坑 #2,2026-07-31:砍 Hyperion 侧定位漏斗 —— 旧 recall/localize/
+assemble_localize 三节点与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具。
+R3 收尾 ②[b] 又加回 recall_lessons —— 但它**只翻记忆预注入先验、不定位**,和被砍的旧 recall
+本质不同,不算重造漏斗):
+  ingest → recall_lessons → delegate_localize_loop → assemble_repair → delegate_repair_loop → report_memorize
 
 R3.1 #54-rework(B):双循环同会话 verify-refine ——
   ① delegate_localize_loop:阶段① 定位,max K1 轮(verdict=needs_revisit 则 --continue 重定位);
@@ -25,6 +27,7 @@ from hyperion.workflows.bug_rca.nodes import (
     node_delegate_localize_loop,
     node_delegate_repair_loop,
     node_ingest,
+    node_recall_lessons,
     node_report_memorize,
 )
 from hyperion.workflows.bug_rca.state import BugRcaState
@@ -34,6 +37,8 @@ def build_graph():
     """构建并编译 bug-RCA verify-refine StateGraph(返回 CompiledStateGraph)。"""
     g = StateGraph(BugRcaState)
     g.add_node("ingest", node_ingest)
+    # 1.5 确定性 recall 预注入(②[b]):历史同类教训预进 localize prompt(0 决策 turn 先验)
+    g.add_node("recall_lessons", node_recall_lessons)
     # 阶段① 定位:opencode 自主定位(调 MCP 工具)+ verify-refine 循环
     g.add_node("delegate_localize_loop", node_delegate_localize_loop)
     # 阶段② 修复:opencode edit code/ + git diff 观察 + validate_patch 门控 + verify-refine 循环
@@ -42,7 +47,8 @@ def build_graph():
     g.add_node("report_memorize", node_report_memorize)
     # 线性(even if 未过 gate 也继续出报告 + 记 lesson,故无分支)
     g.add_edge(START, "ingest")
-    g.add_edge("ingest", "delegate_localize_loop")
+    g.add_edge("ingest", "recall_lessons")
+    g.add_edge("recall_lessons", "delegate_localize_loop")
     g.add_edge("delegate_localize_loop", "assemble_repair")
     g.add_edge("assemble_repair", "delegate_repair_loop")
     g.add_edge("delegate_repair_loop", "report_memorize")

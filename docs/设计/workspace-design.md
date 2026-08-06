@@ -232,7 +232,7 @@ deer-flow 子 agent 产 patch 的方式 = `str_replace` 工具调用(非吐 diff
 
 - **新建 `src/hyperion/services/workspace/`**:`WorkspaceManager`(创建/列出/归档 workspace)+ `LocalWorkspaceProvider`(对标 deer-flow `SandboxProvider`)。七段目录初始化 + META.json + git checkout。
 - **日志过滤** = `services/trigger_parser/log_filter.py:filter_log_window`(已建),经 `hyperion_filter_logs` MCP 工具暴露给 opencode;**无独立 log_preprocess 服务**;addr2line/折叠 defer R5。
-- **改 `src/hyperion/workflows/bug_rca/`**:五步 `ingest→delegate_localize_loop(opencode 自定位 + MCP 工具)→assemble_repair→delegate_repair_loop(含 git diff 观察 + validate_patch Tier0)→report_memorize`,见 [bug-rca-design.md §1/§6](bug-rca-design.md)。
+- **改 `src/hyperion/workflows/bug_rca/`**:六步 `ingest→recall_lessons(确定性记忆预注入,②[b])→delegate_localize_loop(opencode 自定位 + MCP 工具)→assemble_repair→delegate_repair_loop(含 git diff 观察 + validate_patch Tier0)→report_memorize`,见 [bug-rca-design.md §1/§6](bug-rca-design.md)。
 - **改 `src/hyperion/tools/delegate.py`**:opencode cwd = `<workspace>/code/`,任务输入 = `delegate/prompt.md`;timeout 时存已收 stdout(可观测性)。
 - 复用:`services/code_index/`(召回写 `delegate/context.md`)+ `services/memory/`(完成后写 `docs/summary.md` → 记忆)。
 
