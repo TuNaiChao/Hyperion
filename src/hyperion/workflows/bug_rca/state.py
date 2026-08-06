@@ -1,7 +1,8 @@
 """bug-RCA workflow 状态 schema(R2 批4;R3.1 砍漏斗精简)。
 
-五步节点间传递的状态(踩坑 #2,2026-07-31:砍 recall/localize/assemble_localize 三节点 →
-opencode 自主定位 + MCP 工具)。TypedDict:repo_root/trigger 入口必传(Required);
+六步节点间传递的状态(踩坑 #2,2026-07-31:砍旧 recall/localize/assemble_localize 三节点 →
+opencode 自主定位 + MCP 工具;R3 收尾 ②[b] 加回 recall_lessons 预注入节点,只翻记忆不定位)。
+TypedDict:repo_root/trigger 入口必传(Required);
 其余是各步产物(NotRequired)——前序节点填,后序节点读。
 """
 
@@ -18,6 +19,8 @@ class BugRcaState(TypedDict, total=False):
     # 可选:各步产物(前序节点产,后序节点读)
     scope: NotRequired[Any]  # 1.ingest 产:Scope(owner, codebase)
     workspace: str  # workspace 目录路径(node_ingest 建;delegate 在 workspace/code 改码)
+    recalled_lessons_ctx: str  # 1.5 recall_lessons 产:历史同类教训渲染段(预进 localize prompt;②[b])
+    recalled_lessons: list  # 1.5 recall_lessons 产:RecallHit 列表(observability;空则不预注入)
     prompt: str  # 3.assemble_repair 产:修复委托提示词
     output_schema: dict  # 3.assemble_repair 产:委托产出契约
     patch: str  # git diff 观察出的补丁(node_delegate_repair_loop 选定后写,非 delegate 吐)

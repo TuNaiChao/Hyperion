@@ -153,7 +153,7 @@ class HyperionState(AgentState):
 ## 5. 分档实现路线(对标调研报告 §6.3-6.5)
 
 ### R3.0:最小骨架(5 件)✅ 已落地
-> ⚠️ **bug-RCA 五步 graph 本身不依赖 runtime**(线性 DAG,不长)。R3.0 搭骨架是给 **R3.2 深度调研**铺路。冒烟测试 `tests/runtime/test_smoke.py` 已验中间件链 + token 预算 + checkpointer 生效。
+> ⚠️ **bug-RCA 六步 graph 本身不依赖 runtime**(线性 DAG,不长)。R3.0 搭骨架是给 **R3.2 深度调研**铺路。冒烟测试 `tests/runtime/test_smoke.py` 已验中间件链 + token 预算 + checkpointer 生效。
 
 1. ✅ **中间件框架**:`AgentMiddleware` 接入 + `create_hyperion_agent` factory。
 2. ✅ **TokenBudgetMiddleware**:移植(三档阈值 + warn/hard_stop)。
