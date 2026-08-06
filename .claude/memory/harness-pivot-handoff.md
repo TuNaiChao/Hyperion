@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-06T08:47:49.646Z
+  modified: 2026-08-06T11:22:45.385Z
 ---
 
 2026-08-06 里程碑:Hyperion 转向 **tool+skill server / 领域 harness**(用户拍板)。bug-RCA 主路径从
@@ -31,8 +31,10 @@ metadata:
 - ⚠️ **补丁/报告没落盘**:e2e 是机制验证跑,agent 只 edit 代码(已清回 demo2)+ 聊天回复报告;没写 .patch/.md。gap 见下。
 
 ## 下轮(用户定:搁着,连同 P-A 一起)
-1. **落盘步骤(Option 1,已定)**:在 hyperion-bug-rca agent + SKILL.md 加第 9 步硬门 —— 收尾 `git -C <repo> diff > <outdir>/<repo>.patch` 保存补丁(outdir 默认 `data/bug_rca/`)。**认识:memorize 硬门已把根因+修法写进记忆库(queryable),那是 P3 持久资产;真正缺的只是给人看的 .patch**(报告 .md 其次,记忆+聊天回复已覆盖)。Option 2(后置脚本)否决 = 薄 orchestrator creep。
-2. **P-A patch 分析**:`hyperion_analyze_patch`(决策卡:正确性/作用/是否合入 plausible)+ `patch-rca` skill + GitHub httpx 抓取 + auto-clone(`services/repos/resolver.py`)+ Gerrit stub(`PatchFetcher` ABC)。PatchIngestPipeline 补 symptom + pr_meta。
+1. **✅ 落盘补丁硬门(2026-08-06 done,`ab11d56` 已 push)**:不做原计划的 bash 步,改成**第 7 个 MCP 工具 `hyperion_export_patch`**(调研:文字指令 soft,纯 bash 会静默吞空 diff;工具层更硬 + 对称 validate_patch)。git add -A && diff --cached → `data/bug_rca/<repo>.patch`,空 diff 自检。skill 七→**八步**、2→**3 硬门**(validate/export/memorize)。**e2e #3 绿**:opencode+hyperion-bug-rca 跑 demo2,**7 工具全原生触发**(recall→search→filter→blast→validate×2→**export_patch 落盘 wpa.patch 33 行**→memorize id=4f739d5a),agent 自述"硬门⑦过→⑧memorize"。**踩坑 #10**:opencode 1.18.11 http MCP 不注册原生工具(agent 绕 curl)→ 用 **local stdio**(timeout 提到 120s 防首次冷启)。详见 [[opencode-mcp-wiring]]。
+
+   **✅ 报告落盘硬门(2026-08-06 done,`92b5df4` 未 push)**:用户指出 ① 只落了补丁、报告仍只在聊天里(被标"开放 gap"挂着,不该 —— 报告跟补丁同等是交付物)→ 补第 8 个 MCP 工具 `hyperion_export_report(content, repo_path)`(agent 把报告 markdown 作参数传入 → 写 `data/bug_rca/<repo>-rca.md` + 空内容自检)。**跟 export_patch 对称**:补丁内容 git 生成(工具自己 diff),报告内容 agent 生成(传 content);排 memorize 之后(含 memorize id,最终交付物)。skill 八→**九步**、3→**4 硬门**;+2 单测(空内容拒写 / 写文件逐字一致);02-bug-rca.md 报告 gap 关闭。
+2. **P-A patch 分析**:`hyperion_build_check`(Tier 0.5 编译门)+ `patch-rca` skill + GitHub httpx 抓取 + auto-clone(`services/repos/resolver.py`)+ Gerrit stub(`PatchFetcher` ABC)。PatchIngestPipeline 补 symptom + pr_meta。完整设计 `docs/设计/harness-v2/03-patch-analysis.md`。
 3. feature 2(调用链/跨版本)= 同 tool+skill 形,更后。
 
 关联:[[skill-design-decision]] [[pitfall-log]] #2/#7/#8/#9 [[delegate-already-localizes]] [[avoid-overengineering]] [[similar-bug-recall-roadmap]](recall→证伪闭环实证)。
