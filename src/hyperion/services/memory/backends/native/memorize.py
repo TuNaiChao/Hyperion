@@ -106,10 +106,14 @@ def _dedup_evidence(ev: list) -> list:
     return out
 
 
-def _merge_or_supersede(new: KnowledgeItem, store: MemoryStore, scope: Scope, step: float) -> KnowledgeItem:
-    """处理一条新 KI 与现有记忆的关系:重提→Bayes 合并;冲突→取代旧。
+def _merge_on_remention(new: KnowledgeItem, store: MemoryStore, scope: Scope, step: float) -> KnowledgeItem:
+    """处理一条新 KI 与现有记忆的关系:同事实重提→Bayes 合并增强;冲突→只追加(旧条保留可召回)。
 
-    返回"该 upsert 的条"(可能是合并后的 new);副作用:被取代的旧条已 set_invalid。
+    R3.5+(2026-08-06,对标 mem0 v3):**不再写入时 supersede** —— 同主题不同结论不再盖戳作废旧条,
+    新旧都 active 并存,由检索侧 decay 排序体现"最新为主、旧作参考"(recall 不再过滤 superseded_by)。
+    保留 merge:同 id 重提(同 content_key=同事实)仍合并增强(conf 累加 + evidence 并集 + 留旧 valid_at)。
+    _same_subject/_same_conclusion 不再在写路调,留给检索侧去重分组(将来 pull-by-need)。
+    返回"该 upsert 的条"(可能是合并后的 new);无 set_invalid 副作用(该原语只留手动 invalidate 用)。
     """
     existing = store.get(new.id)
     if existing and existing.active:
@@ -121,14 +125,7 @@ def _merge_or_supersede(new: KnowledgeItem, store: MemoryStore, scope: Scope, st
         new.related = list({*existing.related, *new.related})
         new.evidence = _dedup_evidence([*existing.evidence, *new.evidence])
         return new
-
-    # 冲突检测:同 repo+kind+subject 但结论不同 → 旧条失效,新条取代(recency-wins + 显式失效)。
-    for other in store.list_items(scope, kind=new.kind):
-        if other.id == new.id or not other.active:
-            continue
-        if _same_subject(new, other) and not _same_conclusion(new, other):
-            store.set_invalid(other.id, superseded_by=new.id)
-            logger.info("memory.memorize: 冲突取代 %s → %s", other.id, new.id)
+    # 冲突(同 subject 不同 conclusion):只追加 —— 旧条不动、保持 active,recall 的 decay 排"最新为主"。
     return new
 
 
@@ -139,9 +136,10 @@ def memorize_items(
     embedder: Any = None,
     step: float = 0.3,
 ) -> int:
-    """把一批已构造好的 KnowledgeItem 写入(嵌向量 + 连边 + 合并/取代 + upsert)。返回写入条数。
+    """把一批已构造好的 KnowledgeItem 写入(嵌向量 + 连边 + 合并 + upsert)。返回写入条数。
 
     这是 workflow 出口 / memory_memorize 工具的落点。report→KI 的抽取见 extract_items。
+    冲突(同主题不同结论)**只追加**不取代 —— 检索侧 decay 排"最新为主"(对标 mem0 v3,2026-08-06)。
     """
     if not items:
         return 0
@@ -152,7 +150,7 @@ def memorize_items(
         if it.confidence == 0.0:
             it.confidence = _init_confidence(it.source_tier)
         _link_related(it, store, scope)
-        to_upsert.append(_merge_or_supersede(it, store, scope, step))
+        to_upsert.append(_merge_on_remention(it, store, scope, step))
     return store.upsert(to_upsert)
 
 
