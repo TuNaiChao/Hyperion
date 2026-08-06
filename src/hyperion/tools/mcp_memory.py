@@ -1,8 +1,8 @@
 """Hyperion MCP server —— 把 Hyperion 的差异化能力做成工具,给 delegate(opencode)现场调。
 
 不是"MCP 驱动 delegate",而是"delegate 查 Hyperion":opencode 干活时经 MCP 调本服务暴露的
-工具(见 bug-rca-design.md §6 反向 MCP)。七个工具(harness 转向:精炼工具面,只做 coding agent
-做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证/补丁落盘;定位推理+改代码留给 opencode):
+工具(见 bug-rca-design.md §6 反向 MCP)。八个工具(harness 转向:精炼工具面,只做 coding agent
+做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证/补丁落盘/报告落盘;定位推理+改代码留给 opencode):
   - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
@@ -10,6 +10,7 @@
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
   - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
+  - export_report     把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘;空内容自检;harness 转向 D1)。
 
 防幻觉契约(§6.1 search_codebase):模型传一个**概念/自然语言**(不是猜的文件名/函数名),
 工具从**真实索引**里检索 → 只回**索引中确实存在**的 file:symbol:line。因为结果来自实际索引,
@@ -52,7 +53,7 @@ def _resolve_codebase(explicit: str | None) -> str:
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露六个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露八个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此一次解析,烘焙进各工具闭包(工具内不再各自猜仓名)。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
@@ -301,6 +302,43 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         patch_path.write_text(diff, encoding="utf-8")
         n = len(diff.splitlines())
         return f"✅ 已落盘\npath={patch_path}\nlines={n}  (unified diff;apply 验证见 validate_patch)"
+
+    # ── ⑨ export_report:把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘)────
+    # 跟 export_patch 对称:补丁内容是 git 生成的(工具自己 diff),报告内容是 agent 生成的(传 content)。
+    # bug-RCA 跑完,agent 若只在聊天里吐报告 = 没交付(跟"只在聊天里说改好了"同理)。这步把报告写成磁盘文件,
+    # 自检非空(治"agent 假装写报告 / 传空串糊弄")。落 data/bug_rca/<repo>-rca.md(对齐 orchestrator 的
+    # render_report 约定;同仓重跑覆盖,历史在记忆库)。报告是**最终交付物**,排在 memorize 之后写 ——
+    # 要含 memorize 返回的 id(证明教训已沉淀),才算完整闭环。
+    @mcp.tool()
+    async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca") -> str:
+        """Finalize your analysis report as an on-disk .md file — a bug-RCA run is NOT complete until
+        the report is on disk (same deliverable bar as the patch; chat is not a deliverable).
+
+        Writes your markdown report to ``<out_dir>/<repo-name>-rca.md`` and REFUSES empty/trivial
+        content — catches "forgot to write a report / passed a placeholder". Write the patch first
+        (``export_patch``, step ⑦) AND memorize the lesson (``memorize``, step ⑧) first, then write
+        this report so it can cite the on-disk ``.patch`` path and the returned memorize id.
+
+        content:   the full markdown report (root cause + evidence + patch summary + validate result +
+                   patch path + memorize id).
+        repo_path: absolute path of the repo (used only to derive the report filename).
+        out_dir:   output directory (default ``data/bug_rca``; created if missing).
+        """
+        from pathlib import Path
+
+        if not content or not content.strip():
+            return ("❌ 空报告:没传内容(或只传空白)。报告跟补丁一样是交付物 —— 写好根因/证据/补丁要点/"
+                    "validate 结果/patch 路径/memorize id 再调。export_report 不写空报告。")
+        # 报告落盘不强依赖 git / repo 目录存在(内容自包含),只取 repo_path 的目录名做文件名;
+        # 空路径兜底 "report",绝不因 repo_path 小瑕疵挡住报告上盘(交付物宁可落盘)。
+        name = Path(repo_path).name if repo_path and repo_path.strip() else ""
+        repo_name = name or "report"
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        report_path = out / f"{repo_name}-rca.md"
+        report_path.write_text(content, encoding="utf-8")
+        n = len(content.splitlines())
+        return f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
 
     return mcp
 
