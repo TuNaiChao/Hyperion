@@ -76,6 +76,25 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 ## 路线(v2,2026-07-28 重规划)
 
-**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ + R3.2 深度调研 ✅代码完 2026-08-03,e2e 待跑)→ **R4** 团队/多用户(租户隔离 + 鉴权)+ 多库 + PR 跟踪(R4.1 PR 批量分析+聚合报告,设计见 [pr-review-design.md](docs/设计/pr-review-design.md))+ skills/MCP → **R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_hyperion_agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、HyperionState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。详见 [architecture.md §8](docs/设计/architecture.md)。
+**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ + R3.2 深度调研 ✅代码完 2026-08-03,e2e 待跑)→ **R4** ~~团队/多用户(租户隔离 + 鉴权)~~ + **多库**(升级为地基,见下节)+ PR 跟踪(R4.1 PR 批量分析+聚合报告 ✅ 已完成)+ skills/MCP(MCP ✅ D0;skills S1-5 暂缓 YAGNI)→ ~~**R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)~~。⚠️ **2026-08-07 pivot 后复核:R4 租户/鉴权 + R5 全部取消,详见下节「路线复核」**。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_hyperion_agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、HyperionState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。详见 [architecture.md §8](docs/设计/architecture.md)。
 
 **三锁定决策:** ① 记忆 = 自有 MemoryService 契约 + v1 native 后端(组合 code_index+code-review-graph),cognee/mem0 可换;② bug-RCA 委托给 coding agent,抽象 `CodingAgentDelegate`,v1 默认 omp,opencode 可换;③ MVP 先 bug-RCA。详见各设计文档。
+
+## 路线复核(2026-08-07 pivot 后,以此为准)
+
+**复核 lens**:Hyperion 收敛成**三件事** —— ① 代码情报(检索/调用链/影响面)② 记忆(bug 教训+代码事实,带溯源持续学习)③ 标准流程 skill+工具(bug-RCA/patch-review/research + apply 验证 + 日志取证)。**不在三件里的 = 偏离 = 砍**。逐项三标准审:① 落在三件事内?② 被「不编译/不复现」影响?③ YAGNI?
+
+**砍/obsolete**:R4 多用户·租户·鉴权(本地 harness 不需要);R5 Docker 沙箱(不编译/不复现→无用途)、前端(harness 无 UI,交互在 coding agent)、artifacts(**并入记忆**不单建)、Tier1 运行时验证(与「不编译」冲突);③ opencode serve persistent(delegate cold-boot 前提消失 + D0 http + lazy 已覆盖);build_check 接回流程(与「不编译」冲突,工具保留按需);按 intent lazy-load MCP 工具(当前 ~12 工具 YAGNI,等 20+);Skill 子系统 S1-5(opencode 原生发现 `.claude/skills/` 已工作,等跨 agent 再建)。
+
+**保留碎片**(并入功能线,不单独成阶段):多库支持(同时多仓刚需→地基性)、可观测增强(可选运维)。
+
+**验证封顶(用户定,强化)**:apply(Tier 0,Hyperion 验)。**编译/测试/复现永不做 —— 全部用户(真机)自验**(系统软件环境重+信号歧义,不值)。`correctness` 基于 apply+读码推理,不报 tested/verified。
+
+**当前核心待做顺序**(用户 2026-08-07 拍板):
+1. `filter_logs` 强制注入因果起点行(治 bug-RCA MVP 命中率短板,踩坑#11 真正解)
+2. **多库地基**(同时多仓刚需;code_index 多实例 + 工具加 codebase 参数 + 记忆全局带 codebase 标签;2a/2b 依赖故前移)
+3. feature 2a 调用链(`call_chain` 工具,CRG 多跳+PageRank)
+4. feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)
+5. 记忆自动 query(P1)
+
+低优 backlog:stdio→http(待 opencode 解注册)/ P-A 遗留(1b deep+去重·patch_search CLI·Gerrit 凭据)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ backlog #1-44(~~#55 obsolete~~)。
