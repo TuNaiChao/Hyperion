@@ -1,6 +1,6 @@
 ---
 name: bug-rca
-description: Root-cause a bug in a C / system-software codebase (Linux kernel, BlueZ, wpa_supplicant, systemd, dbus, network stacks …). Use when the user asks to find the root cause of a bug / crash / hang / regression / CVE, or asks "why does X break / leak / deadlock". You drive the reasoning + edit; Hyperion supplies memory + code intelligence + log forensics + patch validation + patch finalization + report finalization via MCP tools. Delivers a root cause, a validated on-disk patch, an on-disk report, and a memorized lesson.
+description: Root-cause a bug in a C / system-software codebase (Linux kernel, BlueZ, wpa_supplicant, systemd, dbus, network stacks …). Use when the user asks to find the root cause of a bug / crash / hang / regression / CVE, or asks "why does X break / leak / deadlock". This is a TOOLBOX, not a fixed pipeline — you drive the reasoning + edit, calling Hyperion's tools as needed, iterating on hypotheses and patches. A patch is NOT considered correct until it applies cleanly AND is verified by a human / on a real device. Delivers a root cause, on-disk patch(es), and (once verified) a memorized lesson + on-disk report.
 allowed-tools:
   - hyperion_memory_recall
   - hyperion_search_codebase
@@ -8,8 +8,8 @@ allowed-tools:
   - hyperion_blast_radius
   - hyperion_validate_patch
   - hyperion_export_patch
-  - hyperion_export_report
   - hyperion_memorize
+  - hyperion_export_report
   - read
   - grep
   - glob
@@ -17,107 +17,88 @@ allowed-tools:
   - bash
 ---
 
-# Bug 根因定位 playbook(Hyperion bug-RCA)
+# Bug 根因定位 + 修复(工具箱 · 人在环迭代)
 
-面向小白:你在给一个 C/系统软件仓库(Linux 内核 / BlueZ / wpa_supplicant / systemd 这类)定位一个
-bug 的**根因**,并给出**能干净打上、落了盘的补丁 + 落了盘的报告**。Hyperion 不抢你的活 —— **读码、推理、
-改代码是你(opencode)的强项**;Hyperion 只递工具:翻历史记忆、语义搜代码、过滤大日志、算改动影响面、
-验证补丁能不能 apply、把补丁落成文件、把报告落成文件、把教训沉淀进记忆。你拿着这把"手术刀 + 记忆",
-自己开刀。
+面向小白:你在给一个 C/系统软件仓库(Linux 内核 / BlueZ / wpa_supplicant / systemd 这类)定位一个 bug 的
+**根因**并修复。Hyperion 不抢你的活 —— **读码、推理、改代码是你(opencode)的强项**;Hyperion 只递工具
+(翻记忆 / 语义搜码 / 切日志 / 算影响面 / 验 apply / 落补丁 / 落报告 / 沉淀教训)。你拿着这把"手术刀 +
+记忆",自己开刀。
 
-**这条 playbook 是灵活的**(中途发现走错随时拐弯、自己纠正),但有**四道必须过的硬门**:
-- ⑥ 改完必须 `hyperion_validate_patch` 过(apply 不了的补丁不是修复);
-- ⑦ 必须把补丁**落盘** `hyperion_export_patch`(没产 `.patch` 文件 = 没交付,聊天回复不算补丁);
-- ⑧ 结束必须 `hyperion_memorize` 沉淀教训(不记 = 下次还得从头来);
-- ⑨ 必须把报告**落盘** `hyperion_export_report`(没产 `-rca.md` = 没交付,聊天回复不算报告)。
+## ⚠️ 这不是固定流水线 —— 是工具箱 + 人在环迭代
 
-> **"硬门"的诚实边界**:这四步的工具本身是确定性执行(真 git / 文件 / DB 操作),但"你必须调它"靠本
-> playbook + 专用 agent 的 prompt 强制(软,~95%)。opencode 驱动模式下 Hyperion 不驱动模型,拿不到 API
-> 级强制(`tool_choice` / Stop hook);靠专用 agent + 给够步数 + "步数将尽优先这四步"语言保证可靠(e2e 实证)。
-> 详见 [02-bug-rca.md](../../docs/设计/harness-v2/02-bug-rca.md) §硬门的诚实边界。
+**别想着"从头到尾一步步走完"。** bug 根因很少一次猜中,补丁很少一次修对。本 playbook 是**工具箱 +
+迭代循环**,对标 Anthropic ["Build Skills Not Agents"](https://cobusgreyling.substack.com/p/anthropic-says-dont-build-agents)(工具箱,非固定管线)+ [POPPER(ICML 2025)](https://openreview.net/forum?id=iTevNo8PzG)(迭代证伪)+ [RepairAgent(ICSE 2025)](https://www.computer.org/csdl/proceedings-article/icse/2025/056900a694/251mGP1fmRq)(补丁-验证循环):
 
-## 八把 Hyperion 工具(各自啥时候调)
+1. **迭代假设-证伪**:RCA 是"假设 → 找证据(含反证)→ 修正"的循环。反复调 `recall`/`search_codebase`/
+   `filter_logs`,每轮**主动证伪**当前根因(含时序一致性检查,踩坑 #11),直到根因站得住。**没坐实就继续
+   迭代,别硬下结论。**
+2. **补丁-验证循环**:edit 改代码 → `validate_patch`(每版验 apply)→ `export_patch` 落盘 → **人/真机验证**
+   → 没修对就回 edit 再改 → 再 `export_patch`。每生成一版补丁就落盘一版。
+3. **验证通过才沉淀**:`memorize` + `export_report` 是**收尾动作**,只在补丁经验证确认后才调。**没验证就
+   memorize = 把没坐实的根因/补丁写进记忆 = 污染 + 误导下次同类 bug。**
+
+## 八把工具(按需取用,无固定顺序)
 
 | 工具 | 啥时候调 | 关键提醒 |
 |---|---|---|
-| `hyperion_memory_recall(query)` | **最先调**。查这个仓库历史上类似的 bug 教训 / 已知事实 | 返回的是**先验线索,不是答案**;和你的证据矛盾时,以证据为准 |
-| `hyperion_search_codebase(query)` | 用**概念/自然语言**找入口(如 "p2p scan 结果路由"、"radio work 生命周期释放") | **别传猜的文件名**;只回索引里真实存在的 file:symbol:line(幻觉不出假路径) |
-| `hyperion_filter_logs(path, keywords, since, until)` | 给了大日志时,按故障时间窗(HH:MM:SS)筛精华行 | 别一次读全量(几万行烧 token);运行时日志的 issue 关键词常是代码符号、不匹配日志措辞,**优先用时间窗** |
-| `hyperion_blast_radius(changed_files)` | 动手改之前,看你打算动的文件会**连带波及谁**(调用方/被调用方) | 结构图驱动(BFS),非 LLM;图没建会提示先 `hyperion index` |
-| `hyperion_validate_patch(patch, repo_path)` | **改完必调**。`git apply --check` 验证补丁能干净打到目标仓 | 执行硬门,零 LLM 判;过不了说明路径/格式/context 不匹配,别信 |
-| `hyperion_export_patch(repo_path)` | **validate 过后必调**。把补丁写成磁盘文件 `data/bug_rca/<repo>.patch` | 空 diff 会报错(改错树/没保存);**没落盘 = 没交付** |
-| `hyperion_memorize(kind, summary, ...)` | **落盘补丁后必调**。把本次根因/修法/影响面记进长期记忆 | kind: `bug_lesson`;下次类似 bug 能召回先验、少走弯路 |
-| `hyperion_export_report(content, repo_path)` | **memorize 后必调(收尾)**。把完整报告写成 `data/bug_rca/<repo>-rca.md` | 空内容会报错;报告要含根因+证据+补丁要点+validate 结果+**patch 路径**+**memorize id**;**没落盘 = 没交付** |
+| `hyperion_memory_recall(query)` | 想知"这仓库以前有没有类似 bug"时 | 返回**先验线索非答案**;与证据矛盾以证据为准;⚠️ 别拿残缺证据自信证伪先验(踩坑 #11 记忆反噬) |
+| `hyperion_search_codebase(query)` | 用**概念/自然语言**找入口符号 | 只回索引里真实存在的 file:symbol:line(幻觉不出假路径);别传猜的文件名 |
+| `hyperion_filter_logs(path, since, until)` | 大日志按故障时间窗切片省 token | ⚠️ **从更早切**(根因在现象上游,不在现象本身);切了窗会看到边界提醒——若根因假设落在窗起点附近,前推 `since` 重筛(踩坑 #11) |
+| `hyperion_blast_radius(changed_files)` | 动手改之前,看改动连带波及谁 | 结构图驱动(BFS),非 LLM;图没建会提示先 index |
+| `hyperion_validate_patch(patch, repo_path)` | **每改出一版补丁都调** | 执行硬门(`git apply --check`),零 LLM;⚠️ **只验"能干净打上",不验"修对了"** |
+| `hyperion_export_patch(repo_path)` | **每生成一版补丁就调**(落盘给人/真机验证) | 空 diff 报错;落 `data/bug_rca/<repo>.patch`(覆盖上一版,最新版为准) |
+| `hyperion_memorize(kind, summary, ...)` | **补丁经验证确认后**才调 | ⚠️ 没验证就记 = 污染记忆;kind=`bug_lesson` |
+| `hyperion_export_report(content, repo_path)` | **补丁经验证确认后**才调(收尾) | 报告含根因+证据+patch 路径+**验证结果**;落 `data/bug_rca/<repo>-rca.md` |
 
-## 九步流程
+## 典型工作流(参考,非强制 —— 实际按证据情况自由编排)
 
-### ① 先 recall(定位之前)
-改任何东西之前,先 `hyperion_memory_recall(<bug 线索/现象>)`。这个仓库以前踩过类似的坑吗?
-有先验就拿来当**导航线索**(聚焦该看哪片代码),但**绝不照抄先验的结论** —— 本次 bug 可能只是"像",
-不是同一个。和你的证据矛盾时,**以证据为准**(主动证伪先验)。
+```
+recall / search_codebase / filter_logs  →  立假设 + 主动证伪(含时序一致性检查)
+    ↺  (找到反例 / 时序不对)  →  再 search/filter,修正假设,重来
+blast_radius(要改的文件)  →  edit 改代码(最小改动)
+validate_patch(这版补丁)              ← 每版都验 apply
+    ↺  (applies=False)  →  修到 applies=True
+export_patch  →  落盘这版补丁
+═══════════  人在环验证(关键,别跳)  ═══════════
+人 / 真机验证这版补丁
+    ↺  (没修对)  →  人反馈现象 → edit 改 → validate_patch → export_patch → 再交人验证
+(验证通过)  →  memorize(沉淀教训)+ export_report(落最终报告)收尾
+```
 
-### ② 语义搜入口(别盲 grep)
-用 `hyperion_search_codebase(<一个概念>)` 找入口函数/数据结构,拿到真实的 file:symbol:line 锚点,
-**再**用 read/grep 精读确认。这比一上来 grep 整个树又准又省 token。没建索引会提示先 `hyperion index`。
+## 人在环验证(最容易被低估,但最关键)
 
-### ③ 过滤日志(若给了日志)
-有大日志(`--log` / 用户提供)时,`hyperion_filter_logs(<path>, since=<故障时刻>, until=<...>)`
-按时间窗切出精华行。运行时日志优先用时间窗(代码符号常不匹配日志措辞);确认是日志词汇再加 keywords。
-切出精华后**标出因果起点** —— 最早那条关键事件(不是最响的那条)。⚠️ 显眼的 ERROR / 失败行往往是
-**症状**(如 `abort failed` 多半是"扫描早完成、状态没清"的后果),安静的起点(如某条 INFO 级
-"结果已到达 / 已路由")才是**根因**;别被最响的行劫持注意力(踩坑 #11)。
+`validate_patch` 过 = 补丁**能干净打上**(路径/格式/context 对),**≠ 修对了**。系统软件(wpa_supplicant /
+BlueZ / 内核)大多**没有单元测试**,apply-check 是最弱的验证。**真正的 oracle 是真实设备 / 复现环境**:
 
-### ④ 立假设 + 证伪(对抗"自己骗自己")
-综合 recall 先验 + 代码 + 日志,给出一句话**根因**(why 句:为什么出这个 bug,不是"出了什么 bug"),
-配 `file:line` 证据。**输出根因前主动找一条可能推翻它的反例**(日志/堆栈/调用链里仍矛盾的地方):
-- 找不到任何反例 → 结论站得住,进 ⑤;
-- 找到矛盾 → 退回 ② 重新聚焦,别硬下结论。
-- **时序一致性检查**(对抗因果倒置,踩坑 #11):确认"现象出现的时间"**不早于**"purported 根因
-  发生的时间"。若现象在 purported 根因*之前*就已出现 → 你抓的多半是**症状不是根因**(如"abort
-  失败"晚于"孤儿已形成"→ abort 失败是症状、不是孤儿的原因),退回 ② 往**更早**查。
+- 每生成一版补丁 → `export_patch` 落盘 → **交人拿到真机 / 复现环境验证**(投屏复现 / 蓝牙连接 / 重触发原故障场景)。
+- 验证**通过** → 调 `memorize`(沉淀)+ `export_report`(落最终报告)收尾。
+- 验证**失败** → 人反馈现象 → 你回 `edit` 改 → `validate_patch` → `export_patch` 新版 → 再交人验证。
+- 这可能跨多个 session(opencode `--continue` 续)。**`memorize` / `export_report` 只在最终验证通过后调。**
 
-### ⑤ 查 blast-radius(动手之前)
-打算改哪几个文件?先 `hyperion_blast_radius(<那些文件>)` 看**连带波及面**(谁调它们、会被牵连)。
-影响面大 / 命中枢纽节点 → 改法要更保守、更小;影响面小说明改动局部、安全。
+> 为什么这么较真:[METR 等研究发现](https://galileo.ai/blog/human-in-the-loop-agent-oversight),"自动测试通过"
+> 的 PR 约一半不会被合并 —— 自动验证(test / apply)远不足以判定补丁正确。系统软件尤其:apply 过 ≠ 修对,
+> 真机/复现才是 oracle。
 
-### ⑥ 改代码 + validate(**硬门**)
-用 edit 直接改文件(别把 diff 贴在回复里)。改完**必须** `hyperion_validate_patch(<你的补丁>, <repo 绝对路径>)`:
-- `applies=True` → 补丁干净、可继续;
-- `applies=False` → 路径/格式/context 不匹配,**不算修复**,回去修到过为止。
+## 防确认偏差(踩坑 #11 —— glm-5.2 连续 4 次误诊的教训)
 
-补丁怎么来:用 `git -C <repo> diff` 观察你对工作树的改动(行号/格式天然对)。
+LLM 会**系统性抓"显眼日志行"**(ERROR / 失败)当根因,忽略更早、更安静的因果链起点。这是模型固有的
+anchoring / confirmation bias(改不了模型),但能用工具对抗:
 
-### ⑦ 落盘补丁(**硬门**)
-validate 过后,**必须** `hyperion_export_patch(repo_path=<repo 绝对路径>)` 把补丁写成磁盘文件
-`data/bug_rca/<repo>.patch`。空 diff 会报错(改错树 / 没保存 / 被 gitignore)。**没落盘 = 没交付**
-—— 聊天里说"我改好了"不算补丁,`.patch` 文件才是给人 / CI 看的产物。这步把 git diff 落成 unified diff
-(对齐整条管线;apply 验证已在 ⑥ 做过,这里只保证有非空补丁上盘)。
-
-### ⑧ memorize 教训(**硬门**)
-收尾**必须** `hyperion_memorize(kind="bug_lesson", summary=<一句话根因>, root_cause=<完整根因>,
-file=<主根因文件>, line=<行>)`。把本次 symptom/root_cause/fix/影响面记进长期记忆 —— 下次类似 bug
-第一步 recall 就能命中、少走弯路。**不记 = 下次从零开始,白干。**
-
-### ⑨ 落盘报告(**硬门**)
-memorize 过后,**必须** `hyperion_export_report(content=<你的完整 markdown 报告>, repo_path=<repo 绝对路径>)`
-把报告写成磁盘文件 `data/bug_rca/<repo>-rca.md`。报告是**最终交付物**,排在最后 —— 要把前面的成果都收进去:
-一句话根因(why 句)+ `file:line` 证据 + 证伪结果 + 补丁要点 + `validate_patch` 结果 + **`export_patch` 落盘路径**
-+ **`memorize` 返回的 id**。空内容会报错(治"假装写报告")。**没落盘 = 没交付** —— 聊天里吐的报告不算交付,
-`-rca.md` 文件才是给人 / 归档看的产物,跟 `.patch` 同等。
-
-## 收尾汇报(给用户)
-一句话讲清:① 根因(why 句 + `file:line` 证据 + 你证伪的结果);② 补丁(validate 结果 + `export_patch` 落盘路径);
-③ 记了啥教训(memorize id);④ 报告(`export_report` 落盘路径)。
+- `filter_logs` 从**更早**切(根因在现象上游);看到返回末尾的"时间窗边界提醒"就**前推 `since` 重筛**,
+  确认窗前没有更早的起因。
+- 立假设后**主动证伪 + 时序一致性检查**:现象出现时间**不得早于** purported 根因;早于 = 你抓的多半是
+  **症状不是根因**(如 `abort failed` 是"扫描早完成、状态没清"的后果),退回去往更早查。
+- 别拿**残缺证据**自信证伪先验记忆(踩坑 #11 记忆反噬:e2e#5 里 agent 因 filter_logs 漏了起点行 → 以为
+  "无 NEW_SCAN_RESULTS" → 自信推翻了正确的"误路由"先验)。
 
 ## 反模式(别这么干)
-- ❌ 一上来 grep 整个树盲找 —— 先 search_codebase 用概念拿锚点。
-- ❌ 把记忆当答案照抄 —— 它是先验,必须对着本次证据证伪。
-- ❌ 改完不 validate 就说"修好了" —— apply 不了的补丁不是修复。
-- ❌ 改完不落盘补丁就收工 —— 没产 `.patch` 文件 = 没交付,聊天回复不算补丁。
-- ❌ 不 memorize 就收工 —— 不沉淀等于没学习,下次重踩。
-- ❌ 写了报告只在聊天里吐、不落盘 —— 没产 `-rca.md` = 没交付,报告跟补丁同等。
-- ❌ 抓最响的日志行(ERROR / 失败)当根因,没查它*之前*是否已有现象 —— 显眼的多是症状,安静的起点才是根因(踩坑 #11;glm-5.2 连续 3 次把 wpa 孤儿误诊成 abort-fail,实为更早的 scan_res_handler 误路由)。
-- ❌ 顺手重构 / 无谓探索 —— 只修这个 bug,最小改动。
+- ❌ **强求一次走完全流程** —— 根因/补丁常需迭代多次;没坐实就别往下硬走。
+- ❌ **把 `validate_patch` 通过当"修对了"** —— 它只查 apply;修对要真机 / 人验证。
+- ❌ **未经验证就 `memorize`** —— 污染记忆,误导下次同类 bug 的 RCA。
+- ❌ **抓最响日志行当根因,没查它之前是否已有现象**(踩坑 #11);filter_logs 切晚了就前推。
+- ❌ **拿残缺证据自信证伪先验记忆**(踩坑 #11 记忆反噬)。
+- ❌ **顺手重构 / 无谓探索** —— 只修这个 bug,最小改动。
 
 ---
-*Hyperion harness · bug-RCA skill · 转向 tool+skill server 后的标准流程(替代老固定管线)。*
+*Hyperion harness · bug-RCA skill · 工具箱 + 人在环迭代版(2026-08-07 重写,对标 Anthropic "Build Skills
+Not Agents" + POPPER ICML 2025 迭代证伪 + RepairAgent ICSE 2025 补丁-验证循环 + METR 自动验证不够)。*
