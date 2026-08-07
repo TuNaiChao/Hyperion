@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-06T04:07:26.959Z
+  modified: 2026-08-07T09:03:34.020Z
 ---
 
 2026-08-06 调研 ③ opencode serve persistent(#55)的结论(agent 查实,供单独一轮实施直接用,不重查)。
@@ -40,3 +40,14 @@ E2B 沙箱里起 `opencode serve` + `POST /session/{id}/message` 多轮 follow-u
 
 ## 归属:拆出单独一轮(用户 2026-08-06 拍板)
 本轮做了 P0 记忆闭环([[similar-bug-recall-roadmap]] 的 ②[a]+②[b]);③ 是纯性能优化 + 新后端 + delegate.py 核心,单独一轮聚焦。本条 memory + backlog #55 升级是那轮的地基。关联:[[delegate-already-localizes]] [[multi-stage-delegate-decision]] [[pitfall-log]]。
+
+---
+
+## ⚠️ 2026-08-07 pivot 后判 obsolete(以此为准)
+
+harness 转向(opencode 主驱动 + Hyperion 当 MCP server)后,本条 ③ **不再需要**:
+1. **原痛点前提消失**:delegate 反复 cold-boot opencode(K1+K2≈4×/bug)只存在于已 deprecate 的 legacy `hyperion bug-rca` 命令(cli.py:359-361 stderr deprecate 警告);新主路径 opencode 由用户启动长驻,无 per-stage respawn。
+2. **hyperion mcp serve 自身冷启已很低频**:重模块全 lazy(embed.py:245 `from sentence_transformers` 在方法体内);build_server 启动只装 FastMCP + memory,不加载 torch;默认 `openai_compatible` embedder 走 RemoteEmbedder **0 次 torch 加载**。
+3. **D0 streamable-http 已覆盖**(cli.py:323-339 warm 长进程);唯一遗留 = opencode 1.18.11 http MCP 不注册原生工具(踩坑#10),那是 opencode 侧 bug,不该用 persistent session 绕。
+
+前沿对照(WebSearch 2026-08):MCP cold-start 业界主流解法 = **lazy-load tools by intent + warm 进程 + transport 选择**(Stacklok/Anthropic/Focused.io),无 persistent-session 编排层(那反是 orchestrator 思路)。性能优化精力转:**按 intent lazy-load MCP 工具**(减 context + cold-start,Anthropic fix)+ 推 stdio→http(待 opencode 解注册)。backlog #55 同步标 obsolete。

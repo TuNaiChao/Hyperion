@@ -1,9 +1,11 @@
 ---
 name: skill-design-decision
 description: "Skill 子系统设计(2026-08-04 调研完成,待 post-R3 实施):opencode 原生吃 SKILL.md,Hyperion 只当仓库+物化器,不自建激活中间件。"
-metadata:
+metadata: 
   node_type: memory
   type: project
+  originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
+  modified: 2026-08-07T09:03:36.727Z
 ---
 
 **Skill 子系统设计已定(2026-08-04),待 R3 全套收尾后实施。** 完整设计见 `docs/设计/skill-design.md`。关联 [[delegate-already-localizes]](同根:委托型别重造 delegate 已有能力) [[avoid-overengineering]]。
@@ -22,3 +24,9 @@ metadata:
 **frontmatter 硬约束(写 loader 要守)**:`name` 正则 `^[a-z0-9]+(-[a-z0-9]+)*$`、1-64 字符、须与目录名一致;`description` 1-1024 字符;未知字段忽略。
 
 **触发实施的信号**:R3.3/R3.4 收尾后,或用户明确要 CVE 自动修复场景上线。开工前先核 opencode 本机版本有 `skill` 工具(v1.18.3 已确认有)。
+
+---
+
+## ⚠️ 2026-08-07 pivot 后评估:S1–S5 暂缓(YAGNI)
+
+harness 转向后,**bug-rca / patch-review skill 放 `.claude/skills/` 已被 opencode 原生发现并工作**(e2e 验证 7-8 工具全原生触发)。在此事实下,S1(loader/CLI/物化器)的边际价值 = 仅**跨 agent 适配**(codex/claude code 可能不吃 `.claude/skills/`)+ **参数化物化**(skill 需注入 codebase/bugid 时)。当前只用 opencode + 静态 skill → **S1–S5 暂缓(YAGNI,对齐 [[avoid-overengineering]])**,等真要跨 agent 或 skill 需参数化时再建。触发信号追加一条:**要支持非 opencode agent**。
