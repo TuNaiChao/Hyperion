@@ -29,7 +29,7 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
           ▼                                                       ▼
    ┌────────────────┐                          ┌────────────────────────────────┐
    │ bug-rca    ✅  │                          │ Hyperion MCP server            │
-   │ patch-review  ⏳  │ ──── 工具调用 ──────────▶│ (hyperion mcp serve,stdio/http)│
+   │ patch-review ✅  │ ──── 工具调用 ──────────▶│ (hyperion mcp serve,stdio/http)│
    │ research   ⏳  │                          │ 6 共享工具 + 专家工具(见下)     │
    └────────────────┘                          └──────────┬─────────────────────┘
                                                           │
@@ -64,8 +64,8 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
 | skill | 用例 | 状态 |
 |---|---|---|
 | `bug-rca` | bug 根因定位 + 补丁 | ✅ |
-| `patch-review` ⏳ | 单补丁/PR 鉴定(该不该合) | ⏳ 阶段 1 |
-| `patch-report` ⏳ | 批量补丁聚合报告 | ⏳ 阶段 2 |
+| `patch-review` ✅ | 单补丁/PR 鉴定(该不该合) | ✅ 阶段 1 |
+| `patch-report` ✅ | 批量补丁聚合报告(CLI batch workflow) | ✅ 阶段 2 |
 | `research` ⏳ | 调用链 / 跨版本调研 | ⏳ 阶段 3-4 |
 
 ## 完整路线图(用户确认,以此为准)
