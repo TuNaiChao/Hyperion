@@ -180,7 +180,18 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         if not excerpt:
             return f"过滤后 0 行(调整 keywords/since/until;全量日志仍在 {log_path})。"
         n = len(excerpt.splitlines())
-        return f"过滤出 {n} 行(上限 {max_lines};全量日志仍在 {log_path}):\n\n{excerpt}"
+        header = f"过滤出 {n} 行(上限 {max_lines};全量日志仍在 {log_path}):\n\n"
+        # 时间窗边界提醒(踩坑 #11 实证,e2e#5):agent 倾向从"显眼故障时刻"切窗,漏掉更早的因果
+        # 起点(e2e#5 从 abort 时刻 10:12:19 切,漏了 10:12:12 的真·起因 → 整条 RCA 走偏)。这是模型
+        # 固有的确认偏差(改不了模型),但工具能用确定性提醒对抗 —— 把"窗口会遮蔽证据"显式化,
+        # 别让 agent 自己设的窗变成盲区。只在 agent 切了窗(since 非空)时提醒;没切窗=无遮蔽风险。
+        hint = ""
+        if since:
+            hint = (f"\n\n⚠️ 时间窗边界提醒:以上是自 {since} 起的切片。根因常在**最早关键事件的上游**"
+                    f"(不在现象本身)。若你的 root cause 假设落在窗口起点附近,很可能**切晚了** —— "
+                    f"建议把 since **前推**重筛一眼,确认窗前没有更早的起因(踩坑 #11:曾因从 abort 时刻切窗,"
+                    f"漏掉 7 秒前的真·起因)。")
+        return header + excerpt + hint
 
     # ── ⑤ blast_radius:改动影响面(结构图 BFS —— 改这些文件会波及谁)──────────
     # harness 转向:把 CodeGraph.impact_radius 暴露成工具,让 agent 改代码前查"动了这些会断哪"。

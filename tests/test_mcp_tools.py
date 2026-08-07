@@ -149,3 +149,26 @@ def test_export_report_writes_file(tmp_path):
     report_file = out_dir / "myrepo-rca.md"  # 命名 = <repo 目录名>-rca.md
     assert report_file.is_file(), f"没写到 {report_file}"
     assert report_file.read_text(encoding="utf-8") == report_md
+
+
+# ════════════════════════ filter_logs 时间窗边界提醒(方案 A,踩坑 #11) ════════════════════════
+
+def test_filter_logs_window_hint_with_since(tmp_path):
+    """传 since(切了窗)→ 末尾带'时间窗边界提醒'(治 agent 从故障时刻切窗、漏掉更早起因)。"""
+    log = tmp_path / "j.txt"
+    log.write_text("10:12:12 Scan-only results received\n"
+                   "10:12:19 abort failed ret=-2\n"
+                   "10:12:30 tail event\n", encoding="utf-8")
+    mcp = build_server()
+    out = _call(mcp, "filter_logs", {"log_path": str(log), "since": "10:12:19"})
+    assert "时间窗边界提醒" in out, out
+    assert "前推" in out  # 提醒前推 since 重筛
+
+
+def test_filter_logs_window_hint_without_since(tmp_path):
+    """不传 since(没切窗)→ 不加提醒(没窗就没'窗前遮蔽'风险,不污染输出)。"""
+    log = tmp_path / "j.txt"
+    log.write_text("10:12:12 event a\n10:12:19 event b\n", encoding="utf-8")
+    mcp = build_server()
+    out = _call(mcp, "filter_logs", {"log_path": str(log)})
+    assert "时间窗边界提醒" not in out
