@@ -141,6 +141,37 @@ class CodeGraph:
         """
         return self._store.get_impact_radius(changed_files)
 
+    # ── P-A 1b 批量聚合用的改动分析(扩 wrap CRG changes.py,R4.1.2)──────────────
+
+    def analyze_changes(self, changed_files: list[str], *,
+                        changed_ranges: dict[str, list[tuple[int, int]]] | None = None,
+                        repo_root: str | None = None, base: str = "HEAD~1",
+                        include_churn: bool = False) -> dict:
+        """改动分析(批量 PR 聚合用):一批改动文件 → 风险分 + 改动函数 + 受影响流 + 测试缺口 + 复审优先级。
+
+        wrap CRG `analyze_changes`(changes.py):六因子 ``risk_score``(flow 参与 / 社区跨越 / 测试覆盖 /
+        SECURITY_KEYWORDS 名字命中 +0.20 / 调用方数 / 改动频率)+ ``changed_functions``(每函数带 risk)+
+        ``affected_flows`` + ``test_gaps`` + ``review_priorities``(top-10 by risk)。图里没有的文件 → 空结果,不崩。
+        给每条 PR 算一个 risk_score 用于安全分层(高风险/security 子集才送 LLM 深 CWE 分类,省 token)。
+
+        changed_ranges:``{file: [(start,end),...]}`` 行范围(从 PR diff 的 hunk 算)。给了直接用;
+            没给 + 给了 repo_root → CRG 跑 ``git diff <base>`` 自己解(本机非 git 仓或想用 PR diff 时传这个)。
+        """
+        from code_review_graph.changes import analyze_changes as _crg_analyze
+
+        return _crg_analyze(self._store, changed_files, changed_ranges=changed_ranges,
+                            repo_root=repo_root, base=base, include_churn=include_churn)
+
+    def community_ids_for(self, qualified_names: list[str]) -> dict[str, int | None]:
+        """批量查「符号 → 社区(module)」映射(批量 PR 聚合按 module 分桶用)。
+
+        wrap CRG ``GraphStore.get_community_ids_by_qualified_names``(graph.py,批量 450)。返
+        ``{qualified_name: community_id}``;community_id 相同的符号归同一模块/社区。图缺或符号不在图 → 该项 None。
+        """
+        if not qualified_names:
+            return {}
+        return self._store.get_community_ids_by_qualified_names(qualified_names)
+
     def stats(self) -> dict:
         """图统计(节点/边数等)给报告元数据用。GraphStats 形状以 CRG 版本为准,这里宽容转 dict。"""
         import dataclasses
