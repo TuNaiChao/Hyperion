@@ -79,11 +79,13 @@
 
 **可选增强**(若需要):`hyperion patch-search <query>` CLI 别名 + `hyperion_patch_search` MCP 工具(薄封 recall,限定 kind=bug_lesson + tags)。MVP 不做,recall 够用。
 
+> ✅ **1c 已实现(2026-08-07)**:`hyperion_patch_search` MCP 工具 —— 薄封 `recall`,过滤 `kind=bug_lesson`(只要补丁/bug 教训,排除 codebase 事实/裸代码块);query 驱动语义命中("跟蓝牙连接有关的补丁")。RecallHit 无 tags 字段,故按 kind 过滤(覆盖 patch_insight);严格 patch_insight-only 留 backlog。CLI 别名留 backlog。
+
 ---
 
-## 1d · Gerrit(阶段 1,留接口)
+## 1d · Gerrit(阶段 1,✅ 已实现 2026-08-07)
 
-`PatchFetcher` ABC 已定义;`GerritFetcher` 子类 stub `raise NotImplementedError("gerrit: post-R4")`。Gerrit 的 change URL 形态(`gerrit-review.googlesource.com/c/<proj>/+/<n>`)和 REST API(Gerrit `changes/<id>/revisions/current/patch`)留接口,不实现。以后接:实现 `GerritFetcher.fetch()` 即可,其余管线不变。
+`GerritFetcher.fetch()` 已实现:URL 解析 `<host>/c/<proj>/+/<num>`;REST `GET /changes/?q=change:<num>&o=CURRENT_REVISION`(剥 Gerrit `)]}'` XSSI 前缀取 subject/revision sha/id)+ `GET /changes/<id>/revisions/current/patch`(base64 解码 → unified diff);changed_files 从 diff 抽(`_diff_changed_files`)。匿名读公开 change 可行;私有/限速的 Gerrit HTTP 凭据留 backlog。单测(MockTransport + XSSI 前缀 + base64)绿。
 
 ---
 

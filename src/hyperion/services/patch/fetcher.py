@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import base64
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -130,15 +132,101 @@ class GitHubFetcher(PatchFetcher):
         raise RuntimeError("_req: unreachable(重试逻辑应已在上面 return/raise)")  # 保险
 
 
-class GerritFetcher(PatchFetcher):
-    """Gerrit change 抓取器(P-A 1d,接口预留,不实现)。
+def _diff_changed_files(diff_text: str) -> list[str]:
+    """从 unified diff 抽改动文件(取每 hunk 的 ``+++ b/<path>``,去重保序)。
 
-    留接口:Gerrit 的 change URL(gerrit-review.googlesource.com/c/<proj>/+/<n>)和 REST
-    (changes/<id>/revisions/current/patch)与 GitHub 不同;1d 实现 fetch() 即可,其余管线不变。
+    Gerrit 没有 GitHub 那种 per-file 列表端点(或要额外 ``o=`` 参数),直接从 diff 文本抽更稳。
+    """
+    seen: list[str] = []
+    for line in (diff_text or "").splitlines():
+        if line.startswith("+++ "):
+            rest = line[4:].strip().split("\t")[0]
+            if rest.startswith("b/"):
+                rest = rest[2:]
+            if rest and rest != "/dev/null" and rest not in seen:
+                seen.append(rest)
+    return seen
+
+
+class GerritFetcher(PatchFetcher):
+    """Gerrit change 抓取器(P-A 1d)。
+
+    Gerrit REST(Googlesource 风格):
+      - URL 形态:`https://<host>/c/<project>/+/<change_number>`(project 可含斜杠)。
+      - meta:`GET /changes/?q=change:<n>&o=CURRENT_REVISION` → JSON 列表。⚠️ Gerrit 在所有 JSON 响应前
+        加魔法前缀 ``)]}'`` 防 XSSI,必须先剥掉再解析。取 ``subject``(title)+ current revision sha + ``id``
+        (``project~branch~number``,后续 patch 端点要用)。
+      - diff:`GET /changes/<id>/revisions/current/patch` → **base64 编码**的 unified diff(无前缀,直接解码)。
+      - changed_files:从 diff 文本抽(``_diff_changed_files``),省一个端点 + 不依赖 ``o=`` 参数形态。
+    匿名读公开 change 可行;私有 / 限速需 Gerrit HTTP 凭据(用户名 + HTTP password),token 接入留 backlog。
     """
 
+    _GERRIT_RE = re.compile(r"https?://(?P<host>[^/]+)/c/(?P<proj>.+?)/\+/(?P<num>\d+)")
+
+    def __init__(self, *, timeout: float = 30.0, retries: int = 3,
+                 transport: httpx.BaseTransport | None = None):
+        self.timeout = timeout
+        self.retries = retries
+        self.transport = transport
+
+    @staticmethod
+    def _strip_xssi(text: str) -> str:
+        """剥 Gerrit JSON 响应的 ``)]}'`` 防 XSSI 前缀(后跟一个换行)。无前缀则原样返回。"""
+        s = text.lstrip()
+        if s.startswith(")]}'"):
+            return s[4:].lstrip("\n")
+        return text
+
     async def fetch(self, url: str) -> PatchArtifact:
-        raise NotImplementedError("gerrit fetcher: post-R4(P-A 1d)。目前用 GitHubFetcher。")
+        m = self._GERRIT_RE.search(url)
+        if not m:
+            raise ValueError(f"不是 Gerrit change URL(期望 <host>/c/<proj>/+/<num>): {url}")
+        host, num = m.group("host"), m.group("num")
+        base = f"https://{host}"
+        kw: dict = {"timeout": self.timeout}
+        if self.transport is not None:
+            kw["transport"] = self.transport
+        async with httpx.AsyncClient(**kw) as client:
+            # meta:subject + current revision sha + change id(project~branch~number)。
+            meta_resp = await self._req(
+                client, "GET", f"{base}/changes/",
+                params={"q": f"change:{num}", "o": "CURRENT_REVISION"})
+            data = json.loads(self._strip_xssi(meta_resp.text))
+            if not data:
+                raise ValueError(f"Gerrit change {num} 未找到(404 / 无权限?)")
+            ch = data[0]
+            title = str(ch.get("subject", ""))
+            revs = ch.get("revisions") or {}
+            sha = next(iter(revs)) if revs else None
+            change_id = ch.get("id")
+            # diff:revisions/current/patch(base64 编码的 unified diff)。
+            patch_resp = await self._req(
+                client, "GET", f"{base}/changes/{change_id}/revisions/current/patch")
+            diff = base64.b64decode(patch_resp.text).decode("utf-8", errors="replace")
+        return PatchArtifact(
+            url=url, source_kind="gerrit", diff=diff, title=title,
+            merge_commit_sha=sha, changed_files=_diff_changed_files(diff),
+        )
+
+    async def _req(self, client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
+        """指数退避重试(只重瞬时:5xx / 429 / 网络 / 超时);4xx 立即抛。镜像 GitHubFetcher._req。"""
+        delay = 1.0
+        for attempt in range(max(1, self.retries)):
+            try:
+                r = await client.request(method, url, **kwargs)
+            except (httpx.TransportError, httpx.TimeoutException):
+                if attempt + 1 < self.retries:
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                raise
+            if r.status_code in (429, 500, 502, 503, 504) and attempt + 1 < self.retries:
+                await asyncio.sleep(delay)
+                delay *= 2
+                continue
+            r.raise_for_status()
+            return r
+        raise RuntimeError("GerritFetcher._req: unreachable(重试逻辑应已在上面 return/raise)")  # 保险
 
 
 def from_config(cfg=None) -> PatchFetcher:  # noqa: ARG001 (cfg 预留给将来按 backend 选)
