@@ -15,7 +15,12 @@ import asyncio
 import httpx
 import pytest
 
-from hyperion.services.patch.fetcher import _GH_PR_RE, GitHubFetcher, PatchArtifact
+from hyperion.services.patch.fetcher import (
+    _GH_PR_RE,
+    GitHubFetcher,
+    PatchArtifact,
+    RateLimitError,
+)
 
 
 def _diff() -> str:
@@ -96,6 +101,33 @@ def test_fetch_404_raises():
     f = GitHubFetcher(retries=1, transport=httpx.MockTransport(_handler(meta_status=404)))
     with pytest.raises(httpx.HTTPStatusError):
         _run(f.fetch("https://github.com/o/r/pull/999"))
+
+
+def test_fetch_403_rate_limit_raises_friendly_hint():
+    """匿名配额耗尽(403 + X-RateLimit-Remaining: 0)→ RateLimitError,消息提示 GITHUB_TOKEN。"""
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"message": "rate limit exceeded"},
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1786091996"},
+        )
+
+    f = GitHubFetcher(retries=1, transport=httpx.MockTransport(handle))
+    with pytest.raises(RateLimitError) as ei:
+        _run(f.fetch("https://github.com/o/r/pull/1"))
+    assert "GITHUB_TOKEN" in str(ei.value) and "5000" in str(ei.value)
+
+
+def test_fetch_403_forbidden_not_mistaken_for_rate_limit():
+    """403 但非限速(私有仓无权限,剩余配额正常)→ 普通 HTTPStatusError,不误判成限速。"""
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403, json={"message": "Forbidden"},
+            headers={"X-RateLimit-Remaining": "59"},  # 配额还多 → 不是限速
+        )
+
+    f = GitHubFetcher(retries=1, transport=httpx.MockTransport(handle))
+    with pytest.raises(httpx.HTTPStatusError):
+        _run(f.fetch("https://github.com/o/r/pull/1"))
 
 
 def test_fetch_non_github_url_raises():
