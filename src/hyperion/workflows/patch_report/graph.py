@@ -1,0 +1,68 @@
+"""patch_report workflow StateGraph 组装(P-A 1b,一组 PR → cited 聚合报告)。
+
+pipeline(镜像 deep_research/graph.py 的 StateGraph 模式):
+  ingest → fetch_prs → analyze → report
+
+  ingest    建工作区 + 注册 scope
+  fetch_prs 并发抓取每条 PR 的 diff + meta(GitHubFetcher;Gerrit 同接口)
+  analyze   每 PR 一个分析任务并发跑(_analyze_one_pr 核心算法,窗口展示):
+            validate_patch(apply 门)+ CodeGraph.analyze_changes(risk/affected)+ cited-reporter → PRFinding
+  report    渲染 cited 报告 + 跨 PR 聚合 + Verifier(Checkpoint 4 实装 _aggregate + _verify + render)
+
+Checkpoint 3 跑通 fetch→analyze→findings;Checkpoint 4 在 analyze 后插 aggregate、report 后插 memorize,
+并替换 report 节点为真 cited 渲染 + 零幻觉回查。
+
+LangGraph StateGraph;run() 是入口(CLI `hyperion patch-report` / 测试调)。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from langgraph.graph import END, START, StateGraph
+
+from hyperion.workflows.patch_report.nodes import (
+    node_analyze,
+    node_fetch_prs,
+    node_ingest,
+    node_report,
+)
+from hyperion.workflows.patch_report.state import PatchReportState
+
+
+def build_graph():
+    """构建并编译 patch_report StateGraph(返回 CompiledStateGraph)。"""
+    g = StateGraph(PatchReportState)
+    g.add_node("ingest", node_ingest)
+    g.add_node("fetch_prs", node_fetch_prs)
+    g.add_node("analyze", node_analyze)
+    g.add_node("report", node_report)
+    g.add_edge(START, "ingest")
+    g.add_edge("ingest", "fetch_prs")
+    g.add_edge("fetch_prs", "analyze")
+    g.add_edge("analyze", "report")
+    g.add_edge("report", END)
+    return g.compile()
+
+
+async def run(prs: list[str], *, repo: str, codebase: str,
+              owner: str = "default", deep: bool = False,
+              concurrency: int = 3) -> dict:
+    """跑 patch_report workflow,返回最终 state(含 report_path / findings)。
+
+    prs        :PR URL 列表(GitHub `github.com/.../pull/N`;Gerrit 同接口)。
+    repo       :代码仓根(CRG 图 + validate_patch + verify 都用它;需先 `hyperion index` 建图)。
+    codebase   :仓库名(CRG db 目录名 / 记忆 scope.codebase)。
+    deep       :高风险/security 子集走 ReAct 深审(默认 light ~1 LLM/PR)。
+    concurrency:并发抓取/分析(GitHub 限速友好,默认 3)。
+    """
+    graph = build_graph()
+    initial: PatchReportState = {
+        "repo_root": str(Path(repo).resolve()),
+        "codebase": codebase,
+        "prs": list(prs),
+        "owner": owner,
+        "deep": deep,
+        "concurrency": concurrency,
+    }
+    return await graph.ainvoke(initial)
