@@ -105,7 +105,7 @@ agent 推理循环(那是 opencode 的活)。即"领域 harness 插进通用 har
 
 ## 7. 后续(同 tool+skill 形,不本轮)
 
-- **P-A patch 分析**:`hyperion_analyze_patch`(决策卡:正确性/作用/是否合入)+ `patch-rca` skill
+- **P-A patch 分析**:`hyperion_analyze_patch`(决策卡:正确性/作用/是否合入)+ `patch-review` skill
   + GitHub 抓取/auto-clone/Gerrit 接口。
 - **feature 2 调用链 / 跨版本**:`hyperion_call_chain` + `hyperion_cross_version_diff` + 调研 skill。
 - **R5 生产化**:Docker 沙箱 + 测试执行 → 把 plausible 升级到 verified(FAIL_TO_PASS/PASS_TO_PASS)。

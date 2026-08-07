@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: reference
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-03T06:55:38.934Z
+  modified: 2026-08-07T07:12:27.653Z
 ---
 
 `docs/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。
@@ -37,5 +37,11 @@ metadata:
 **#12(2026-08)**:bug-RCA 流程假设错——"单 session 一次走完 + apply 验证够"。e2e#4/#5 穿帮:补丁 plausible 非金标 + apply 过 ≠ 修对(系统软件无单测,真机 oracle)。根因:假设"自动验证够 + 一次走完"。教训:bug-RCA 是迭代(假设↔证伪/补丁↔验证循环,对标 POPPER/RepairAgent);validate 只验 apply;memorize/report 验证后才做。现状:SKILL/agent 改工具箱+人在环(deeab6c/b6ba4bd)。详见 docs/踩坑记录.md #12。
 
 **#13(2026-08)**:skill/prompt 受众错位——写给人(面向小白/项目叙事:踩坑编号/误诊史/e2e/对标论文/日期)而非模型。这些是噪声(烧 context 不指导行为)。教训:skill/prompt 面向模型(指令性),项目内部知识留 docs/踩坑+memory;description=触发器;教训提炼成可执行指令别叙事;区别于代码注释(面向小白)。背书 Anthropic Agent Skills 最佳实践。现状:SKILL/agent 去叙事(b6ba4bd)+ 记 [[skill-prompt-writing-style]] 铁律。详见 docs/踩坑记录.md #13。
+
+**#14(2026-08)**:build_check 系统软件构建信号歧义。P-A 1a 的试编译门在 wpa 返 `builds=no`,根因是**预存环境问题**(`git describe` 无标签 → wpa Makefile verify_config 挂 + 缺 libnl/openssl),baseline 本就 build 不了,非补丁引入。教训:系统软件自动编译门在缺完整构建环境时信号不可靠(不像 SWE-bench 有 Docker 预置);要么 Docker(R5)要么留用户自验,别把 best-effort `builds=no` 当补丁判决。现状:build_check 工具(12 单测)保留按需可用,但**退出 patch-review 流程**(用户拍板);流程只到 apply。详见 docs/踩坑记录.md #14 + [[p-a-1a-handoff]]。
+
+**#15(2026-08)**:validate_patch 对 agent 传参 marshalling 脆弱。e2e 报"补丁第 71 行损坏"但补丁内容对;逐字比对入参发现**唯一差别:agent 把末尾换行 rstrip 掉了**(git apply 对末行无换行敏感 → "patch corrupt")。教训:**接收 agent 字符串的工具入口必须容错 marshalling**(末尾换行/CRLF/围栏)—— normalize(LF + 补末尾 `\n`),别假设 agent verbatim 传;"工具报错"先怀疑传参 marshalling 再怀疑工具/补丁。现状:validate.py + build.py 入口 normalize + 2 新单测,e2e 复测 validate 通过。详见 docs/踩坑记录.md #15。
+
+**#16(2026-08)**:只读鉴定 skill 要 `bash:deny`。patch-review 设了 edit:deny 仍被 agent 用 **bash `git apply`** 把补丁偷偷贴进 demo 仓(edit:deny 不管 bash;bash 能 git apply/checkout/sed 改文件)。后果:工作树脏 + 后续 validate_patch 全失败(补丁已贴)+ agent 在 apply 失败下仍 memorize 错结论(踩坑#12 症状)。教训:只读 skill(鉴定/review/调研)**bash:deny**(不只 edit:deny);改代码的 skill(bug-rca)才给 bash,按 skill 是否改代码分 bash 权限。现状:patch-review bash:deny+edit:deny,e2e 复测 demo 仓干净。详见 docs/踩坑记录.md #16。
 
 **互补文档**:[docs/设计演变史.md](../../设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。

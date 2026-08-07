@@ -42,14 +42,14 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
 - **codex**:[config/codex_hyperion.toml](config/codex_hyperion.toml)(`[mcp_servers.hyperion]` 带下划线)。
 - **claude code / 其他**:标准 MCP(`.mcp.json`)+ skills 走 `.claude/skills/`(agentskills.io 跨平台)。
 
-然后在 agent 里翻开对应 skill(`bug-rca` / 即将的 `patch-rca` / `research`)干活。
+然后在 agent 里翻开对应 skill(`bug-rca` / 即将的 `patch-review` / `research`)干活。
 
 ## 架构(三层)
 
 ```
 用户的 coding agent(opencode / codex / claude code)
    ↓ 加载 skill(playbook)         ↓ 调 MCP 工具(手术刀)
-[ skills: bug-rca ✅ | patch-rca ⏳ | research ⏳ ]
+[ skills: bug-rca ✅ | patch-review ⏳ | research ⏳ ]
    ────────────────→  Hyperion MCP server(hyperion mcp serve)
                           8 共享工具(recall / search_codebase / filter_logs /
                           blast_radius / validate_patch / export_patch / memorize / export_report)+ 专家工具(⏳ build_check / call_chain / cross_version_diff)
