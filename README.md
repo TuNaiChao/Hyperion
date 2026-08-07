@@ -80,6 +80,8 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
 - 转向决策记录(为什么从 orchestrator 转 tool+skill server):[docs/设计/harness-pivot-design.md](docs/设计/harness-pivot-design.md)
 - 工作约定 + 仓库地图 + 命令:见仓库根 [CLAUDE.md](CLAUDE.md)
 - 踩坑记录(设计前先查):[docs/踩坑记录.md](docs/踩坑记录.md)
+- **使用指南**(在 opencode 上用 bug-RCA:从安装 opencode.json 开始):[docs/使用指南.md](docs/使用指南.md)
+- 设计演变史(所有设计思路转变):[docs/设计演变史.md](docs/设计演变史.md)
 
 ## 技术栈
 
