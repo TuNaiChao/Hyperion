@@ -84,6 +84,8 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
 
 **顺序**:阶段 1(1a → 1c/1d)→ 2(1b)→ 3(2a)→ 4(2b)。每阶段 = 加工具 + 加 skill + e2e + 经 MCP 暴露。
 
+> ⚠️ **2026-08-07 pivot 后路线复核**(以此为准,详见 [CLAUDE.md 路线复核](../../../CLAUDE.md)):新增 `filter_logs` 强制注入因果起点行 + **多库地基**(同时多仓刚需,前移到 2a 前);R4(多用户/租户/鉴权)+ R5(Docker/前端/artifacts/运行时验证)**取消**(本地 harness 非 SaaS);编译/测试/复现全用户自验。**核心顺序:filter_logs → 多库 → 2a → 2b → 记忆自动 query**。
+
 ## 暴露给其他 agent(详见 [01-architecture.md](01-architecture.md) §暴露)
 
 - **MCP 是 2026 共识**(opencode/codex/cursor/claude code 全原生支持)。deer-flow 走 REST 是因有 Web UI;Hyperion 给 coding agent 用 → 走 MCP。
