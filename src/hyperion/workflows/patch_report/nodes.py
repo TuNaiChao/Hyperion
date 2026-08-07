@@ -97,29 +97,67 @@ async def node_analyze(state: PatchReportState) -> dict:
     return {"findings": findings}
 
 
-# ── 4. report:渲染 cited 报告(Checkpoint 3 临时桩;Checkpoint 4 换真 aggregate+verify+render)──
+# ── 4. aggregate:跨 PR 聚合(Checkpoint 4)──────────────────────────────────
+
+
+def node_aggregate(state: PatchReportState) -> dict:
+    """调 ``_aggregate.aggregate``:确定性分桶统计(数字来自结构)+ 一次 LLM cited 综合。"""
+    from hyperion.workflows.patch_report._aggregate import aggregate
+
+    findings = state.get("findings") or []
+    agg = aggregate(findings, state.get("codebase", ""))
+    st = agg["stats"]
+    logger.info("aggregate: %d PRs → high_security=%d high_risk=%d",
+                st["total_prs"], st["high_security_count"], st["high_risk_count"])
+    return {"aggregate": agg}
+
+
+# ── 5. report:渲染 cited 报告 + Verifier 回查 ──────────────────────────────
 
 
 def node_report(state: PatchReportState) -> dict:
-    """【Checkpoint 3 临时桩】把 findings 写成 md;Checkpoint 4 换成真跨 PR 聚合 + cited 渲染 + Verifier 回查。"""
-    workdir = Path(state.get("workdir") or ".")
-    findings = state.get("findings") or []
+    """渲染 cited 报告(跨 PR 综合 + 每 PR deep-dive + sources)+ Verifier 回查 citation file。"""
+    from hyperion.workflows.patch_report.report import render_patch_report, verify_and_append
 
-    lines = [
-        "# patch-report(Checkpoint 3 临时输出)",
-        "",
-        f"**{len(findings)} PRs**(完整 cited 报告 + 跨 PR 聚合 + Verifier 回查在 Checkpoint 4 实装):",
-        "",
-    ]
-    for f in findings:
-        lines.append(
-            f"- **{f.get('title', '(无标题)')}** "
-            f"[applies={f.get('applies')} risk={f.get('risk_score', '?')} "
-            f"tier={f.get('security_tier', '?')} theme={f.get('theme', '?')}]"
-            f"  \n  {f.get('summary', '')[:200]}"
-        )
-    md = "\n".join(lines)
-    p = workdir / "report.md"
-    p.write_text(md, encoding="utf-8")
-    logger.info("临时报告写出: %s(Checkpoint 4 替换为完整 cited 报告)", p)
+    report_md = verify_and_append(render_patch_report(state), state)
+    p = Path(state.get("workdir") or ".") / "report.md"
+    p.write_text(report_md, encoding="utf-8")
+    logger.info("报告写出: %s", p)
     return {"report_path": str(p)}
+
+
+# ── 6. memorize:聚合结论 → codebase_fact 入记忆 ────────────────────────────
+
+
+async def node_memorize(state: PatchReportState) -> dict:
+    """聚合结论 + 高安全告警抽 codebase_fact 入记忆(后续 patch_search / recall 可命中)。
+
+    async:MemoryService.memorize 是协程(graph 经 ainvoke 跑,async 节点会被 await)。
+    """
+    from hyperion.platform.config import get_app_config
+    from hyperion.platform.models import create_chat_model
+    from hyperion.services.memory.backends.native.extract import extract_items
+    from hyperion.services.memory.manager import get_memory_service
+
+    scope = state.get("scope")
+    agg = state.get("aggregate") or {}
+    report_path = state.get("report_path")
+    if not scope or not report_path:
+        return {"facts_memorized": 0}
+    text = (agg.get("cross_summary") or "") + "\n" + (
+        f"stats: {agg.get('stats')}\n高安全 PR: {agg.get('high_security_prs')}")
+    if not text.strip():
+        return {"facts_memorized": 0}
+    cfg = get_app_config()
+    role = cfg.model_roles.get("extractor") or cfg.model_roles.get("planner")
+    model = create_chat_model(role) if role else create_chat_model(cfg.models[0].name)
+    try:
+        items = extract_items(text, repo=state["codebase"], scope=scope, model=model,
+                              source=str(report_path), source_tier="inferred")
+        await get_memory_service().memorize(items, scope)
+        n = sum(1 for it in items if getattr(it, "kind", None) == "codebase_fact")
+        logger.info("memorize: %d codebase_fact 入记忆(repo=%s)", n, state["codebase"])
+        return {"facts_memorized": n}
+    except Exception:  # noqa: BLE001 - 记忆失败不阻断报告产出(报告已写出)
+        logger.warning("memorize 失败,报告已产出不受影响", exc_info=True)
+        return {"facts_memorized": 0}
