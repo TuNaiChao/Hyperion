@@ -5,7 +5,18 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-07T07:12:07.393Z
+  modified: 2026-08-07T08:22:49.495Z
+---
+
+**更新(2026-08-07 晚)—— P-A 补丁/PR 分析线全完成 ✅**:1a(单补丁/PR 鉴定 tool+skill)+ 1c(patch_search 检索)+ 1d(GerritFetcher)+ 1b(批量聚合报告 batch workflow)全落地。
+- 1c/1d:`fc49c68`(`hyperion_patch_search` 工具 + GerritFetcher 实现:剥 XSSI 前缀 + base64 解码 patch)。
+- 1b 地基:`41690a7`(CodeGraph 扩 `analyze_changes`/`community_ids_for` wrap CRG;CRG qn 是「绝对路径::symbol」,PR diff 路径要先拼 repo_root)。
+- 1b workflow:`6e5018c`(骨架 + `_analyze_one_pr` 核心 cited-reporter)+ `55144c4`(聚合 + 渲染 + Verifier + CLI)。
+- 1b = batch workflow(`workflows/patch_report/`,镜像 deep_research)+ CLI `hyperion patch-report`(非 skill,因 batch 性质)。pipeline:ingest→fetch_prs→analyze→aggregate→report→memorize。
+- e2e(wpa.patch 真 LLM + 真 CRG wpa 图)GREEN:`_analyze_one_pr` applies=True/risk=0.4/modules=[6653,6664]/cited summary **准确命中金标根因**(scan_res_handler 误路由→p2p-scan 孤儿);aggregate 综合准。GitHub 批 fetch e2e 被匿名限速挡(单 fetch 已验,配 GITHUB_TOKEN 可跑)。
+- **1b 诚实边界**:light 模式默认(~1 LLM/PR);deep ReAct 子集 + Verifier line 精确回查(对 diff hunk)+ 跨 PR 语义等价去重 留 backlog。
+- 下一步:feature 2(2a 调用链 / 2b 跨版本)或 bug-RCA 收尾。
+
 ---
 
 **2026-08-07 P-A 阶段 1a 完成**(post-pivot 第二条 tool+skill 线;bug-RCA 主体已闭环后的新主线)。补丁/PR 鉴定 = `patch-review` skill + `hyperion-patch-review` agent + MCP 工具,跟 bug-RCA 一个形。

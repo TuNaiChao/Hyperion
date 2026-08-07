@@ -89,7 +89,11 @@
 
 ---
 
-## 1b · 批量聚合报告(阶段 2)
+## 1b · 批量聚合报告(✅ 已实现 2026-08-07,batch workflow)
+
+> **已落**:`workflows/patch_report/`(StateGraph,镜像 deep_research)+ CLI `hyperion patch-report`。
+> pipeline:ingest→fetch_prs(并发 GitHubFetcher/GerritFetcher)→analyze(每 PR:validate_patch + CodeGraph.analyze_changes 风险 + SECURITY_KEYWORDS 安全分层 + cited-reporter LLM → PRFinding)→aggregate(确定性分桶统计 theme/tier/module + 一次 LLM cited 综合)→report(cited 渲染 + 轻量 Verifier file∈changed_files 回查)→memorize(聚合结论→codebase_fact)。
+> e2e(wpa.patch 真 LLM + 真 CRG 图)GREEN:applies=True/risk=0.4/modules=[6653,6664]/cited summary 准确命中金标根因(scan_res_handler 误路由→p2p-scan 孤儿)+ aggregate 综合准。GitHub 批 fetch e2e 被匿名限速挡(单 fetch 已验)。light 模式(默认);deep ReAct 子集 + line 精确 Verifier 留 backlog。
 
 需求:给一组 PR(某代码库这半年的全部 PR)→ 跨 PR 聚合 → 报告(哪些模块在烂/改动频繁、哪些是安全修复、整体质量/安全/功能趋势)。
 
