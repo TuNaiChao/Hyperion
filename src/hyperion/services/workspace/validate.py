@@ -39,6 +39,12 @@ def validate_patch(
     if not patch or not patch.strip():
         return {"verified": False, "forward_method": "empty", "revert_ok": None, "log": "patch 为空"}
 
+    # 容错:agent 读/传补丁时常 rstrip 掉末尾换行、或带 CRLF → git apply 报"补丁损坏"误判。
+    # 归一化(LF + 补末尾换行)再验。e2e 实证:flash 传补丁丢末尾 \n → "第 71 行损坏"。
+    patch = patch.replace("\r\n", "\n").replace("\r", "\n")
+    if not patch.endswith("\n"):
+        patch += "\n"
+
     log: list[str] = []
     verified, method = _forward_check(patch, str(forward_dir), timeout, log)
 

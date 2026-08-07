@@ -29,7 +29,7 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
           ▼                                                       ▼
    ┌────────────────┐                          ┌────────────────────────────────┐
    │ bug-rca    ✅  │                          │ Hyperion MCP server            │
-   │ patch-rca  ⏳  │ ──── 工具调用 ──────────▶│ (hyperion mcp serve,stdio/http)│
+   │ patch-review  ⏳  │ ──── 工具调用 ──────────▶│ (hyperion mcp serve,stdio/http)│
    │ research   ⏳  │                          │ 6 共享工具 + 专家工具(见下)     │
    └────────────────┘                          └──────────┬─────────────────────┘
                                                           │
@@ -64,7 +64,7 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
 | skill | 用例 | 状态 |
 |---|---|---|
 | `bug-rca` | bug 根因定位 + 补丁 | ✅ |
-| `patch-rca` ⏳ | 单补丁/PR 鉴定(该不该合) | ⏳ 阶段 1 |
+| `patch-review` ⏳ | 单补丁/PR 鉴定(该不该合) | ⏳ 阶段 1 |
 | `patch-report` ⏳ | 批量补丁聚合报告 | ⏳ 阶段 2 |
 | `research` ⏳ | 调用链 / 跨版本调研 | ⏳ 阶段 3-4 |
 
@@ -74,7 +74,7 @@ Sourcegraph 都是 **tool-server(PROVIDER)** + 踩坑 #2 项目级泛化 + MCP �
 
 | 阶段 | 功能 | 形态 | 详见 |
 |---|---|---|---|
-| **1** | **1a** 单补丁/PR 分析(正确?/作用?/合入?+存库+auto-clone+GitHub 抓取) | `patch-rca` skill + `build_check` 工具 + fetcher + auto-clone + memorize 升级 | [03-patch-analysis.md](03-patch-analysis.md) §1a |
+| **1** | **1a** 单补丁/PR 分析(正确?/作用?/合入?+存库+auto-clone+GitHub 抓取) | `patch-review` skill + `build_check` 工具 + fetcher + auto-clone + memorize 升级 | [03-patch-analysis.md](03-patch-analysis.md) §1a |
 | 1 尾 | **1c** 补丁检索("蓝牙相关补丁") | recall 已能(1a 的 memorize 带 symptom/tags) | §1c |
 | 1 | **1d** Gerrit | `PatchFetcher` ABC stub | §1d |
 | **2** | **1b** 批量聚合报告(多 PR → 质量/安全/功能) | `patch-report` skill + 聚合工具(分桶 + map-reduce + cited 报告) | §1b |

@@ -94,16 +94,36 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     @mcp.tool()
     async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson"], summary: str,
                               file: str | None = None, line: int | None = None,
-                              root_cause: str = "") -> str:
+                              root_cause: str = "",
+                              fix_patch: str = "",
+                              symptom: str = "",
+                              blast_radius_files: list[str] | None = None,
+                              commit_sha: str | None = None,
+                              tags: list[str] | None = None) -> str:
         """Write one knowledge item into Hyperion's long-term memory (cross-session reuse).
 
-        kind: codebase_fact | bug_lesson. Prefer letting the bug_rca workflow auto-memorize;
-        use this only for ad-hoc facts a delegate discovers on-site.
+        kind: codebase_fact | bug_lesson. Prefer letting the bug_rca/patch_review flow auto-memorize;
+        use this only for ad-hoc facts/lessons a delegate discovers on-site.
+
+        For a patch/PR analysis (kind=bug_lesson): pass fix_patch (the unified diff). The item is then
+        content-addressed by the PATCH text (not the summary), so re-memorizing the same patch MERGES
+        (confidence bump) instead of duplicating. Pair with blast_radius_files + commit_sha + tags
+        (e.g. ["patch_insight"]) so the lesson is searchable and provenance-traceable. Put your
+        verdict (intent / correctness / merge recommendation) in summary + root_cause.
         """
-        from hyperion.services.memory.schema import Evidence, KnowledgeItem, SourceTier
+        from hyperion.services.memory.schema import Evidence, KnowledgeItem, SourceTier, make_id
+
+        blast_radius_files = blast_radius_files or []
+        tags = tags or []
+        # 给了 fix_patch → id 按补丁内容算(对齐 ingest.py:415),同补丁重复 memorize 走合并而非新增。
+        kid = make_id(scope, kind, fix_patch) if fix_patch else ""
 
         item = KnowledgeItem(
+            id=kid,
             kind=kind, repo=repo, scope=scope, summary=summary, root_cause=root_cause,
+            symptom=symptom, fix_patch=fix_patch,
+            blast_radius_files=list(dict.fromkeys(blast_radius_files)),
+            commit_sha=commit_sha, tags=tags,
             evidence=([Evidence(file=file, line=line)] if file else []),
             source="mcp", source_tier=SourceTier.delegate,
         )
@@ -350,6 +370,84 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         report_path.write_text(content, encoding="utf-8")
         n = len(content.splitlines())
         return f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
+
+    # ── ⑩ fetch_patch:PR 链接 → diff + meta(P-A 1a,取快递)────────────────────
+    # 给一个 GitHub PR 链接,抓回 diff + title/body/changed_files/merge_commit_sha。opencode 能 curl,
+    # 但这里带 token 鉴权(私有/限速)+ 失败重试 + 结构化拆包(踩坑#2 辩护:agent 通用 curl 不知 token/remotes)。
+    @mcp.tool()
+    async def fetch_patch(url: str) -> str:
+        """Fetch a GitHub PR's diff + metadata (title/body/changed_files/merge_commit_sha).
+
+        Give a PR URL (github.com/<owner>/<repo>/pull/<num>). Returns the unified diff plus PR metadata
+        so you can then ``validate_patch`` / ``build_check`` / assess it. Uses GITHUB_TOKEN if set
+        (private repos / rate limits). Network errors / 404 / non-GitHub URL → friendly error string.
+        """
+        from hyperion.services.patch.fetcher import from_config
+
+        try:
+            art = await from_config().fetch(url)
+        except Exception as e:  # noqa: BLE001 - 网络错/404/非 GitHub URL 给可操作串,不崩整个调用
+            return f"fetch_patch 失败({url}): {e}"
+        meta = (f"title: {art.title}\nmerge_commit_sha: {art.merge_commit_sha}\n"
+                f"changed_files({len(art.changed_files)}): {', '.join(art.changed_files[:20])}")
+        if art.body:
+            meta += f"\nbody: {art.body[:500]}"
+        return f"source={art.source_kind}  url={art.url}\n{meta}\n\n--- diff ---\n{art.diff}"
+
+    # ── ⑪ ensure_repo:本地没有 → auto-clone(P-A 1a,借样机)────────────────────
+    # build_check / 鉴定要一台"样机"(代码仓)。本地没有 → 按 config.patch.git.remotes 配的地址 clone。
+    # 踩坑#2 辩护:opencode 会 git clone,但只去公网;用户的"自定义 git 连接"(内网镜像/SSH)它不知道。
+    @mcp.tool()
+    async def ensure_repo(name_or_url: str) -> str:
+        """Resolve a codebase to a local path, auto-cloning if missing.
+
+        Give a repo name (looked up in ``config.patch.git.remotes``), a git URL, or an existing local
+        path. Returns the local absolute path; reuses an existing clone in ``data/repos/<name>``
+        (idempotent — won't re-clone). Use before ``validate_patch`` / ``build_check`` when the repo
+        isn't already local.
+        """
+        from hyperion.services.repos.resolver import ensure_repo as _ensure
+
+        try:
+            path, cloned = _ensure(name_or_url)
+        except Exception as e:  # noqa: BLE001 - clone 失败(认证/不存在/网络)给可操作串,不崩
+            return f"ensure_repo 失败({name_or_url}): {e}"
+        tag = "新 clone" if cloned else "命中本地(未 clone)"
+        return f"✅ repo_path={path}  ({tag})"
+
+    # ── ⑫ build_check:补丁打上后能否编译(P-A 1a,Tier 0.5 试编译门,best-effort)────────
+    # 把补丁打到隔离 worktree(不动主工作树)→ 跑构建(自动认 Makefile/meson/cmake/configure,或 build_cmd/config)
+    # → 返回 yes/no/unchecked。best-effort:缺环境/认不出/超时 → unchecked,诚实不假装 yes。
+    # apply+build 过 ≠ 包对(不跑测试/不复现,用户定)—— Tier 0.5,顶在这里。
+    @mcp.tool()
+    async def build_check(patch: str, repo_path: str, build_cmd: str | None = None) -> str:
+        """Build gate (Tier 0.5, best-effort): does the repo still compile AFTER applying the patch?
+
+        Applies the patch to an ISOLATED git worktree (does NOT touch your working tree), runs the
+        build (auto-detects Makefile/meson/cmake/configure, or uses build_cmd / config), returns
+        ``builds=yes|no|unchecked``. ``unchecked`` = no build env / unknown build system / timeout /
+        worktree unavailable — report honestly, don't fake "yes". NOTE: building OK ≠ the patch is
+        correct (no tests run, no reproduction); the cap is apply+build, final verdict is human/device.
+
+        repo_path: absolute path of the repo to build against.
+        build_cmd: override the build command (else ``config.patch.build.commands[<repo>]`` or auto-detect).
+        """
+        from pathlib import Path
+
+        from hyperion.services.workspace.build import build_check as _build_check
+
+        if not Path(repo_path).is_dir():
+            return f"repo_path 不是目录: {repo_path}"
+        try:
+            r = _build_check(patch, repo_path, build_cmd=build_cmd)
+        except Exception as e:  # noqa: BLE001
+            return f"build_check 执行失败: {e}"
+        flag = {"yes": "✅ 编译过", "no": "❌ 编译失败", "unchecked": "⚪ 无法判定(best-effort)"}[r["builds"]]
+        body = (f"{flag}\nbuilds={r['builds']}  command={r['command']}\n"
+                f"归因: {r['attribution']}\n提示: {r['hint']}")
+        if r["errors"]:
+            body += f"\n错误尾:\n{r['errors']}"
+        return body
 
     return mcp
 

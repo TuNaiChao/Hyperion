@@ -13,7 +13,7 @@
 
 | 子功能 | 形态 | 阶段 |
 |---|---|---|
-| 1a 单补丁/PR 分析 | `patch-rca` skill + `hyperion-patch-rca` agent + 共享工具 + `build_check` 新工具 | **1** |
+| 1a 单补丁/PR 分析 | `patch-review` skill + `hyperion-patch-review` agent + 共享工具 + `build_check` 新工具 | **1** |
 | 1c 检索 | `hyperion_memory_recall`(已有) | 1 尾(白捡) |
 | 1d Gerrit | `PatchFetcher` ABC stub | 1(留接口) |
 | 1b 批量聚合报告 | `patch-report` skill + 聚合工具(batch,复用 deep_research cited-reporter) | 2 |
@@ -22,48 +22,48 @@
 
 ## 1a · 单补丁/PR 分析(阶段 1)
 
-### 流程(patch-rca skill 7 步,2 硬门)
+### 流程(patch-review skill 7 步;apply 硬门 + memorize 推迟到用户验证后)
 1. **取补丁**:本地 `.patch`/`.diff` 文件 → 直接读;URL(GitHub PR)→ `fetcher` 抓 diff + meta。
 2. **(若需)取代码库**:repo 本地有 → 用;没有 → `ensure_repo` auto-clone 到 `data/repos/<name>/`。
 3. **读补丁 + 上下文**:agent 用 `search_codebase` 找补丁涉及的代码(语义搜,别盲读全文)。
 4. **apply 门【硬门】** `hyperion_validate_patch(补丁, repo_path)` —— Tier 0,能不能干净打上。
-5. **build 门** `hyperion_build_check(补丁, repo_path)` —— Tier 0.5,打上后能不能编译。
+5. **不自动编译;提示用户**(2026-08-07 调整)—— 系统软件构建环境重、依赖多,自动编译结果易歧义(e2e 实证:wpa 因无 git tag / 缺 libnl 等依赖 build 失败,`builds=no` 不归咎补丁)。patch-review 流程**不跑编译,只到 apply**;**明确提示用户必须自行编译测试**。(`hyperion_build_check` 工具已实现 + 12 单测,保留按需调用,环境就绪再接回流程。)
 6. **blast + LLM 鉴定** `hyperion_blast_radius(改动文件)` 看影响面;LLM 综合判(见决策卡)。
-7. **memorize【硬门】** `hyperion_memory_memorize(kind=bug_lesson, ...)` 把补丁 + 鉴定结论存库(symptom/fix_patch/blast/commit_sha)。
+7. **用户验证通过后才 memorize**(2026-08-07 调整,对齐 bug-rca / 踩坑#12)—— 鉴定只是读码判断(没编译没测试),**未经验证不 memorize**;`hyperion_memory_memorize(kind=bug_lesson, fix_patch=<补丁>, ...)` 推迟到用户告知编译/真机验证通过后(可跨 session)。
 
 ### 决策卡(analyze 输出,correctness 封顶 builds)
 ```jsonc
 {
   "applies": true,                  // Tier 0:validate_patch 过?
-  "builds": "yes|no|unchecked",     // Tier 0.5:build_check(缺环境→unchecked)
+  "builds": "需用户自验",              // 不自动编译(系统软件构建留给用户);2026-08-07 起流程不跑 build
   "intent": "...",                  // 这补丁想干啥(作用)
   "blast_radius": {...},            // 影响面(blast_radius 工具)
-  "correctness": "plausible|uncertain|risky",  // LLM 综合判(apply+build+blast+推理)
+  "correctness": "safe|needs-review|risky",  // 基于 apply + 读码推理(不报 verified/tested;编译由用户自验)
   "correctness_reason": "...",
-  "merge_recommendation": "merge|review|reject",  // 该不该合
+  "merge_recommendation": "merge|review|reject|needs-info",  // 该不该合
   "confidence": "low|medium|high",
   "risks": ["..."],
   "notes": "..."                    // 诚实标注:plausible,非 verified
 }
 ```
 
-### 验证封顶(用户定:apply + build,**不跑测试、不复现**)
+### 验证封顶(用户定:apply;build 工具在但暂不接入流程 —— 编译由用户自验;**不跑测试、不复现**)
 | 级 | 干啥 | 状态 |
 |---|---|---|
 | Tier 0 apply | `git apply --check` 补丁能干净打上 | ✅ `hyperion_validate_patch`(已有,硬门) |
-| **Tier 0.5 build** | 打上 + 跑构建(编译过) | ⏳ `hyperion_build_check`(阶段 1 新,best-effort) |
+| **Tier 0.5 build** | 打上 + 跑构建(编译过) | 🔧 `hyperion_build_check` 工具**已实现 + 单测**,但**暂不接入 patch-review 流程**(系统软件构建信号歧义,e2e 实证);编译由用户自验。环境就绪可接回 |
 | ~~Tier 1 跑测试~~ | FAIL_TO_PASS / PASS_TO_PASS | ❌ **永不做**(用户定) |
 | ~~Tier 2 功能复现~~ | 复现原 bug 场景 → 确认消失 | ❌ **永不做** |
 
-`correctness` 顶到 `builds`(apply+build 都过);**不报 tested/verified**。诚实:这是"看着靠谱 + 能编译",非"包对"。理由:系统软件(wpa/bluez)真测试套件(hwsim 等)+ bug 复现环境太重,边际不值。
+`correctness` 基于 **apply + 读码推理**;**不报 tested/verified**(没跑测试、没复现;build 也暂不接入,编译由用户自验)。诚实:这是"看着靠谱",非"包对"。理由:系统软件(wpa/bluez)构建/测试套件(hwsim 等)+ bug 复现环境太重,边际不值。
 
 ### 新件(阶段 1)
 1. **`services/patch/fetcher.py`**(⏳ 阶段1新):`PatchFetcher` ABC(`async fetch(url) -> PatchArtifact{url,title,body,diff,merge_commit_sha,changed_files,source_kind}`)+ `GitHubFetcher`(httpx → GitHub REST API,`GET /repos/{o}/{r}/pulls/{n}` 两路:Accept v3.diff → diff,json → meta;token 从 `GITHUB_TOKEN` 可选;重试借 deer-flow github_api 模式)+ `GerritFetcher` stub(`raise NotImplementedError`,**1d 留接口**)+ `from_config()` 工厂(仿 delegate)。
    - **divergence 注记**:老 pr-review-design.md 提 `services/github/pr_fetcher.py`;改 `services/patch/fetcher.py` —— 因 Gerrit 非 GitHub,一处内聚。
 2. **`services/repos/resolver.py`**(⏳ 阶段1新):`ensure_repo(name_or_path, *, cfg) -> Path` —— 先查本地(`data/repos/<name>/` 或显式路径);缺则 `git clone [--depth 1] <remote> <dest>`(subprocess,仿 `_observe_patch`)。幂等。config `git:` 段(`clone_dir: data/repos, shallow: true, remotes: {bluez: https://...}, identity_file: $ENV`)。**1a "自动 clone"**。
 3. **`hyperion_build_check` 工具**([tools/mcp_memory.py](../../../src/hyperion/tools/mcp_memory.py) `build_server()`):补丁打 repo 副本 → 跑构建(自动认 Makefile→`make` / meson.build→`meson compile` / CMakeLists.txt→`cmake` / configure→`./configure && make`,或配置指定)→ `{builds, errors}`。**best-effort**:缺依赖/没构建环境 → 返 `builds=unchecked` + hint,不崩。lazy 导入 + try/except(仿 search_codebase)。
-4. **`patch-rca` SKILL.md**(`.claude/skills/patch-rca/` ⏳):上面 7 步 playbook,apply/build/memorize 硬门。
-5. **`hyperion-patch-rca` opencode agent**([config/opencode_hyperion.json](../../../config/opencode_hyperion.json)):playbook 烙进 prompt + steps + 硬门强制(仿 hyperion-bug-rca)。
+4. **`patch-review` SKILL.md**(`.claude/skills/patch-review/` ⏳):上面 7 步 playbook,apply/build/memorize 硬门。
+5. **`hyperion-patch-review` opencode agent**([config/opencode_hyperion.json](../../../config/opencode_hyperion.json)):playbook 烙进 prompt + steps + 硬门强制(仿 hyperion-bug-rca)。
 6. **memorize 升级**(小):patch lesson 一起存 `fix_patch`(补丁)/`symptom`/`blast_radius_files`/`commit_sha`。
 
 ### 复用

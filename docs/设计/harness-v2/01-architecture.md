@@ -21,7 +21,7 @@ Hyperion 的价值按三层组织:**共享底座 → skill 层 → agent enforce
 `.claude/skills/<name>/SKILL.md`,跨平台标准(agentskills.io)。skill = "这本菜谱怎么做这个用例",advisory(灵活自纠)但 mandate 关键硬门(如 validate/memorize)。agent 按任务翻开对应 skill。
 
 - `bug-rca/SKILL.md` ✅ —— 9 步:recall→search→filter→假设+证伪→blast→改+validate(硬门)→落盘 patch(硬门)→memorize(硬门)→落盘 report(硬门)。
-- `patch-rca/SKILL.md` ⏳(阶段 1)—— 抓 PR→读补丁→apply 门→build 门→blast→LLM 鉴定→memorize。
+- `patch-review/SKILL.md` ✅(阶段 1)—— 抓 PR→读补丁→apply 门(硬门)→blast→LLM 鉴定→**用户验证后** memorize(build 工具在但暂不接入流程;memorize 推迟,对齐 bug-rca)。
 - `research/SKILL.md` ⏳(阶段 3-4)—— 调用链查询 / 跨版本对比。
 - opencode 原生发现 `.claude/skills/`(走项目根向上找);agent 调 `skill(name=)` 按需加载(非 auto-inject)。
 
@@ -30,7 +30,7 @@ opencode 配置里把 playbook 烙进 agent 的 system prompt(常驻 > 等 skill
 
 - `hyperion-bug-rca` ✅ —— steps=25,edit/bash/hyperion* allow,validate+export_patch+memorize+export_report 硬门。
 - `hyperion-localize` / `hyperion-repair` —— 老 delegate 两阶段 agent(降级 orchestrator 用,保留)。
-- `hyperion-patch-rca` ⏳(阶段 1)。
+- `hyperion-patch-review` ⏳(阶段 1)。
 
 ## 工具目录(MCP server 暴露的全部工具)
 

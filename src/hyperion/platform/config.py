@@ -283,6 +283,50 @@ class MCPConfig(BaseModel):
     port: int = 8765  # http 端口
 
 
+class PatchGitConfig(BaseModel):
+    """patch.git 子配置:P-A 的「auto-clone 代码仓」(1a)。
+
+    面向小白:验货(build_check)要一台"样机"(代码仓)。本地没有时,Hyperion 按这里配的地址
+    自动 git clone 一台到 clone_dir。remotes 是你的"自定义连接"——比如公司内网镜像、或带 SSH key
+    的私有仓地址;opencode 自己只会去公网 GitHub 拉,不知道你的内网镜像,所以这步归 Hyperion。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    clone_dir: str = "data/repos"  # auto-clone 落点(ensure_repo 命中这里就不再 clone,幂等)
+    shallow: bool = True  # --depth 1 浅克隆(省时省空间;要完整历史改 false)
+    remotes: dict[str, str] = Field(default_factory=dict)  # {仓库名: git url},如 {bluez: https://...}
+
+
+class PatchBuildConfig(BaseModel):
+    """patch.build 子配置:P-A 的「build_check 试编译门」(1a,Tier 0.5)。
+
+    面向小白:验货时把补丁打到样机上、点火看能不能编译过。这层控制认哪个构建系统、超时多久。
+    commands 让你按仓指定构建命令(覆盖自动探测)——系统软件构建常需特殊参数(如 wpa_supplicant
+    要先 `cp defconfig .config && make`),空 = 让 build_check 自动认 Makefile/meson/cmake/configure。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    commands: dict[str, str] = Field(default_factory=dict)  # {仓库名: 构建命令},覆盖自动探测
+    timeout: float = 600.0  # 构建超时(秒);超时杀整组进程(防 make 子进程孤儿)
+
+
+class PatchConfig(BaseModel):
+    """P-A 补丁/PR 分析配置(harness 转向后第二条 tool+skill 线,1a)。对应 config.yaml 的 patch: 段。
+
+    面向小白:bug-RCA 是"从 bug 找补丁";P-A 反过来——"给个补丁/PR,验它对不对、该不该合"。
+    这层只管两件后勤:① 缺代码仓时自动 clone(patch.git);② 试编译时认构建系统、超时(patch.build)。
+    验证封顶 = apply + build,**不跑测试、不复现**(系统软件测试环境太重,用户定);所以结论是
+    "看着靠谱 + 能编译",非"包对",最终拍板靠人/真机。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    git: PatchGitConfig = Field(default_factory=PatchGitConfig)
+    build: PatchBuildConfig = Field(default_factory=PatchBuildConfig)
+
+
 class AppConfig(BaseModel):
     """顶层配置(models / model_roles / tools / sandbox)。"""
 
@@ -297,6 +341,7 @@ class AppConfig(BaseModel):
     delegate: DelegateConfig = Field(default_factory=DelegateConfig)  # 委托层(R2,P2 MVP)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)  # agent 运行时 harness(R3)
     mcp: MCPConfig = Field(default_factory=MCPConfig)  # MCP 对外 transport(harness 转向 D0)
+    patch: PatchConfig = Field(default_factory=PatchConfig)  # 补丁/PR 分析(P-A 1a:auto-clone + build_check)
 
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。
