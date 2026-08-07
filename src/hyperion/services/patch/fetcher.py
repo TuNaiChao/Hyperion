@@ -25,6 +25,15 @@ from dataclasses import dataclass, field
 import httpx
 
 
+class RateLimitError(RuntimeError):
+    """GitHub API 配额耗尽(匿名 60 次/小时用超)。消息自带提示:设 ``GITHUB_TOKEN`` 解除。
+
+    面向小白:没配 token 时 GitHub 每小时只白给 60 次,用超了回 403 把你挡门外。本异常专门认出
+      "配额耗尽"这种 403 —— 靠响应头 ``X-RateLimit-Remaining: 0`` 区分(私有仓无权限也回 403,
+      但那种剩余配额不会是 0,故不会误伤);抛出时顺带提示"配 token 升到 5000/小时"。
+    """
+
+
 @dataclass
 class PatchArtifact:
     """一个补丁/PR 的完整抓取产物(给 build_check / memorize / 鉴定卡 用)。"""
@@ -127,7 +136,15 @@ class GitHubFetcher(PatchFetcher):
                 await asyncio.sleep(delay)
                 delay *= 2
                 continue
-            r.raise_for_status()  # 4xx / 用尽重试的 5xx → 抛,让调用方友好降级。
+            # GitHub 配额耗尽(403 + 剩余 0)→ 抛带提示的 RateLimitError,告诉用户配 token。
+            # 私有仓无权限也回 403,但那种 X-RateLimit-Remaining 不会是 0,故能区分、不误伤。
+            if r.status_code == 403 and r.headers.get("X-RateLimit-Remaining") == "0":
+                reset = r.headers.get("X-RateLimit-Reset") or "?"
+                raise RateLimitError(
+                    "GitHub API 限速:匿名配额 60/小时已耗尽(剩余 0)。"
+                    f"设 GITHUB_TOKEN 环境变量可升到 5000/小时(reset at {reset})。"
+                )
+            r.raise_for_status()  # 其余 4xx / 用尽重试的 5xx → 抛,让调用方友好降级。
             return r
         raise RuntimeError("_req: unreachable(重试逻辑应已在上面 return/raise)")  # 保险
 
