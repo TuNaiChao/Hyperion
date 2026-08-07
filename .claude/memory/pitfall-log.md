@@ -33,3 +33,9 @@ metadata:
 **#10(2026-08)**:opencode 1.18.11 http(streamable-http)MCP **不注册原生工具**。e2e#3 想用 warm http 解 ③ cold-boot,agent 看不到 `hyperion_*` 原生工具 → 绕 curl 手工握 initialize→tools/call(waste token)。改回 local stdio 立刻原生注册。机理:listTools 便宜(不加载 embedder)→ stdio 冷启也能在 timeout 内注册;首次 recall/search *调用* 才冷启 embedder → timeout 要 ≥120000ms(模板默认 10000 不够)。教训:opencode↔hyperion 走 **local stdio**;http 待解注册问题;验"原生调用"看日志 `evaluated permission=<server>_<tool> action=allow`。模板 timeout 已 10000→120000(`6338e85`)。详见 [[opencode-mcp-wiring]] + docs/踩坑记录.md #10。
 
 **#11(2026-08)**:glm-5.2 **系统性把 bug 根因误诊成「显眼日志行」**(连续 3 次 e2e wpa 孤儿都误诊成 abort-fail,金标是更早 7 秒的 scan_res_handler 误路由)。三次都 applies=True、四道硬门全过、verified=True,**但根因错、补丁治标碰巧能 work**。根因:① 注意力被 `Abort scan failed: ret=-2`(ERROR 显眼)劫持,忽略 INFO 级的误路由起点 `Scan-only results received`;② 因果时序倒置(孤儿 10:12:12 形成,abort 失败 10:12:19 才发生,-ENOENT 是症状非原因);③ 证伪没跨假设边界;④ **验证门控只查 apply 不查根因正确性(最大盲区)**。教训:**apply 过 ≠ 根因对**;LLM RCA 会抓显眼行忽略安静起点 → filter_logs/报告标因果起点 + 时序证伪(purported 根因前现象是否已存在);同 bug 反复误诊=模型偏差非偶然;有金标准必做落点/机制/时序对比校准 RCA。待办:短期 SKILL 加时序证伪(**e2e#5 已验证无效**:agent 照做但问错问题[验 abort 早于联网,非孤儿早于 abort]+ 记忆先验警告被当假设证伪反噬[agent 称无 NEW_SCAN_RESULTS 推翻误路由,实为日志解读错]);真正解 = 中期工具层 filter_logs **强制注入因果起点行** + 长期 R5 运行时验证。详见 docs/踩坑记录.md #11。
+
+**#12(2026-08)**:bug-RCA 流程假设错——"单 session 一次走完 + apply 验证够"。e2e#4/#5 穿帮:补丁 plausible 非金标 + apply 过 ≠ 修对(系统软件无单测,真机 oracle)。根因:假设"自动验证够 + 一次走完"。教训:bug-RCA 是迭代(假设↔证伪/补丁↔验证循环,对标 POPPER/RepairAgent);validate 只验 apply;memorize/report 验证后才做。现状:SKILL/agent 改工具箱+人在环(deeab6c/b6ba4bd)。详见 docs/踩坑记录.md #12。
+
+**#13(2026-08)**:skill/prompt 受众错位——写给人(面向小白/项目叙事:踩坑编号/误诊史/e2e/对标论文/日期)而非模型。这些是噪声(烧 context 不指导行为)。教训:skill/prompt 面向模型(指令性),项目内部知识留 docs/踩坑+memory;description=触发器;教训提炼成可执行指令别叙事;区别于代码注释(面向小白)。背书 Anthropic Agent Skills 最佳实践。现状:SKILL/agent 去叙事(b6ba4bd)+ 记 [[skill-prompt-writing-style]] 铁律。详见 docs/踩坑记录.md #13。
+
+**互补文档**:[docs/设计演变史.md](../../设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。
