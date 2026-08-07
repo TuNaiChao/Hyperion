@@ -395,6 +395,33 @@ def cmd_research(args) -> int:
     return 0
 
 
+def cmd_patch_report(args) -> int:
+    """patch_report workflow(P-A 1b):一组 PR → fetch → 逐 PR 分析 → 跨 PR 聚合 → cited 报告。
+
+      hyperion patch-report --prs <url...> --repo <path> --codebase <name> [--deep] [--concurrency 3]
+    ingest→fetch_prs→analyze(validate+CRG risk+cited-reporter)→aggregate(分桶+LLM 综合)
+         →report(cited+Verifier)→memorize(codebase_fact)。
+    诚实:CRG 图需先 `hyperion index` 建;GitHub 匿名限速(建议配 GITHUB_TOKEN)。
+    """
+    import asyncio
+
+    from hyperion.workflows.patch_report.graph import run
+
+    try:
+        final = asyncio.run(run(args.prs, repo=args.repo, codebase=args.codebase,
+                                owner=getattr(args, "owner", "default"),
+                                deep=getattr(args, "deep", False),
+                                concurrency=getattr(args, "concurrency", 3)))
+    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
+        print(f"patch_report 运行出错:{e}", file=sys.stderr)
+        return 1
+    print(f"报告:{final.get('report_path', '-')}")
+    agg = (final.get("aggregate") or {}).get("stats") or {}
+    print(f"PRs:{agg.get('total_prs', 0)} · high_security={agg.get('high_security_count', 0)} · "
+          f"CodebaseFact 入记忆:{final.get('facts_memorized', 0)} 条")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -489,6 +516,16 @@ def main(argv: list[str] | None = None) -> int:
     sub_res.add_argument("--codebase", required=True, help="仓库名(= 建索引 name;CRG db / 记忆 scope.codebase 用)")
     sub_res.add_argument("--owner", default="default", help="记忆 scope.owner(默认 default;多用户 R4)")
     sub_res.set_defaults(func=cmd_research)
+
+    sub_pr = sub.add_parser("patch-report", help="P-A 1b 批量 PR 聚合报告(一组 PR → 跨 PR 质量/安全/功能报告)")
+    sub_pr.add_argument("--prs", required=True, nargs="+",
+                        help="PR URL 列表(GitHub github.com/.../pull/N;Gerrit 同接口)")
+    sub_pr.add_argument("--repo", required=True, help="代码仓根(CRG 图 + validate_patch 用;需先 hyperion index)")
+    sub_pr.add_argument("--codebase", required=True, help="仓库名(CRG db / 记忆 scope.codebase)")
+    sub_pr.add_argument("--owner", default="default", help="记忆 scope.owner(默认 default)")
+    sub_pr.add_argument("--deep", action="store_true", help="高风险/security 子集走 ReAct 深审(默认 light)")
+    sub_pr.add_argument("--concurrency", type=int, default=3, help="并发抓取/分析(默认 3,GitHub 限速友好)")
+    sub_pr.set_defaults(func=cmd_patch_report)
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

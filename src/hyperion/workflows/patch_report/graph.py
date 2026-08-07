@@ -22,9 +22,11 @@ from pathlib import Path
 from langgraph.graph import END, START, StateGraph
 
 from hyperion.workflows.patch_report.nodes import (
+    node_aggregate,
     node_analyze,
     node_fetch_prs,
     node_ingest,
+    node_memorize,
     node_report,
 )
 from hyperion.workflows.patch_report.state import PatchReportState
@@ -36,12 +38,16 @@ def build_graph():
     g.add_node("ingest", node_ingest)
     g.add_node("fetch_prs", node_fetch_prs)
     g.add_node("analyze", node_analyze)
+    g.add_node("aggregate", node_aggregate)
     g.add_node("report", node_report)
+    g.add_node("memorize", node_memorize)
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "fetch_prs")
     g.add_edge("fetch_prs", "analyze")
-    g.add_edge("analyze", "report")
-    g.add_edge("report", END)
+    g.add_edge("analyze", "aggregate")
+    g.add_edge("aggregate", "report")
+    g.add_edge("report", "memorize")
+    g.add_edge("memorize", END)
     return g.compile()
 
 
