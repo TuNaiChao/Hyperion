@@ -338,7 +338,7 @@ metadata:
     - 分档:**R2 收尾**拆 `node_delegate` → localize + repair 两阶段 + verify Tier 0(tolerant apply);**R3.1** 改迭代 verify-refine(B)(同会话双循环);多候选采样投票 + rerank 已于 **2026-07-31 整体移除**(无 oracle 时平凡白烧 token,见 bug-rca-design.md §7.6);**R5** 加跨模型对抗审 + 2 轮反馈循环 + 退化熔断(有 oracle 再评估 filter+vote)。
     - 目标阶段:**R2收尾两阶段 → R3.1 verify-refine(B) → R5对抗审**。
 
-55. **opencode serve persistent(③,session 续接 + 免 MCP cold boot)** — `delegate.py` 新 `OpenCodeServeDelegate` 后端。
+55. ~~**opencode serve persistent(③,session 续接 + 免 MCP cold boot)**~~ — ⚠️ **2026-08-07 pivot 后 obsolete**(理由见本条末尾)。原计划:`delegate.py` 新 `OpenCodeServeDelegate` 后端。
     - 现状(R3.1):每次 `delegate.run` 新起 `opencode run` 子进程,`--continue` 续最近 session;**每次重拉 `hyperion mcp serve` 子进程 = MCP cold boot**(import hyperion + 加载 sentence-transformers ~1.2GB),bug_rca 一条 bug K1+K2≈4 次 delegate = 4× MCP 冷启。正确性不受影响(e2e GREEN),③ 是**纯性能优化**。
     - **2026-08-06 agent 查实(完整结论见记忆 [[opencode-serve-persistent-research]])**:
       ① `-s/--session <id>` 精确续**早就有**(本机 v1.18.11 实测)—— 但单 bug 单 cwd 流程里已够准,替换近乎零增量,**不是 ③ 的价值点**。
@@ -347,6 +347,7 @@ metadata:
       ④ Python 客户端:**httpx 直连 REST**(端点十几个、全 JSON),不引社区 SDK(官方只背书 JS/TS `@opencode-ai/sdk`)。**别直接读写 opencode 私有 SQLite/storage**(跨版本会变,只走 HTTP 表面)。
     - 实施形态:新 `OpenCodeServeDelegate(CodingAgentDelegate)`(delegate.py 核心,窗口展示区)= 长驻 serve 生命周期(起/健康检查/停)+ httpx 客户端 + session.id 记账(per-bug workspace→一个 session)+ `POST /message`→解析 `{parts}` 拿 assistant 文本→复用现有 `_extract_json` 抠 schema + **失效降级**(serve 挂→降级回 `OpencodeDelegate` 子进程模式);配置 `delegate.backend: opencode_serve`。
     - **归属:单独一轮**(用户 2026-08-06 拍板:本轮先做 P0 记忆闭环 ②[a]+②[b],③ 拆出)。目标阶段:**R3 收尾后单独一轮**(③ 本身)+ **R5**(multi-agent attach / 跨机 Tailscale/mdns)。
+    - **⚠️ 2026-08-07 pivot 后 obsolete**:harness 转向(opencode 主驱动 + Hyperion 当 MCP server)后不再需要。① 原痛点(delegate 反复 cold-boot opencode,K1+K2≈4×/bug)前提消失 —— 只存在于已 deprecate 的 legacy `hyperion bug-rca` 命令;新主路径 opencode 用户启动长驻,无 per-stage respawn。② hyperion mcp serve 自身冷启已很低频:重模块全 lazy(embed.py:245 方法体内)、build_server 启动不加载 torch、默认 `openai_compatible` embedder 走 RemoteEmbedder **0 次 torch 加载**。③ D0 streamable-http(cli.py:323-339 warm 长进程)已覆盖 MCP server 侧。前沿对照:MCP cold-start 业界主流 = lazy-load tools by intent + warm 进程 + transport 选择,无 persistent-session 编排层。性能优化转:**按 intent lazy-load MCP 工具** + 推 stdio→http(待 opencode 解注册,踩坑#10)。
 
 56. **delegate 可观测性(timeout 存 stdout + 流式 + delegate_log 落盘)** — `delegate.py`。
     - 现状(R2):`subprocess.run` capture_output 跑完拿全部;**timeout 时 `except TimeoutExpired` 丢 stdout**(`delegate.py` 不存,看不到 opencode 跑到哪);`--format json` **块缓冲**(流式观察失败,诊断脚本收不到中间事件);`/tmp/delegate_debug.txt` 是临时诊断(非正式,且 A+C 达标后可删)。
