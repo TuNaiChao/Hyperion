@@ -93,3 +93,33 @@ def test_build_and_query_small_repo(tmp_path):
     # open() 能复用刚建的图(不重建)
     cg2 = CodeGraph.open("fixture", base_dir=str(tmp_path))
     assert cg2.stats()["total_nodes"] == s["total_nodes"]
+
+
+@needs_crg
+def test_analyze_changes_and_community_ids(tmp_path):
+    """analyze_changes(改动文件+行范围 → risk/changed_functions)+ community_ids_for(符号→社区)。P-A 1b 用。
+
+    给 changed_ranges(从 PR diff hunk 算的形态),不靠 git diff —— 跟 1b 实际用法一致。
+    """
+    (tmp_path / "a.py").write_text(
+        "def alpha():\n    return beta()\n"
+        "def beta():\n    return 1\n"
+        "def gamma():\n    return alpha()\n"
+    )
+    cg = CodeGraph.build(tmp_path, "fixture_ac", base_dir=str(tmp_path))
+
+    # analyze_changes:改动 a.py 的 1-6 行(覆盖 alpha/beta/gamma)→ CRG 映射到这些函数节点。
+    ac = cg.analyze_changes(["a.py"], changed_ranges={"a.py": [(1, 6)]})
+    assert isinstance(ac, dict)
+    # CRG analyze_changes 的返回键(risk_score/changed_functions/affected_flows/review_priorities)。
+    assert "risk_score" in ac and "changed_functions" in ac
+    assert isinstance(ac["risk_score"], float)
+    assert isinstance(ac["changed_functions"], list)
+
+    # community_ids_for:CRG 的 qualified_name 是「绝对路径::符号」格式(如 .../a.py::alpha)。
+    # 1b 实际用法:qn 来自 analyze_changes 的 changed_functions(格式一致),再查社区按 module 分桶。
+    qns = [f["qualified_name"] for f in ac.get("changed_functions", []) if f.get("qualified_name")]
+    assert qns, "analyze_changes 应映射到 a.py 的函数(alpha/beta/gamma)"
+    cmap = cg.community_ids_for(qns)
+    assert isinstance(cmap, dict)
+    assert all(qn in cmap for qn in qns)  # 查询的 qn 都是 key
