@@ -172,3 +172,15 @@ def test_filter_logs_window_hint_without_since(tmp_path):
     mcp = build_server()
     out = _call(mcp, "filter_logs", {"log_path": str(log)})
     assert "时间窗边界提醒" not in out
+
+
+# ════════════════════════ patch_search 工具(P-A 1c)════════════════════════
+
+def test_patch_search_runs():
+    """patch_search 工具接通 + 跑(测试 scope 多半无 lesson → 友好空提示,不抛)。
+
+    kind=bug_lesson 过滤逻辑(recall 多取再过滤)在此验证不崩;命中路径由 recall 自身测试覆盖。
+    """
+    mcp = build_server()
+    out = _call(mcp, "patch_search", {"query": "bluetooth connection", "top_k": 3})
+    assert "lesson" in out.lower()  # "No patch/bug lessons found …" 或命中列表

@@ -449,6 +449,27 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             body += f"\n错误尾:\n{r['errors']}"
         return body
 
+    # ── ⑬ patch_search:检索历史补丁/bug 教训(P-A 1c,薄封 recall 限 kind=bug_lesson)──────
+    # recall 是 4 路(含 code/structural)→ 多取再按 kind=bug_lesson 过滤(只要"教训",不要 codebase 事实/裸代码块)。
+    # 给"跟蓝牙连接有关的补丁"这类检索一个专门入口(比 memory_recall 更聚焦在 patches/fixes)。
+    @mcp.tool()
+    async def patch_search(query: str, top_k: int = 5) -> str:
+        """Search past PATCH / bug lessons (kind=bug_lesson, incl. patch_insight) by semantics.
+
+        Use to find prior patches/PRs or bug fixes related to a topic (e.g. "bluetooth connection
+        flow", "p2p scan orphan"). Returns lessons only (excludes codebase facts + raw code chunks),
+        each with file:line provenance. A more focused entry than ``memory_recall`` when you want
+        past patches/fixes specifically, not general codebase knowledge.
+        """
+        # 多取(top_k*3)再按 kind 过滤,留足余量(过滤后可能不够 top_k)。
+        hits = await svc.recall(query, scope, top_k=max(top_k * 3, top_k))
+        lessons = [h for h in hits if (h.kind or "") == "bug_lesson"][:top_k]
+        if not lessons:
+            return f"No patch/bug lessons found for '{query}' (codebase={repo})."
+        out = [f"Patch/bug lessons for '{query}' ({len(lessons)}, codebase={repo}):"]
+        out += [h.render() for h in lessons]
+        return "\n".join(out)
+
     return mcp
 
 
