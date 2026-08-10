@@ -279,15 +279,11 @@ mcp:
 
 # ── 补丁/PR 分析(P-A,harness 转向后第二条 tool+skill 线)─────────────────
 # 面向小白:bug-RCA 是"从 bug 找补丁";P-A 反过来 —— "给个补丁/PR,验它对不对、该不该合"。
-# 这层只管两件后勤:① 缺代码仓时按你给的地址自动 clone(patch.git);② build_check 试编译时
-# 认哪个构建系统、超时多久(patch.build)。验证封顶 = apply + build,**不跑测试不复现**
-# (系统软件测试环境太重,用户定)→ 结论是"看着靠谱 + 能编译",非"包对",最终拍板靠人/真机。
+# 这层只管一件后勤:缺代码仓时按你给的地址自动 clone(patch.git)。验证封顶 = apply,
+# **不跑测试不复现**(系统软件测试/构建环境太重,用户定)→ 结论是"apply 过、看着靠谱",非"包对",
+# 最终拍板靠人/真机。build_check 试编译门 2026-08-10 撤(踩坑#14:构建信号歧义 + opencode 能 make)。
 patch:
   git:
     clone_dir: data/repos     # auto-clone 落点(ensure_repo 命中这里就不再 clone,幂等)
     shallow: true             # --depth 1 浅克隆(省时省空间;要完整历史改 false)
     remotes: {}               # {仓库名: git url} —— 你的"自定义 git 连接"(内网镜像/SSH),如 {bluez: https://...}
-  build:
-    commands:                  # {仓库名: 构建命令} —— 覆盖自动探测(根目录认不出构建系统时按仓名查这里)
-      wpa: "make -C wpa_supplicant"   # wpa_supplicant 的 Makefile 在子目录 wpa_supplicant/,根目录自动探测认不出 → 显式指定
-    timeout: 600              # 构建超时(秒);超时杀整组进程(deer-flow bounded-bash 模式,防 make 子进程孤儿)

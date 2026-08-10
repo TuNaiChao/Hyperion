@@ -51,8 +51,8 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
    ↓ 加载 skill(playbook)         ↓ 调 MCP 工具(手术刀)
 [ skills: bug-rca ✅ | patch-review ⏳ | research ⏳ ]
    ────────────────→  Hyperion MCP server(hyperion mcp serve)
-                          8 共享工具(recall / search_codebase / filter_logs /
-                          blast_radius / validate_patch / export_patch / memorize / export_report)+ 专家工具(⏳ build_check / call_chain / cross_version_diff)
+                          7 共享工具(recall / search_codebase /
+                          blast_radius / validate_patch / export_patch / memorize / export_report)+ 专家工具(⏳ call_chain / cross_version_diff)
                           ↓
                   code_index + CRG(代码情报)· MemoryService(记忆,recall 4 路)· workspace(补丁验证)
                           ↓
@@ -61,13 +61,12 @@ uv run hyperion mcp serve --transport http --port 8765   # streamable-http(warm 
 
 一个 MCP server、N 个 skill、N+M 个工具,所有 agent 都能用。Hyperion 不抢 agent 的活,只递工具 + 菜谱。
 
-## 八个 MCP 工具(共享,已落)
+## 七个 MCP 工具(共享,已落)
 
 | 工具 | 作用 |
 |---|---|
 | `hyperion_memory_recall` | 翻长期记忆(历史 bug 教训 / 代码事实),带 file:line 溯源 |
 | `hyperion_search_codebase` | 语义 + 符号检索,**只回索引里真实存在的符号**(防幻觉) |
-| `hyperion_filter_logs` | 大日志按 关键字 ∩ 时间窗 过滤成有界摘录 |
 | `hyperion_blast_radius` | 改动影响面(结构图 BFS:改这些文件会波及谁) |
 | `hyperion_validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
 | `hyperion_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错) |

@@ -36,11 +36,11 @@ class RateLimitError(RuntimeError):
 
 @dataclass
 class PatchArtifact:
-    """一个补丁/PR 的完整抓取产物(给 build_check / memorize / 鉴定卡 用)。"""
+    """一个补丁/PR 的完整抓取产物(给 memorize / 鉴定卡 用)。"""
 
     url: str
     source_kind: str  # "github" | "gerrit" | "local"
-    diff: str  # unified diff 全文(喂 validate_patch / build_check)
+    diff: str  # unified diff 全文(喂 validate_patch)
     title: str = ""
     body: str = ""
     merge_commit_sha: str | None = None

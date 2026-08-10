@@ -130,7 +130,7 @@ def node_report(state: PatchReportState) -> dict:
 
 
 async def node_memorize(state: PatchReportState) -> dict:
-    """聚合结论 + 高安全告警抽 codebase_fact 入记忆(后续 patch_search / recall 可命中)。
+    """聚合结论 + 高安全告警抽 codebase_fact 入记忆(后续 memory_recall 可命中)。
 
     async:MemoryService.memorize 是协程(graph 经 ainvoke 跑,async 节点会被 await)。
     """

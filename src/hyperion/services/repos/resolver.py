@@ -1,7 +1,7 @@
 """ensure_repo —— P-A 的「auto-clone 代码仓」(1a)。
 
 干什么(面向小白)
-  build_check / patch-review 要一台"样机"(代码仓)来验货。本地没有时,这里按 config.patch.git 配的
+  patch-review 要一台"样机"(代码仓)来验货。本地没有时,这里按 config.patch.git 配的
   地址自动 `git clone` 一台到 clone_dir。本地已经有了(显式给的路径、或 clone_dir 里之前 clone 过)
   就直接用,不重 clone(幂等)。
 

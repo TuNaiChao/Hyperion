@@ -90,11 +90,11 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 **验证封顶(用户定,强化)**:apply(Tier 0,Hyperion 验)。**编译/测试/复现永不做 —— 全部用户(真机)自验**(系统软件环境重+信号歧义,不值)。`correctness` 基于 apply+读码推理,不报 tested/verified。
 
-**当前核心待做顺序**(用户 2026-08-07 拍板):
-1. `filter_logs` 强制注入因果起点行(治 bug-RCA MVP 命中率短板,踩坑#11 真正解)
-2. **多库地基**(同时多仓刚需;code_index 多实例 + 工具加 codebase 参数 + 记忆全局带 codebase 标签;2a/2b 依赖故前移)
-3. feature 2a 调用链(`call_chain` 工具,CRG 多跳+PageRank)
-4. feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)
-5. 记忆自动 query(P1)
+**当前核心待做顺序**(用户 2026-08-07 拍板 + 2026-08-10 复核):
+1. **多库地基**(同时多仓刚需;code_index 多实例 + 工具加 codebase 参数 + 记忆全局带 codebase 标签;2a/2b 依赖故前移)
+2. feature 2a 调用链(`call_chain` 工具,CRG 多跳+PageRank)
+3. feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)
+4. 记忆自动 query(P1)
+~~原 #1 `filter_logs` 强制注入因果起点行~~ → **2026-08-10 复核撤销**:deer-flow/omp 双证专门日志切片工具没必要(opencode 的 read/grep/awk 等价且更灵活,踩坑#2);治踩坑#11 的领域知识(从更早切/用日志词汇/窗口可能漏根因/重心代码)转进 bug-rca SKILL/prompt,`filter_logs` MCP 工具 + `log_filter.py` 删除。详见踩坑#11。
 
 低优 backlog:stdio→http(待 opencode 解注册)/ P-A 遗留(1b deep+去重·patch_search CLI·Gerrit 凭据)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ backlog #1-44(~~#55 obsolete~~)。

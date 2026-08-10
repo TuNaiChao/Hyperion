@@ -34,14 +34,13 @@ opencode 配置里把 playbook 烙进 agent 的 system prompt(常驻 > 等 skill
 
 ## 工具目录(MCP server 暴露的全部工具)
 
-**共享工具(所有用例复用,8 个已落 + build_check 待落):**
+**共享工具(所有用例复用,7 个已落;filter_logs/build_check/patch_search 2026-08-10 撤,见踩坑#11/#14 + 全工具审核):**
 
 | 工具 | 签名要点 | wrap 的服务 | 状态 |
 |---|---|---|---|
-| `hyperion_memory_recall(query, top_k=5)` | 翻记忆,带 file:line 溯源 | `svc.recall`(4 路 + bump) | ✅ |
+| `hyperion_memory_recall(query, top_k=5, kind=None)` | 翻记忆,带 file:line 溯源;kind 过滤(原 patch_search 并入) | `svc.recall`(4 路 + bump) | ✅ |
 | `hyperion_memory_memorize(kind, summary, file, line, root_cause)` | 写记忆/沉淀教训 | `svc.memorize` | ✅(阶段 1 升级:接 fix_patch/symptom/blast/commit_sha) |
 | `hyperion_search_codebase(query, top_k=5)` | 语义+符号检索,**只回真实符号**(防幻觉) | code_index retrieve | ✅ |
-| `hyperion_filter_logs(log_path, keywords, since, until, max_lines)` | 大日志时间窗过滤 | `filter_log_window` | ✅ |
 | `hyperion_blast_radius(changed_files, codebase=None)` | 改动影响面 BFS | `CodeGraph.impact_radius` | ✅ |
 | `hyperion_validate_patch(patch, repo_path)` | 补丁能否 apply(Tier 0 硬门) | `validate_patch`(git apply --check) | ✅ |
 | `hyperion_export_patch(repo_path, out_dir="data/bug_rca")` | 把补丁落盘成 `.patch`(交付硬门;空 diff 自检) | `git add -A && git diff --cached` → 写文件 | ✅ |
@@ -51,7 +50,6 @@ opencode 配置里把 playbook 烙进 agent 的 system prompt(常驻 > 等 skill
 
 | 工具 | 用例 | 设计 | 阶段 |
 |---|---|---|---|
-| `hyperion_build_check(patch, repo_path)` | patch 分析 | 补丁打副本→跑构建(自动认 Makefile/meson/CMake/configure)→`{builds, errors}`;best-effort(缺依赖→降级"build 未检") | 1 |
 | `hyperion_call_chain(seed, direction, depth)` | 调用链 | CRG 多跳 callers/callees BFS + 自然语言→入口符号 + PageRank/社区排序 | 3 |
 | `hyperion_cross_version_diff(repo_a, repo_b, concern)` | 跨版本 | 两版本索引 + 符号对应 + `git diff` + LLM"修了?"+ 确定性门 `git patch-id` | 4 |
 

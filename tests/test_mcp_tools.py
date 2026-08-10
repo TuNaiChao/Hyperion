@@ -151,36 +151,15 @@ def test_export_report_writes_file(tmp_path):
     assert report_file.read_text(encoding="utf-8") == report_md
 
 
-# ════════════════════════ filter_logs 时间窗边界提醒(方案 A,踩坑 #11) ════════════════════════
+# ════════════════════════ memory_recall kind 过滤(patch_search 已并入 recall)════════════════════════
 
-def test_filter_logs_window_hint_with_since(tmp_path):
-    """传 since(切了窗)→ 末尾带'时间窗边界提醒'(治 agent 从故障时刻切窗、漏掉更早起因)。"""
-    log = tmp_path / "j.txt"
-    log.write_text("10:12:12 Scan-only results received\n"
-                   "10:12:19 abort failed ret=-2\n"
-                   "10:12:30 tail event\n", encoding="utf-8")
-    mcp = build_server()
-    out = _call(mcp, "filter_logs", {"log_path": str(log), "since": "10:12:19"})
-    assert "时间窗边界提醒" in out, out
-    assert "前推" in out  # 提醒前推 since 重筛
+def test_memory_recall_kind_filter():
+    """memory_recall 加 kind 参数(原 patch_search 并入):不崩 + kind 标签生效。
 
-
-def test_filter_logs_window_hint_without_since(tmp_path):
-    """不传 since(没切窗)→ 不加提醒(没窗就没'窗前遮蔽'风险,不污染输出)。"""
-    log = tmp_path / "j.txt"
-    log.write_text("10:12:12 event a\n10:12:19 event b\n", encoding="utf-8")
-    mcp = build_server()
-    out = _call(mcp, "filter_logs", {"log_path": str(log)})
-    assert "时间窗边界提醒" not in out
-
-
-# ════════════════════════ patch_search 工具(P-A 1c)════════════════════════
-
-def test_patch_search_runs():
-    """patch_search 工具接通 + 跑(测试 scope 多半无 lesson → 友好空提示,不抛)。
-
-    kind=bug_lesson 过滤逻辑(recall 多取再过滤)在此验证不崩;命中路径由 recall 自身测试覆盖。
+    kind 过滤逻辑(recall 多取再按 kind 过滤)在此验证不崩;命中路径由 recall 自身测试覆盖。
     """
     mcp = build_server()
-    out = _call(mcp, "patch_search", {"query": "bluetooth connection", "top_k": 3})
-    assert "lesson" in out.lower()  # "No patch/bug lessons found …" 或命中列表
+    out_all = _call(mcp, "memory_recall", {"query": "bluetooth connection", "top_k": 3})
+    assert "codebase=" in out_all  # 命中列表或空提示都带 codebase
+    out_lesson = _call(mcp, "memory_recall", {"query": "bluetooth connection", "top_k": 3, "kind": "bug_lesson"})
+    assert "kind=bug_lesson" in out_lesson  # kind 过滤生效(命中列表与空提示都带 kind 标签)

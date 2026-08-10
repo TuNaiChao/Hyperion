@@ -1,12 +1,11 @@
 """Hyperion MCP server —— 把 Hyperion 的差异化能力做成工具,给 delegate(opencode)现场调。
 
 不是"MCP 驱动 delegate",而是"delegate 查 Hyperion":opencode 干活时经 MCP 调本服务暴露的
-工具(见 bug-rca-design.md §6 反向 MCP)。八个工具(harness 转向:精炼工具面,只做 coding agent
-做不好/做不了的 —— 记忆/代码情报/日志/影响面/补丁验证/补丁落盘/报告落盘;定位推理+改代码留给 opencode):
+工具(见 bug-rca-design.md §6 反向 MCP)。一组工具(harness 转向:精炼工具面,只做 coding agent
+做不好/做不了的 —— 记忆/代码情报/影响面/补丁验证/补丁落盘/报告落盘;定位推理+改代码+日志切片都留给 opencode 的 read/grep/awk):
   - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
-  - filter_logs       大日志按 关键字∩时间窗 过滤成有界摘录。
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
   - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
@@ -77,16 +76,25 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ① memory_recall:翻长期记忆(R1 已有,这里薄封一层 scope)────────────
     @mcp.tool()
-    async def memory_recall(query: str, top_k: int = 5) -> str:
+    async def memory_recall(query: str, top_k: int = 5, kind: str | None = None) -> str:
         """Recall from Hyperion's long-term memory: historical bug lessons / codebase facts
         relevant to the query, each with file:line provenance + confidence + recency.
 
         Call this BEFORE localizing/patching to reuse prior root-causes/fixes for this codebase.
+        kind: optional filter — "bug_lesson" returns only past patches/fixes (excludes codebase
+              facts + raw code); omit for all kinds. Multiplies fetch then filters, so the kind
+              filter won't starve results (absorbs the former patch_search tool).
         """
-        hits = await svc.recall(query, scope, top_k=top_k)
+        # 给了 kind → 多取再按 kind 过滤(留余量,对齐原 patch_search 的做法);否则按 top_k 直取。
+        fetch_k = max(top_k * 3, top_k) if kind else top_k
+        hits = await svc.recall(query, scope, top_k=fetch_k)
+        if kind:
+            hits = [h for h in hits if (h.kind or "") == kind][:top_k]
         if not hits:
-            return f"No memory found for '{query}' (codebase={repo})."
-        out = [f"Recalled {len(hits)} (by relevance, codebase={repo}):"]
+            tag = f", kind={kind}" if kind else ""
+            return f"No memory found for '{query}' (codebase={repo}{tag})."
+        tag = f", kind={kind}" if kind else ""
+        out = [f"Recalled {len(hits)} (by relevance, codebase={repo}{tag}):"]
         out += [h.render() for h in hits]
         return "\n".join(out)
 
@@ -171,47 +179,6 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             first = h.text.splitlines()[0][:120] if h.text.splitlines() else ""
             out.append(f"\n{h.file}:{h.start_line}-{h.end_line}  ({h.kind} {h.symbol})  score={h.score:.3f}\n  {first}")
         return "\n".join(out)
-
-    # ── ④ filter_logs:大日志 关键字∩时间窗 → 有界摘录(省 token)──────────────
-    @mcp.tool()
-    async def filter_logs(log_path: str, keywords: list[str] | None = None,
-                          since: str | None = None, until: str | None = None,
-                          max_lines: int = 400) -> str:
-        """Filter a large log file down to the relevant lines (keywords AND time-window), capped.
-
-        Pass the log file path + the failure time window (HH:MM:SS, read from the issue) to get a
-        surgical excerpt instead of grepping ~16k lines by hand (slow + token-heavy). The full log
-        stays on disk at log_path for you to read directly if this excerpt is too narrow.
-
-        keywords: ANDed with the time window. ⚠️ for runtime logs, issue-derived keywords are often
-        CODE symbols that don't substring-match log prose — prefer the time window alone for logs;
-        reserve keywords for when you know they are log vocabulary.
-        """
-        from hyperion.services.trigger_parser.log_filter import filter_log_window
-
-        p = Path(log_path)
-        if not p.is_file():
-            return f"日志文件不存在: {log_path}"
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError as e:
-            return f"读日志失败: {e}"
-        excerpt = filter_log_window(text, keywords, since=since, until=until, max_lines=max_lines)
-        if not excerpt:
-            return f"过滤后 0 行(调整 keywords/since/until;全量日志仍在 {log_path})。"
-        n = len(excerpt.splitlines())
-        header = f"过滤出 {n} 行(上限 {max_lines};全量日志仍在 {log_path}):\n\n"
-        # 时间窗边界提醒(踩坑 #11 实证,e2e#5):agent 倾向从"显眼故障时刻"切窗,漏掉更早的因果
-        # 起点(e2e#5 从 abort 时刻 10:12:19 切,漏了 10:12:12 的真·起因 → 整条 RCA 走偏)。这是模型
-        # 固有的确认偏差(改不了模型),但工具能用确定性提醒对抗 —— 把"窗口会遮蔽证据"显式化,
-        # 别让 agent 自己设的窗变成盲区。只在 agent 切了窗(since 非空)时提醒;没切窗=无遮蔽风险。
-        hint = ""
-        if since:
-            hint = (f"\n\n⚠️ 时间窗边界提醒:以上是自 {since} 起的切片。根因常在**最早关键事件的上游**"
-                    f"(不在现象本身)。若你的 root cause 假设落在窗口起点附近,很可能**切晚了** —— "
-                    f"建议把 since **前推**重筛一眼,确认窗前没有更早的起因(踩坑 #11:曾因从 abort 时刻切窗,"
-                    f"漏掉 7 秒前的真·起因)。")
-        return header + excerpt + hint
 
     # ── ⑤ blast_radius:改动影响面(结构图 BFS —— 改这些文件会波及谁)──────────
     # harness 转向:把 CodeGraph.impact_radius 暴露成工具,让 agent 改代码前查"动了这些会断哪"。
@@ -379,7 +346,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         """Fetch a GitHub PR's diff + metadata (title/body/changed_files/merge_commit_sha).
 
         Give a PR URL (github.com/<owner>/<repo>/pull/<num>). Returns the unified diff plus PR metadata
-        so you can then ``validate_patch`` / ``build_check`` / assess it. Uses GITHUB_TOKEN if set
+        so you can then ``validate_patch`` / assess it. Uses GITHUB_TOKEN if set
         (private repos / rate limits). Network errors / 404 / non-GitHub URL → friendly error string.
         """
         from hyperion.services.patch.fetcher import from_config
@@ -395,7 +362,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         return f"source={art.source_kind}  url={art.url}\n{meta}\n\n--- diff ---\n{art.diff}"
 
     # ── ⑪ ensure_repo:本地没有 → auto-clone(P-A 1a,借样机)────────────────────
-    # build_check / 鉴定要一台"样机"(代码仓)。本地没有 → 按 config.patch.git.remotes 配的地址 clone。
+    # 鉴定要一台"样机"(代码仓)。本地没有 → 按 config.patch.git.remotes 配的地址 clone。
     # 踩坑#2 辩护:opencode 会 git clone,但只去公网;用户的"自定义 git 连接"(内网镜像/SSH)它不知道。
     @mcp.tool()
     async def ensure_repo(name_or_url: str) -> str:
@@ -403,7 +370,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
         Give a repo name (looked up in ``config.patch.git.remotes``), a git URL, or an existing local
         path. Returns the local absolute path; reuses an existing clone in ``data/repos/<name>``
-        (idempotent — won't re-clone). Use before ``validate_patch`` / ``build_check`` when the repo
+        (idempotent — won't re-clone). Use before ``validate_patch`` when the repo
         isn't already local.
         """
         from hyperion.services.repos.resolver import ensure_repo as _ensure
@@ -414,61 +381,6 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             return f"ensure_repo 失败({name_or_url}): {e}"
         tag = "新 clone" if cloned else "命中本地(未 clone)"
         return f"✅ repo_path={path}  ({tag})"
-
-    # ── ⑫ build_check:补丁打上后能否编译(P-A 1a,Tier 0.5 试编译门,best-effort)────────
-    # 把补丁打到隔离 worktree(不动主工作树)→ 跑构建(自动认 Makefile/meson/cmake/configure,或 build_cmd/config)
-    # → 返回 yes/no/unchecked。best-effort:缺环境/认不出/超时 → unchecked,诚实不假装 yes。
-    # apply+build 过 ≠ 包对(不跑测试/不复现,用户定)—— Tier 0.5,顶在这里。
-    @mcp.tool()
-    async def build_check(patch: str, repo_path: str, build_cmd: str | None = None) -> str:
-        """Build gate (Tier 0.5, best-effort): does the repo still compile AFTER applying the patch?
-
-        Applies the patch to an ISOLATED git worktree (does NOT touch your working tree), runs the
-        build (auto-detects Makefile/meson/cmake/configure, or uses build_cmd / config), returns
-        ``builds=yes|no|unchecked``. ``unchecked`` = no build env / unknown build system / timeout /
-        worktree unavailable — report honestly, don't fake "yes". NOTE: building OK ≠ the patch is
-        correct (no tests run, no reproduction); the cap is apply+build, final verdict is human/device.
-
-        repo_path: absolute path of the repo to build against.
-        build_cmd: override the build command (else ``config.patch.build.commands[<repo>]`` or auto-detect).
-        """
-        from pathlib import Path
-
-        from hyperion.services.workspace.build import build_check as _build_check
-
-        if not Path(repo_path).is_dir():
-            return f"repo_path 不是目录: {repo_path}"
-        try:
-            r = _build_check(patch, repo_path, build_cmd=build_cmd)
-        except Exception as e:  # noqa: BLE001
-            return f"build_check 执行失败: {e}"
-        flag = {"yes": "✅ 编译过", "no": "❌ 编译失败", "unchecked": "⚪ 无法判定(best-effort)"}[r["builds"]]
-        body = (f"{flag}\nbuilds={r['builds']}  command={r['command']}\n"
-                f"归因: {r['attribution']}\n提示: {r['hint']}")
-        if r["errors"]:
-            body += f"\n错误尾:\n{r['errors']}"
-        return body
-
-    # ── ⑬ patch_search:检索历史补丁/bug 教训(P-A 1c,薄封 recall 限 kind=bug_lesson)──────
-    # recall 是 4 路(含 code/structural)→ 多取再按 kind=bug_lesson 过滤(只要"教训",不要 codebase 事实/裸代码块)。
-    # 给"跟蓝牙连接有关的补丁"这类检索一个专门入口(比 memory_recall 更聚焦在 patches/fixes)。
-    @mcp.tool()
-    async def patch_search(query: str, top_k: int = 5) -> str:
-        """Search past PATCH / bug lessons (kind=bug_lesson, incl. patch_insight) by semantics.
-
-        Use to find prior patches/PRs or bug fixes related to a topic (e.g. "bluetooth connection
-        flow", "p2p scan orphan"). Returns lessons only (excludes codebase facts + raw code chunks),
-        each with file:line provenance. A more focused entry than ``memory_recall`` when you want
-        past patches/fixes specifically, not general codebase knowledge.
-        """
-        # 多取(top_k*3)再按 kind 过滤,留足余量(过滤后可能不够 top_k)。
-        hits = await svc.recall(query, scope, top_k=max(top_k * 3, top_k))
-        lessons = [h for h in hits if (h.kind or "") == "bug_lesson"][:top_k]
-        if not lessons:
-            return f"No patch/bug lessons found for '{query}' (codebase={repo})."
-        out = [f"Patch/bug lessons for '{query}' ({len(lessons)}, codebase={repo}):"]
-        out += [h.render() for h in lessons]
-        return "\n".join(out)
 
     return mcp
 

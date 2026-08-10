@@ -16,7 +16,10 @@ R3.1 #54-rework(B):弃「多候选采样 + majority voting」改「迭代 verify
   - 收敛:每 delegate call 仍 steps + 单 schema(不重蹈 glm-5.2 单 loop 97K 不收敛);只在
     verdict=needs_revisit 时重试,infra 错误(timeout/error)直接跳出(不 --continue 破损 session)。
 2026-07-31:rerank/majority_voting 整体移除(无 oracle 平凡白烧);Hyperion 侧定位漏斗砍掉改工具驱动
-(opencode 经 MCP 调 search_codebase/recall/filter_logs,见 bug-rca-design.md §6)。
+(opencode 经 MCP 调 search_codebase/recall;日志切片用 grep/awk,见 bug-rca-design.md §6)。
+2026-08-10:`hyperion_filter_logs` 工具撤销(deer-flow/omp 双证:专门日志切片工具没必要,opencode 的
+read/grep/awk 能做等价切片且更灵活,踩坑#2);领域知识(从更早切/用日志词汇/窗口可能漏根因)转进
+bug-rca SKILL/prompt,本降级路径的 log_hint 已改教 opencode 用 awk 切。
 依据:Self-Refine/Reflexion/SWE-Search/Aider/OpenHands;Agentless 投票仅在有 oracle 时有效。
 """
 from __future__ import annotations
@@ -143,11 +146,13 @@ def _build_localize_prompt(trigger: str, schema: dict, log_path: str | None = No
     log_hint = ""
     if log_path:
         log_hint = (
-            f"\n### 日志(大文件,禁直接 read)###\n原始日志 `{log_path}` 可能很大(兆级)。"
-            f"**禁止直接 read 它(会撑爆上下文)**;只调 "
-            f"`hyperion_filter_logs(log_path=\"{log_path}\", since=\"<故障窗起 HH:MM:SS>\", "
-            f"until=\"<故障窗止 HH:MM:SS>\")` 取时间窗内的精华行(默认封顶 400 行)。"
-            f"故障窗起止从日志/线索里读出;需要更细再缩窗调一次。\n###\n"
+            f"\n### 日志(大文件,禁直接 read 全量)###\n原始日志 `{log_path}` 可能很大(兆级)。"
+            f"**禁止直接 read 全量(撑爆上下文)**;用 bash 自己切时间窗精华行,例如:\n"
+            f"  awk '$2 >= \"<故障窗起 HH:MM:SS>\" && $2 <= \"<故障窗止>\"' {log_path} | head -400\n"
+            f"或 grep -E '<日志词汇关键词>' {log_path} | head -400(关键词用日志词汇如 scan/result,"
+            f"别用代码符号如 scan_res_handler —— 日志是散文形,子串不匹配)。"
+            f"故障窗起止从日志/线索里读出;切窗只是线索,根因可能在更早/别的源/源码,"
+            f"窗口只见现象就逐步前推/扩大。\n###\n"
         )
     # R3 收尾 P0(②[b]):确定性预注入历史同类 bug 教训(0 决策 turn 先验)。对标 deer-flow
     # DynamicContextMiddleware(hybrid:预取廉价上下文 + 工具按需深挖);区别于踩坑 #2 的定位

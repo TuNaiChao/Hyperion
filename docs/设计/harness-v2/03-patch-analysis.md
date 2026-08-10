@@ -27,7 +27,7 @@
 2. **(若需)取代码库**:repo 本地有 → 用;没有 → `ensure_repo` auto-clone 到 `data/repos/<name>/`。
 3. **读补丁 + 上下文**:agent 用 `search_codebase` 找补丁涉及的代码(语义搜,别盲读全文)。
 4. **apply 门【硬门】** `hyperion_validate_patch(补丁, repo_path)` —— Tier 0,能不能干净打上。
-5. **不自动编译;提示用户**(2026-08-07 调整)—— 系统软件构建环境重、依赖多,自动编译结果易歧义(e2e 实证:wpa 因无 git tag / 缺 libnl 等依赖 build 失败,`builds=no` 不归咎补丁)。patch-review 流程**不跑编译,只到 apply**;**明确提示用户必须自行编译测试**。(`hyperion_build_check` 工具已实现 + 12 单测,保留按需调用,环境就绪再接回流程。)
+5. **不自动编译;提示用户**(2026-08-07 调整 + 2026-08-10 build_check 工具撤销)—— 系统软件构建环境重、依赖多,自动编译结果易歧义(e2e 实证:wpa 因无 git tag / 缺 libnl 等依赖 build 失败,`builds=no` 不归咎补丁)。patch-review 流程**不跑编译,只到 apply**;**明确提示用户必须自行编译测试**。(`hyperion_build_check` 工具 2026-08-10 撤销:与"不编译"方针冲突 + opencode bash 能 make,见踩坑#14。编译/修对全用户自验。)
 6. **blast + LLM 鉴定** `hyperion_blast_radius(改动文件)` 看影响面;LLM 综合判(见决策卡)。
 7. **用户验证通过后才 memorize**(2026-08-07 调整,对齐 bug-rca / 踩坑#12)—— 鉴定只是读码判断(没编译没测试),**未经验证不 memorize**;`hyperion_memory_memorize(kind=bug_lesson, fix_patch=<补丁>, ...)` 推迟到用户告知编译/真机验证通过后(可跨 session)。
 
@@ -79,7 +79,7 @@
 
 **可选增强**(若需要):`hyperion patch-search <query>` CLI 别名 + `hyperion_patch_search` MCP 工具(薄封 recall,限定 kind=bug_lesson + tags)。MVP 不做,recall 够用。
 
-> ✅ **1c 已实现(2026-08-07)**:`hyperion_patch_search` MCP 工具 —— 薄封 `recall`,过滤 `kind=bug_lesson`(只要补丁/bug 教训,排除 codebase 事实/裸代码块);query 驱动语义命中("跟蓝牙连接有关的补丁")。RecallHit 无 tags 字段,故按 kind 过滤(覆盖 patch_insight);严格 patch_insight-only 留 backlog。CLI 别名留 backlog。
+> ✅ **1c 已实现(2026-08-07)** → 🔄 **2026-08-10 撤销(并入 recall)**:`hyperion_patch_search` 原薄封 `recall` 过滤 `kind=bug_lesson`;全工具审核(同 filter_logs 标准)判定"可合并" —— 删 patch_search,kind 过滤做进 `memory_recall(kind=...)` 等价且少一个工具。原:query 驱动语义命中("跟蓝牙连接有关的补丁"),RecallHit 无 tags 字段故按 kind 过滤(覆盖 patch_insight)。CLI 别名仍 backlog。
 
 ---
 

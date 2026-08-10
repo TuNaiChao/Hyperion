@@ -508,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     sub_bug = sub.add_parser("bug-rca", help="bug 根因定位 workflow(★MVP,委托 opencode)")
     sub_bug.add_argument("--repo", required=True, help="仓库根目录")
     sub_bug.add_argument("--trigger", default=None, help="bug 线索(日志摘要/问题描述/漏洞关键句);纯日志驱动可省")
-    sub_bug.add_argument("--log", default=None, help="原始日志文件路径(喂 opencode 的 filter_logs 工具)")
+    sub_bug.add_argument("--log", default=None, help="原始日志文件路径(交给 opencode 用 grep/awk 按时间窗切)")
     sub_bug.set_defaults(func=cmd_bug_rca)
 
     sub_res = sub.add_parser("research", help="代码仓深度调研 workflow(P1,产架构/模块报告 + CodebaseFact)")
