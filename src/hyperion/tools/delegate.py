@@ -486,27 +486,3 @@ def _is_transient_net_error(result: DelegateResult) -> bool:
         "transport", "socket hang up", "fetch failed", "network",
         "502", "503", "504", "service unavailable",  # 网关/服务端瞬时
     ))
-
-
-# ──────────────────────────────────────────────────────────────────────────
-# §5 备选后端(占位,待本机可用时实现)
-# ──────────────────────────────────────────────────────────────────────────
-
-
-class OmpDelegate(CodingAgentDelegate):
-    """omp 后端(占位 —— 本机暂未装:github 墙 + bun)。
-
-    待本机可用时实现:`omp --mode rpc`(NDJSON 流,推荐)或 `omp -p`(纯文本兜底)。
-    omp 的 strict schema 强校验是它最大价值(见 r2-bug-rca-research.md §3)。
-    实现时复用 OpencodeDelegate 的 _extract_json + DelegateResult。
-    """
-
-    async def run(self, prompt, cwd, output_schema=None, *, timeout=None):
-        raise NotImplementedError("OmpDelegate 未实现(本机 omp 未装)。config delegate.backend 改 opencode,或待 omp 装好后实现。")
-
-
-class ClaudeDelegate(CodingAgentDelegate):
-    """claude code 后端(占位 —— 需另装 claude CLI)。可选高档后端(R4+)。"""
-
-    async def run(self, prompt, cwd, output_schema=None, *, timeout=None):
-        raise NotImplementedError("ClaudeDelegate 未实现(本机 claude CLI 未装)。")

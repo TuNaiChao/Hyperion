@@ -51,6 +51,25 @@ def _resolve_codebase(explicit: str | None) -> str:
     return Path.cwd().name
 
 
+def _retrieval_bundle():
+    """懒构造 (embedder, store, reranker)——code_index 检索三件套(search_codebase 用)。
+
+    reranker 可能为 None(provider=off)。2026-08-10 撤 code_nav @tool 层时从 tools/code_nav.py
+    搬来内联(embedder/store/reranker 工厂自身带缓存,无需额外 lru_cache)。
+    """
+    from hyperion.services.code_index.embed import create_embedder
+    from hyperion.services.code_index.retrieval import create_reranker
+    from hyperion.services.code_index.store import LanceDBStore
+
+    cfg = get_app_config()
+    embedder = create_embedder(cfg.code_index.embedding)
+    vs_cfg = getattr(cfg.code_index, "vector_store", None)
+    vs_path = getattr(vs_cfg, "path", "data/code_index") if vs_cfg else "data/code_index"
+    store = LanceDBStore(vs_path)
+    reranker = create_reranker(getattr(cfg.code_index, "reranker", None))
+    return embedder, store, reranker
+
+
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
     """构造 FastMCP server,暴露八个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
@@ -152,10 +171,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         (`uv run hyperion index <path> <name>`); returns a "not indexed" hint otherwise.
         """
         from hyperion.services.code_index.retrieval import retrieve
-        from hyperion.tools.code_nav import _retrieval_bundle
-
         try:
-            embedder, store, reranker = _retrieval_bundle()  # 复用 code_nav 的单例(embedder/store/reranker)
+            embedder, store, reranker = _retrieval_bundle()  # 模块级检索单例(embedder/store/reranker)
         except Exception as e:  # noqa: BLE001 —— 依赖没装好给可操作错误串,不抛崩整个 server
             return f"search_codebase 初始化失败(检查 config.code_index / .env): {e}"
 

@@ -30,14 +30,14 @@
 ```
 Hyperion/
 ├── src/hyperion/
-│   ├── platform/     # ✅ Harness(已实现):模型工厂 / 配置 / 反射 / 沙箱 / 可观测 / demo agent
+│   ├── platform/     # ✅ Harness(已实现):模型工厂 / 配置 / 反射 / 沙箱 / 可观测(runtime 中间件)
 │   ├── services/
 │   │   ├── code_index/  # ✅ 代码理解(已实现 P1.0–P1.5):parser/chunker/embed/store/retrieval/index/lsp/outline/eval
 │   │   └── memory/      # ✅ 记忆核心(R1 已实现):MemoryService 契约 + native 后端(SQLite+FTS5+向量)+ tools/mcp
-│   ├── workflows/    # ✅ bug_rca(R3.1)+ deep_research(R3.2,代码完);🆕 pr_tracker(R4)
-│   ├── tools/        # ✅ 导航/沙箱工具(12 个)+ memory 工具(R1)+ 🆕 委托 delegate(R2)
-│   └── cli.py        # ✅ 入口(models/run/index/tools/lsp/memory/mcp/bug-rca/research 已实现)
-├── config/           # config.yaml(模型/工具/记忆/委托 声明式)+ extensions_config.json(MCP/skills)
+│   ├── workflows/    # ✅ bug_rca(R3.1,降级参考)+ deep_research(R3.2)+ patch_report(P-A 1b);pr_tracker 撤
+│   ├── tools/        # ✅ MCP 工具(mcp_memory,9 个给 coding agent)+ delegate(R2,降级参考)
+│   └── cli.py        # ✅ 入口(models/index/lsp/memory/mcp/bug-rca/research/patch-report)
+├── config/           # config.yaml(模型/沙箱/记忆/委托)+ opencode_hyperion.json(opencode agent+MCP)
 ├── docs/             # 已完成/ · 调研/ · 设计/(architecture + memory/bug-rca/deep-research + p1-code-understanding)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)

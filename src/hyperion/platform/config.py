@@ -35,21 +35,6 @@ class ModelConfig(BaseModel):
     pricing: dict | None = None
 
 
-class ToolConfig(BaseModel):
-    """config.yaml 里一条工具的声明。
-
-    设计:声明式 + 反射 —— 这里只声明"去哪里加载"(use 字段),真正的工具实现
-    在 registry 用 resolve_variable 按 'module:variable' 动态导入。extra='allow'
-    让 yaml 里的额外键(如 max_results)原样保留,供工具按需读取。
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    name: str  # 工具唯一名,也是 agent 看到的工具名
-    group: str  # 分组(sandbox / file:read / file:write ...),工作流按组挂载
-    use: str  # 'module.path:variable' 反射目标,如 hyperion.tools.sandbox:bash_tool
-
-
 class SandboxConfig(BaseModel):
     """沙箱 provider 与可调参数。extra='allow' 给未来 provider 的特有键留口子。"""
 
@@ -320,7 +305,6 @@ class AppConfig(BaseModel):
 
     models: list[ModelConfig] = Field(default_factory=list)
     model_roles: dict[str, str] = Field(default_factory=dict)
-    tools: list[ToolConfig] = Field(default_factory=list)  # 声明式工具列表
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)  # 沙箱 provider + 参数
     code_index: CodeIndexConfig = Field(default_factory=CodeIndexConfig)  # 代码理解服务(P1)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)  # 记忆核心(R1,P3 差异化)
@@ -332,7 +316,7 @@ class AppConfig(BaseModel):
     # YAML 会把"键下面只有注释"的空段(如 config.yaml 现在的 tools:)解析成 None;
     # 而 pydantic 把显式 None 当成"有值"而非"用默认值",会校验失败。
     # 这里在赋值前把 None 强转成空集合,让空段也能正常解析。
-    @field_validator("models", "tools", mode="before")
+    @field_validator("models", mode="before")
     @classmethod
     def _coerce_none_to_list(cls, v: Any) -> Any:
         return v if v is not None else []
