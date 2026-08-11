@@ -123,3 +123,53 @@ def test_analyze_changes_and_community_ids(tmp_path):
     cmap = cg.community_ids_for(qns)
     assert isinstance(cmap, dict)
     assert all(qn in cmap for qn in qns)  # 查询的 qn 都是 key
+
+
+@needs_crg
+def test_call_chain_small_repo(tmp_path):
+    """call_chain:符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(P1.5 caller/callee 进适配层)。
+
+    同款小仓 fixture(alpha→beta/gamma,gamma→delta,Foo.method→alpha,b.caller→alpha/beta):
+    解析符号 → 建 CALLS 子图 → PageRank → 双向有界 BFS → enrich 节点 → 组装截断。
+    callers/callees 可能为空(CRG 对 Python 的 CALLS 边提取视解析器而定),故断言结构 + 字段齐全,
+    不强断言非空(空则覆盖「种子无 CALLS 边」分支,也是合法返回)。
+    """
+    (tmp_path / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n"
+        "def beta():\n    return 1\n"
+        "def gamma():\n    return delta()\n"
+        "def delta():\n    return 0\n"
+        "class Foo:\n    def method(self):\n        return alpha()\n"
+    )
+    (tmp_path / "b.py").write_text(
+        "from a import alpha, beta\n"
+        "def caller():\n    return alpha() + beta()\n"
+    )
+    cg = CodeGraph.build(tmp_path, "fixture_cc", base_dir=str(tmp_path))
+
+    res = cg.call_chain("alpha", direction="both", depth=2, top_n=10)
+    # 顶层结构齐全:键都在,callers/callees 是 list(可能空但不能缺),resolved 非空(符号解析到了)
+    assert res["symbol"] == "alpha"
+    assert res["resolved"], "alpha 应解析到图节点"
+    assert res["direction"] == "both" and res["depth"] == 2
+    assert isinstance(res["callers"], list) and isinstance(res["callees"], list)
+    assert isinstance(res["truncated"], bool) and "note" in res
+    # 每个节点字段齐全(qualified_name/file/line/kind/hop/pagerank);hop ∈ [1, depth]
+    for side in ("callers", "callees"):
+        for nd in res[side]:
+            assert nd["qualified_name"]
+            assert all(k in nd for k in ("file", "line", "kind", "hop", "pagerank"))
+            assert 1 <= nd["hop"] <= 2
+            assert isinstance(nd["pagerank"], float)
+    # 不存在的符号 → ValueError(工具层据此转友好串)
+    with pytest.raises(ValueError):
+        cg.call_chain("no_such_function_zzz")
+
+
+@needs_crg
+def test_call_chain_bad_direction(tmp_path):
+    """非法 direction → ValueError(call_chain 的输入校验;工具层兜底的来源)。"""
+    (tmp_path / "a.py").write_text("def alpha():\n    return 1\n")
+    cg = CodeGraph.build(tmp_path, "fixture_dir", base_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="direction"):
+        cg.call_chain("alpha", direction="sideways")

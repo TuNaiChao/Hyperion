@@ -84,6 +84,38 @@ def test_blast_radius_not_built():
     assert any(k in out for k in ("未建", "不可用", "失败")), out
 
 
+# ════════════════════════ call_chain 工具 ══════════════════════════
+
+def test_call_chain_not_built():
+    """图未建(或 CRG 后端未装)→ 优雅返回提示串,绝不漏 traceback(策略同 blast_radius)。"""
+    mcp = build_server()
+    out = _call(mcp, "call_chain",
+                {"symbol": "some_function", "codebase": "nonexistent_xyz_repo_42"})
+    assert "Traceback" not in out, out
+    # 三种友好提示之一:图未建 / 后端未装 / 失败
+    assert any(k in out for k in ("未建", "不可用", "失败")), out
+
+
+def test_call_chain_bad_direction(monkeypatch):
+    """非法 direction → CodeGraph.call_chain 抛 ValueError → 工具转友好串,不抛 traceback。
+
+    monkeypatch CodeGraph.open 返一个 call_chain 必抛 ValueError 的假图,直测工具的 ValueError 兜底
+    (不靠真图,hermetic;真图缺失时 direction 校验根本到不了,故必须注入)。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    class _FakeGraph:
+        def call_chain(self, *a, **kw):  # noqa: ANN002,ANN003 —— 假对象,签名宽松
+            raise ValueError("direction 需为 callers / callees / both,收到 'sideways'")
+
+    # 替掉 classmethod open:经类访问的普通函数不绑 cls,CodeGraph.open(target) → 假图。
+    monkeypatch.setattr(cg_mod.CodeGraph, "open", lambda target: _FakeGraph())
+    mcp = build_server()
+    out = _call(mcp, "call_chain", {"symbol": "foo", "direction": "sideways"})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out  # ValueError 被工具兜底成友好串
+
+
 # ════════════════════════ export_patch 工具 ════════════════════════
 
 def test_export_patch_not_a_dir():

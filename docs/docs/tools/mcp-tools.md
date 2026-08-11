@@ -1,13 +1,13 @@
 # MCP 工具参考
 
-> `tools/mcp_memory.py` —— Hyperion 把差异化能力做成 **9 个 MCP 工具**,给 coding agent(opencode 主 / codex / claude code)调。
+> `tools/mcp_memory.py` —— Hyperion 把差异化能力做成 **10 个 MCP 工具**,给 coding agent(opencode 主 / codex / claude code)调。
 > 入口:`hyperion mcp serve [--codebase NAME]`(需 `uv sync --extra mcp`)。server 名 `hyperion`,opencode 按 `hyperion_<tool>` 给工具加前缀。
 
 ## 概览
 
 工具分两类:
 
-- **差异化核心**(coding agent 做不好 / 做不了的):`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `fetch_patch`
+- **差异化核心**(coding agent 做不好 / 做不了的):`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` / `fetch_patch`
 - **确定性硬门**(交付 / 验证,零 LLM):`validate_patch` / `export_patch` / `export_report` / `ensure_repo`
 
 > [!NOTE]
@@ -21,6 +21,7 @@
 | [`memory_memorize`](#memory_memorize) | 核心 🔀 | 写一条记忆(ad-hoc;报告/补丁走 workflow 自动记) |
 | [`search_codebase`](#search_codebase) | 核心 🔀 | 语义+符号检索,**只回索引里真实存在的符号**(防幻觉) |
 | [`blast_radius`](#blast_radius) | 核心 🔀 | 改动影响面(结构图 BFS) |
+| [`call_chain`](#call_chain) | 核心 🔀 | 符号的 N 跳调用链(CALLS 边)+ PageRank |
 | [`fetch_patch`](#fetch_patch) | 核心 | GitHub PR URL → diff + meta |
 | [`validate_patch`](#validate_patch) | 硬门 | 补丁能否干净 apply(零 LLM) |
 | [`export_patch`](#export_patch) | 硬门 | 补丁落盘 `.patch`(空 diff 自检拒写) |
@@ -32,7 +33,7 @@
 所有工具查的代码库由 `_resolve_codebase` 定:**`--codebase` 参数 > `HYPERION_CODEBASE` 环境变量 > `config.code_index.repo` > 进程 cwd 目录名**。`HYPERION_CODEBASE` 由 delegate(opencode 父进程)注入、经进程 env 继承透传(local server 的 `environment` 字段不展开 `{env:}`)。
 
 > [!NOTE]
-> **多库:per-call codebase 覆盖。** 上面解析出的是 server 的**默认** codebase,烘焙进闭包。`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` 另接受可选 `codebase` 参数,**每次调用覆盖**默认值 —— 同一个 MCP server 进程(同一个 opencode 会话)里可切多个仓。数据层本就 table-per-repo(code_index)+ 按 `Scope` 隔离(记忆),per-call 只是解锁调用层。不传 `codebase` = 用 server 默认(旧行为,零破坏)。
+> **多库:per-call codebase 覆盖。** 上面解析出的是 server 的**默认** codebase,烘焙进闭包。`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` 另接受可选 `codebase` 参数,**每次调用覆盖**默认值 —— 同一个 MCP server 进程(同一个 opencode 会话)里可切多个仓。数据层本就 table-per-repo(code_index)+ 按 `Scope` 隔离(记忆),per-call 只是解锁调用层。不传 `codebase` = 用 server 默认(旧行为,零破坏)。
 
 [工具一览](#工具一览)表里标 🔀 的工具支持 per-call `codebase`;其余(validate / export / fetch / ensure)按绝对路径 / URL 操作,不需要它。
 
@@ -116,6 +117,32 @@ async def blast_radius(changed_files: list[str], codebase: str | None = None) ->
 | `codebase` | `str?` | 覆盖查哪个库的图(默认 = server 的 codebase) |
 
 **前置**:需 `uv sync --extra code-review-graph` + 已建结构图(`data/structgraph/<repo>/graph.db`);否则返回可操作提示(未装 / 未建)。
+
+## call_chain
+
+符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度:给一个函数,回答「谁调用它 / 它调用谁,
+N 跳之内,哪些结构上重要」—— bug-RCA / 调研时定位根因、判断改动影响最想要的「调用链」视图。
+图驱动,零 LLM。
+
+```python
+async def call_chain(symbol: str, direction: str = "both", depth: int = 2,
+                     top_n: int = 15, codebase: str | None = None) -> str
+```
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `symbol` | `str` | 函数 / 方法名。bare 名(如 `wpa_supplicant_init`)或 qualified(`wpa_supplicant.c::wpa_supplicant_init`)都行,内部解析到图节点 |
+| `direction` | `str` | `callers`(谁调它,沿 CALLS 逆边)/ `callees`(它调谁,沿 CALLS 正边)/ `both`(默认,两边都给) |
+| `depth` | `int` | 跳数(默认 2,封顶 5 防大图节点爆炸) |
+| `top_n` | `int` | 每方向返回节点上限(按「跳数升序 → PageRank 降序」排后取),默认 15 |
+| `codebase` | `str?` | 🔀 覆盖查哪个库的图(默认 = server 的 codebase) |
+
+**和 blast_radius 的分工**:`blast_radius` = 文件种子 + 全边类型 + 「波及面」(我改这些文件 → 谁受波及);
+`call_chain` = 符号种子 + 仅 CALLS 边 + 「调用链 + 重要度」(这个函数的调用上下文)。两者互补,按种子(文件 vs 符号)和语义(全边 vs 纯调用)选。
+
+**输出**:JSON,`{symbol, resolved, direction, depth, callers:[{qualified_name,file,line,kind,hop,pagerank}], callees:[...], truncated, note}`。每个节点带 PageRank 分(被越多重要函数调用 → 分越高)。符号找不到 / direction 非法 → 友好提示串(不抛)。
+
+**前置**:同 `blast_radius` —— 需 `uv sync --extra code-review-graph` + 已建结构图;否则返回可操作提示。
 
 ## fetch_patch
 

@@ -43,6 +43,28 @@ def _require_crg() -> None:
         )
 
 
+def _pagerank(graph) -> dict:
+    """CALLS 子图上的 PageRank —— 被越多重要函数调用 → 分越高,标识「结构上关键的函数」。
+
+    分层降级取稳健(不强加 scipy 这种重依赖):
+      1. 优先 ``nx.pagerank``(networkx 3.x 默认走 scipy 稀疏矩阵,大图快、省内存);
+      2. scipy 没装(本机常见)→ 降级 networkx 内置的 ``_pagerank_python``(纯 python 幂迭代,
+         直接吃邻接表、不建稠密矩阵,故**不 OOM**;大图慢但正确,小图瞬间)。
+
+    两者都返 ``{node: score}``;无边(空图 / 种子孤立)→ ``{}``(调用方按 0.0 兜底)。
+    """
+    import networkx as nx
+
+    if graph.number_of_edges() == 0:
+        return {}
+    try:
+        return nx.pagerank(graph)
+    except ModuleNotFoundError:
+        # scipy 缺:networkx 的纯 python 版,不建稠密矩阵(大图不 OOM)。私有 API 但跨多版本稳定。
+        from networkx.algorithms.link_analysis.pagerank_alg import _pagerank_python
+        return _pagerank_python(graph)
+
+
 class CodeGraph:
     """一个代码仓的结构图句柄(建一次,查多次)。
 
@@ -140,6 +162,124 @@ class CodeGraph:
         深度/节点上限用 CRG 默认(MAX_IMPACT_DEPTH / MAX_IMPACT_NODES)。
         """
         return self._store.get_impact_radius(changed_files)
+
+    # ── P1.5 caller/callee 调用链(首次请进适配层,填 __init__.py 的「延后」)─────
+
+    def call_chain(self, symbol: str, *, direction: str = "both",
+                   depth: int = 2, top_n: int = 15) -> dict:
+        """符号中心的 N 跳调用链(沿 CALLS 边)+ PageRank 重要度。
+
+        给一个函数名,回答「谁调用它 / 它调用谁,N 跳之内,哪些结构上重要」——
+        bug-RCA / 调研时定位根因、判断改动影响最想要的「调用链」视图。
+
+        和 impact_radius(blast_radius)的分工:
+          - impact_radius = 文件种子 + 全边类型 + 「波及面」(我改这些文件 → 谁受波及);
+          - call_chain    = 符号种子 + 仅 CALLS 边 + 「调用链 + 重要度」(这个函数的调用上下文)。
+
+        symbol:函数/方法名。bare 名(如 wpa_supplicant_init)或 qualified
+               (如 wpa_supplicant.c::wpa_supplicant_init)都行,内部解析到图节点。
+        direction:"callers"(谁调它,沿 CALLS 逆边)/ "callees"(它调谁,沿 CALLS 正边)/
+                  "both"(默认,两边都给)。
+        depth:跳数(默认 2,封顶 5 防大图节点爆炸)。
+        top_n:每个方向返回的节点上限(按「跳数升序 → PageRank 降序」排后取),默认 15。
+
+        返回 ``{symbol, resolved, direction, depth, callers:[...], callees:[...],
+        truncated, note}``,每个节点是 ``{qualified_name, file, line, kind, hop, pagerank}``。
+        symbol 解析不到节点 → 抛 ValueError(工具层转友好串)。
+
+        实现全在 networkx 层(复用 store 的缓存全图,只过滤 CALLS 边),不逐边 SQL,大图友好。
+        PageRank 在 CALLS-only 子图上跑 —— 被越多重要函数调用 → 分越高,标识「结构上关键的函数」。
+        """
+        import networkx as nx
+
+        if direction not in ("callers", "callees", "both"):
+            raise ValueError(f"direction 需为 callers / callees / both,收到 {direction!r}")
+        depth = max(1, min(int(depth), 5))  # 封顶 5 防大图爆炸;至少 1 跳
+
+        # 1) 解析符号 → qualified_name(精确 > bare 名 > 子串兜底)
+        nxg = self._store._build_networkx_graph()
+        if symbol in nxg:
+            seed, note = symbol, ""
+        else:
+            bare_hits = [n for n in nxg if str(n).split("::")[-1] == symbol]
+            if len(bare_hits) == 1:
+                seed, note = bare_hits[0], f"resolved bare name '{symbol}' → '{bare_hits[0]}'"
+            elif len(bare_hits) > 1:
+                seed = bare_hits[0]
+                note = (f"bare name '{symbol}' 有 {len(bare_hits)} 个匹配,取首个 '{seed}';"
+                        f"其余: {', '.join(bare_hits[1:5])}")
+            else:
+                sub_hits = [n for n in nxg if symbol in str(n)]
+                if len(sub_hits) == 1:
+                    seed, note = sub_hits[0], f"resolved by substring '{symbol}' → '{sub_hits[0]}'"
+                elif len(sub_hits) > 1:
+                    seed = sub_hits[0]
+                    note = f"substring '{symbol}' 有 {len(sub_hits)} 个匹配,取首个 '{seed}'"
+                else:
+                    raise ValueError(
+                        f"符号 '{symbol}' 在图里找不到(试 bare 名或 qualified path/file.c::func)"
+                    )
+
+        # 2) CALLS-only 子图(复用缓存全图,只留 kind=CALLS 的边;节点随之)
+        calls = nx.DiGraph()
+        calls.add_edges_from(
+            (u, v) for u, v, d in nxg.edges(data=True) if d.get("kind") == "CALLS"
+        )
+
+        # 种子可能只在别的边类型里出现(没有 CALLS 边)→ 不在 calls 子图 → 无调用关系,返空链
+        if seed not in calls:
+            return {"symbol": symbol, "resolved": seed, "direction": direction, "depth": depth,
+                    "callers": [], "callees": [], "truncated": False,
+                    "note": (note + " | " if note else "") + f"'{seed}' 无 CALLS 边(不被调也不调谁)"}
+
+        # 3) PageRank 在 CALLS 子图上(被越多重要函数调用 → 分越高);分层降级见 _pagerank
+        scores: dict[str, float] = _pagerank(calls)
+
+        # 4) N 跳有界 BFS(自写,避开 nx.ancestors/descendants 的无界 transitive 爆炸)
+        def _bfs(neighbors_fn, start: str) -> list[tuple[str, int]]:
+            # neighbors_fn:calls.successors(callees 正向)/ calls.predecessors(callers 逆向)
+            seen: dict[str, int] = {start: 0}
+            frontier = [start]
+            for hop in range(1, depth + 1):
+                nxt = []
+                for node in frontier:
+                    for nb in neighbors_fn(node):
+                        if nb not in seen:
+                            seen[nb] = hop
+                            nxt.append(nb)
+                frontier = nxt
+                if not frontier:
+                    break
+            return [(n, h) for n, h in seen.items() if n != start]  # 丢种子本身
+
+        callers_raw = _bfs(calls.predecessors, seed) if direction in ("callers", "both") else []
+        callees_raw = _bfs(calls.successors, seed) if direction in ("callees", "both") else []
+
+        # 5) enrich 节点元数据(批量查 file/line/kind;_batch_get_nodes 自带 SQLite 变量数分批)
+        all_qns = {n for n, _ in callers_raw} | {n for n, _ in callees_raw}
+        meta = {nd.qualified_name: nd for nd in self._store._batch_get_nodes(all_qns)}
+
+        # 6) 组装:每方向按(跳数升序 → PageRank 降序)排,截 top_n
+        def _build(rows: list[tuple[str, int]]) -> tuple[list[dict], bool]:
+            ordered = sorted(rows, key=lambda nh: (nh[1], -scores.get(nh[0], 0.0)))
+            truncated = len(ordered) > top_n
+            out = []
+            for n, h in ordered[:top_n]:
+                nd = meta.get(n)
+                out.append({
+                    "qualified_name": n,
+                    "file": getattr(nd, "file_path", None),
+                    "line": getattr(nd, "line_start", None),
+                    "kind": getattr(nd, "kind", None),
+                    "hop": h,
+                    "pagerank": round(scores.get(n, 0.0), 6),
+                })
+            return out, truncated
+
+        callers, trunc_c = _build(callers_raw)
+        callees, trunc_x = _build(callees_raw)
+        return {"symbol": symbol, "resolved": seed, "direction": direction, "depth": depth,
+                "callers": callers, "callees": callees, "truncated": trunc_c or trunc_x, "note": note}
 
     # ── P-A 1b 批量聚合用的改动分析(扩 wrap CRG changes.py,R4.1.2)──────────────
 

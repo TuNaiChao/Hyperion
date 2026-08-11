@@ -7,6 +7,7 @@
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
+  - call_chain        符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(谁调它/它调谁;P1.5 caller/callee 进适配层)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
   - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
   - export_report     把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘;空内容自检;harness 转向 D1)。
@@ -71,11 +72,11 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露九个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
-    search_codebase / blast_radius 另接受 per-call `codebase` 参数覆盖此默认(多库:同一 server
-    进程可切多个仓),不传则用这里的默认 repo。
+    search_codebase / blast_radius / call_chain 另接受 per-call `codebase` 参数覆盖此默认(多库:
+    同一 server 进程可切多个仓),不传则用这里的默认 repo。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
        `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
@@ -246,6 +247,50 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         import json
         body = json.dumps(result, ensure_ascii=False, default=str)
         return f"blast-radius(codebase={target},输入 {len(changed_files)} 文件):\n{body[:8000]}"
+
+    # ── ⑤b call_chain:符号中心的 N 跳调用链(仅 CALLS 边 + PageRank;P1.5 caller/callee 进适配层)
+    # 和 blast_radius 互补:blast_radius = 文件种子·全边·「改这些会波及谁」(blast);
+    # call_chain = 符号种子·仅 CALLS 边·「这个函数的调用上下文 + 谁结构上重要」(chain)。
+    # bug-RCA / 调研里 agent 定位根因、判断改动影响时最想要的「调用链」视图;图驱动,零 LLM。
+    @mcp.tool()
+    async def call_chain(symbol: str, direction: str = "both", depth: int = 2,
+                         top_n: int = 15, codebase: str | None = None) -> str:
+        """Call chain for a function: who calls it / what it calls (N hops along CALL edges only),
+        each node ranked by PageRank importance.
+
+        Pass a function/method name (bare like ``wpa_supplicant_init`` or qualified
+        ``wpa_supplicant.c::wpa_supplicant_init``). Returns the N-hop caller/callee subtree along CALL
+        edges only, each node with file:line, hop count, and a PageRank score (a function called by many
+        important functions scores higher). Use it to understand a function's call context when localizing
+        a root cause or assessing a change — "how does execution reach here, and which callers matter".
+
+        Complement to blast_radius: blast_radius is file-seed + all-edge "what breaks if I touch these";
+        call_chain is symbol-seed + CALLS-only "who calls / is called by this function, ranked".
+        direction: callers (who calls it) / callees (what it calls) / both (default).
+        depth:     hop count (default 2, capped at 5 to bound large graphs).
+        top_n:     max nodes per direction after sorting (hop asc, pagerank desc); default 15.
+        codebase:  override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a "not built" hint otherwise.
+        """
+        try:
+            from hyperion.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"call_chain 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.call_chain(symbol, direction=direction, depth=depth, top_n=top_n)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run hyperion index <仓库路径> {target}`。")
+        except ValueError as e:  # symbol 解析不到 / direction 非法 → 友好串,不抛
+            return f"call_chain 没法算({target}, symbol={symbol}): {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"算调用链失败({target}, symbol={symbol}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"call-chain(codebase={target}, symbol={symbol}, direction={direction}, "
+                f"depth={depth}):\n{body[:8000]}")
 
     # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
     # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
