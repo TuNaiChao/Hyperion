@@ -51,3 +51,6 @@ oh-my-pi/
 
 # opencode 本地 session/artifact 目录(`opencode run` 生成,机器相关不提交)
 .omo/
+
+# recall validation experiment (backlog #59)
+data/exp/

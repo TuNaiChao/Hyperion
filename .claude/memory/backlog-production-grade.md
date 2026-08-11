@@ -372,8 +372,8 @@ metadata:
 
 ## ★ recall→定位 反馈闭环:价值未证实(2026-08-06 实测复盘,待验证)
 
-59. **recall→bug-RCA 定位 的反馈闭环价值需先验证,再决定加机关** — `node_recall_lessons`(②[b])+ delegate 调 `hyperion_recall`。
-    - 背景:R3 收尾建了 ②[b](确定性 recall 预注入)+ 填 BugLesson 字段(②[a]),roadmap([[similar-bug-recall-roadmap]])背书"该做"。但 2026-08-06 用 demo2 真实数据复盘:**"能动"但"有用"未证实,且唯一实测偏弱/偏负**。
+59. ✅ **已成(2026-08-11 验证:正向)** recall→bug-RCA 定位 的反馈闭环价值 —— `node_recall_lessons`(②[b])+ delegate 调 `hyperion_recall`。**结论:类似 bug recall 有增益(3-4× 提速收敛,质量持平/略胜);老偏负实测是"同 bug"最弱场景,不矛盾。详见 [[recall-validation-handoff]]。** 下一步建议:上 B(P1 自动 query)前补 1 轮确认(N=1/臂局限)。
+    - 背景:R3 收尾建了 ②[b](确定性 recall 预注入)+ 填 BugLesson 字段(②[a]),roadmap([[similar-bug-recall-roadmap]])背书"该做"。但 2026-08-06 用 demo2 真实数据复盘:**"能动"但"有用"未证实,且唯一实测偏弱/偏负**(同 bug 场景)。
     - 实测发现(demo2 同 bug 反复跑):
       ① **机制成立**:recall 正确返回先验(top1 带根因+file:line),delegate 也调了 hyperion_recall。
       ② **但没带来增益**:delegate 照样 26 read+17 grep、撞步数上限被强制收尾、**照样产次优补丁**(35s 超时兜底,非金标 `scan_only_handler` 落点)。recall 既没省工、也没提质量。
