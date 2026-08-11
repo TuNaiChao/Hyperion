@@ -74,6 +74,61 @@ def test_verify_flags_invented_file():
     assert "可疑" in md and "INVENTED.c" in md
 
 
+# ── 行锚定软查(Tier 2 #4)──────────────────────────────────────────────────────
+
+# 一个已知 hunk 的 diff:a.c 的 +1,3 → 改动行 [1,3]。
+_DIFF_A = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1,1 +1,3 @@\n x\n+int new;\n+y;\n"
+
+
+def _art(diff: str):
+    from hyperion.services.patch.fetcher import PatchArtifact
+
+    return PatchArtifact(url="u", source_kind="github", diff=diff, changed_files=["a.c"])
+
+
+def test_verify_line_anchor_in_hunk():
+    """citation.line 落在 diff hunk 改动区间 → 行锚定(✅,无未锚定)。"""
+    from hyperion.workflows.patch_report.report import verify_and_append
+
+    state = {
+        "artifacts": [_art(_DIFF_A)],
+        "findings": [{"title": "PR1", "changed_files": ["a.c"],
+                      "citations": [{"file": "a.c", "line": 2, "symbol": "f", "claim": "x"}]}],
+        "aggregate": {"citations": []},
+    }
+    md = verify_and_append("report\n", state)
+    assert "行锚定率: 1/1 (100%)" in md
+    assert "未锚定(文件对" not in md   # 无未锚定段(注意:软指标说明文字里含"未锚定",故匹配段头)
+    assert "可疑" not in md
+
+
+def test_verify_line_anchor_out_of_hunk_flagged():
+    """citation.line 不在 hunk 区间(a.c 改动是 [1,3],引 line 99)→ 标未锚定(软,不删)。"""
+    from hyperion.workflows.patch_report.report import verify_and_append
+
+    state = {
+        "artifacts": [_art(_DIFF_A)],
+        "findings": [{"title": "PR1", "changed_files": ["a.c"],
+                      "citations": [{"file": "a.c", "line": 99, "symbol": "f", "claim": "x"}]}],
+        "aggregate": {"citations": []},
+    }
+    md = verify_and_append("report\n", state)
+    assert "未锚定" in md and "a.c:99" in md   # 软提示:列出未锚定
+    assert "可疑" not in md                    # 文件本身对,不算可疑(硬指标过)
+
+
+def test_verify_no_artifacts_skips_line_check():
+    """无 artifacts(没解到 hunk)→ 不做行锚定(不报行锚定率,回归旧 file-only 行为)。"""
+    from hyperion.workflows.patch_report.report import verify_and_append
+
+    state = {"findings": [{"title": "PR1", "changed_files": ["a.c"],
+                           "citations": [{"file": "a.c", "line": 2, "symbol": "f", "claim": "x"}]}],
+             "aggregate": {"citations": []}}
+    md = verify_and_append("report\n", state)
+    assert "行锚定率" not in md   # 无 hunk → 不计分母,不报率
+    assert "✅" in md and "未锚定" not in md
+
+
 def test_aggregate_dedup_same_subject(monkeypatch):
     """两个 PR 改动文件完全重叠 + theme 同 → 判同主题:n_unique_subjects=1,1 组。"""
     from hyperion.workflows.patch_report import _aggregate

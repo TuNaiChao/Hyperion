@@ -165,6 +165,41 @@ def _diff_changed_files(diff_text: str) -> list[str]:
     return seen
 
 
+# hunk 头:`@@ -旧起,旧长 +新起,新长 @@`。新文件侧的「新起」「新长」决定改动落在新文件的行区间。
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(?P<start>\d+)(?:,(?P<len>\d+))? @@")
+
+
+def diff_hunk_lines(diff_text: str) -> dict[str, list[tuple[int, int]]]:
+    """解析 unified diff 每个 hunk,按新文件归「真实改动行区间」``[start, start+len-1]``。
+
+    给报告行级验证用:判 citation.line 是否落在 PR 的真实改动行里(防 AI 引错行号)。
+    - 按 ``+++ b/<file>`` 给每个 hunk 定文件(跟 ``_diff_changed_files`` 同样的剥前缀);``/dev/null`` 跳过。
+    - ``@@ -a,b +c,d @@`` 取新文件侧 c..c+d-1;d 省略视为 1;length 0(纯删除 hunk)无新文件行,跳过。
+    - 同文件多 hunk → 多区间(列表),后接 ``_in_hunk`` 用 any() 判。
+    """
+    out: dict[str, list[tuple[int, int]]] = {}
+    cur: str | None = None  # 当前 hunk 所属新文件;None = 还没遇到 +++ 或是 /dev/null,跳过 hunk
+    for line in (diff_text or "").splitlines():
+        if line.startswith("+++ "):
+            rest = line[4:].strip().split("\t")[0]
+            if rest.startswith("b/"):
+                rest = rest[2:]
+            cur = None if rest in ("", "/dev/null") else rest
+            continue
+        m = _HUNK_RE.match(line)
+        if m and cur is not None:
+            start = int(m.group("start"))
+            length = int(m.group("len")) if m.group("len") else 1
+            if length > 0:
+                out.setdefault(cur, []).append((start, start + length - 1))
+    return out
+
+
+def _in_hunk(line: int, ranges: list[tuple[int, int]] | None) -> bool:
+    """line 是否落在某条改动行区间里(ranges 来自 ``diff_hunk_lines``)。"""
+    return bool(ranges) and any(lo <= line <= hi for lo, hi in ranges)
+
+
 class GerritFetcher(PatchFetcher):
     """Gerrit change 抓取器(P-A 1d)。
 
@@ -175,13 +210,22 @@ class GerritFetcher(PatchFetcher):
         (``project~branch~number``,后续 patch 端点要用)。
       - diff:`GET /changes/<id>/revisions/current/patch` → **base64 编码**的 unified diff(无前缀,直接解码)。
       - changed_files:从 diff 文本抽(``_diff_changed_files``),省一个端点 + 不依赖 ``o=`` 参数形态。
-    匿名读公开 change 可行;私有 / 限速需 Gerrit HTTP 凭据(用户名 + HTTP password),token 接入留 backlog。
+    鉴权:匿名读公开 change 可行;私有 / 限速实例需 Gerrit HTTP 凭据 —— 传 ``username`` + ``http_password``,
+      或设 ``GERRIT_USERNAME`` / ``GERRIT_HTTP_PASSWORD`` env(默认从 env 读,对齐 GitHubFetcher 读 GITHUB_TOKEN)。
+      有凭据 → 端点走 ``/a/`` 前缀 + HTTP Basic;无凭据 → 匿名 ``/changes/``。XSSI 剥离 + base64 解码两种都一样。
+      ⚠️ Gerrit 的 "HTTP password" 不是账户登录密码,是 Settings → HTTP Credentials 里专门生成的 token。
     """
 
     _GERRIT_RE = re.compile(r"https?://(?P<host>[^/]+)/c/(?P<proj>.+?)/\+/(?P<num>\d+)")
 
-    def __init__(self, *, timeout: float = 30.0, retries: int = 3,
+    def __init__(self, *, username: str | None = None, http_password: str | None = None,
+                 timeout: float = 30.0, retries: int = 3,
                  transport: httpx.BaseTransport | None = None):
+        # 鉴权:默认从 env 读(对齐 GitHubFetcher 读 GITHUB_TOKEN 的惯例)。两者都给才算「有凭据」。
+        self.username = username if username is not None else os.environ.get("GERRIT_USERNAME")
+        self.http_password = (http_password if http_password is not None
+                              else os.environ.get("GERRIT_HTTP_PASSWORD"))
+        self.authed = bool(self.username and self.http_password)
         self.timeout = timeout
         self.retries = retries
         self.transport = transport
@@ -199,10 +243,14 @@ class GerritFetcher(PatchFetcher):
         if not m:
             raise ValueError(f"不是 Gerrit change URL(期望 <host>/c/<proj>/+/<num>): {url}")
         host, num = m.group("host"), m.group("num")
-        base = f"https://{host}"
+        # 有凭据 → 端点走 /a/ 前缀(Gerrit REST authenticated 区)+ HTTP Basic;否则匿名 /changes/。
+        # /a/ 下 JSON 仍带 )]}' 前缀、patch 仍 base64(与匿名同格式),故 _strip_xssi + b64decode 不动。
+        base = f"https://{host}" + ("/a" if self.authed else "")
         kw: dict = {"timeout": self.timeout}
         if self.transport is not None:
             kw["transport"] = self.transport
+        if self.authed:
+            kw["auth"] = httpx.BasicAuth(self.username, self.http_password)
         async with httpx.AsyncClient(**kw) as client:
             # meta:subject + current revision sha + change id(project~branch~number)。
             meta_resp = await self._req(
@@ -247,5 +295,20 @@ class GerritFetcher(PatchFetcher):
 
 
 def from_config(cfg=None) -> PatchFetcher:  # noqa: ARG001 (cfg 预留给将来按 backend 选)
-    """按 config 选 fetcher(仿 delegate.from_config)。v1 只有 GitHubFetcher。"""
+    """按 config 选 fetcher(仿 delegate.from_config)。v1 只有 GitHubFetcher。
+
+    ⚠️ 不按 URL 分流 —— 一批 PR 里 GitHub/Gerrit 混着时,Gerrit URL 会抓失败。
+    调方应优先用 ``fetcher_for_url(url)`` 按 URL 各取所需;本函数留作向后兼容。
+    """
+    return GitHubFetcher()
+
+
+def fetcher_for_url(url: str, cfg=None) -> PatchFetcher:  # noqa: ARG001 (cfg 预留:将来按 backend 覆盖)
+    """按 URL 形态选 fetcher:Gerrit change URL → GerritFetcher(自动带 env 凭据);否则 GitHubFetcher。
+
+    修 Gap B:`from_config()` 永远返 GitHubFetcher → Gerrit URL 抓不到还被 try/except 静默吞掉。
+    一批 PR 里 GitHub / Gerrit 混着时,按每条 URL 各取所需 fetcher(每条独立实例,凭据从 env 读)。
+    """
+    if GerritFetcher._GERRIT_RE.search(url):
+        return GerritFetcher()
     return GitHubFetcher()

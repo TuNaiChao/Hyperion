@@ -38,21 +38,22 @@ def node_ingest(state: PatchReportState) -> dict:
 
 
 async def node_fetch_prs(state: PatchReportState) -> dict:
-    """并发抓取所有 PR(GitHubFetcher / GerritFetcher 同接口)。失败的 PR 跳过(不阻断批次)。"""
-    from hyperion.services.patch.fetcher import from_config
+    """并发抓取所有 PR(按 URL 各取 GitHub / Gerrit fetcher)。失败的 PR 跳过(不阻断批次)。"""
+    from hyperion.services.patch.fetcher import fetcher_for_url
 
     prs = state.get("prs") or []
     if not prs:
         logger.warning("patch_report: 没给 PR 列表,nothing to do。")
         return {"artifacts": []}
 
-    fetcher = from_config()
     sem = asyncio.Semaphore(max(1, state.get("concurrency") or 3))
 
     async def _one(url: str):
         async with sem:
             try:
-                return await fetcher.fetch(url)
+                # 按 URL 分流:Gerrit 链接走 GerritFetcher(带 env 凭据),否则 GitHubFetcher。
+                # 修 Gap B —— 旧实现单 fetcher 抓所有 URL,Gerrit 链接静默失败。
+                return await fetcher_for_url(url).fetch(url)
             except Exception as e:  # noqa: BLE001 - 单条 PR 抓取失败不连坐(404/网络/限速)
                 logger.warning("fetch 失败 %s: %s", url, e)
                 return None

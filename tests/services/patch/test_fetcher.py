@@ -190,3 +190,96 @@ def test_diff_changed_files_helper():
             "diff --git a/b.c b/b.c\n+++ /dev/null\n@@\n-x\n"
             "diff --git a/a.c b/a.c\n+++ b/a.c\n@@\n+y\n")  # a.c 重复,去重
     assert _diff_changed_files(diff) == ["a.c"]  # /dev/null 跳过、a.c 去重
+
+
+def test_diff_hunk_lines_helper():
+    """diff_hunk_lines:按新文件归改动行区间(`@@ -a,b +c,d @@` 取新侧 c..c+d-1)。"""
+    from hyperion.services.patch.fetcher import diff_hunk_lines
+    diff = ("diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n"
+            "@@ -1,2 +1,3 @@\n int old;\n+int new;\n int keep;\n"
+            "@@ -10,3 +11,2 @@\n-int gone;\n int stay;\n"
+            # 第二个文件、删除文件(无新行)、长度省略(视为 1)
+            "diff --git a/g.c b/g.c\n--- a/g.c\n+++ b/g.c\n@@ -5 +5 @@\n-x\n+y\n"
+            "diff --git a/del.c b/del.c\n--- a/del.c\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n")
+    out = diff_hunk_lines(diff)
+    assert out["f.c"] == [(1, 3), (11, 12)]   # +1,3→[1,3];+11,2→[11,12]
+    assert out["g.c"] == [(5, 5)]             # +5(长度省略=1)→[5,5]
+    assert "del.c" not in out                 # /dev/null 不产区间
+
+
+# ── Gerrit 鉴权(Gap A)─────────────────────────────────────────────────────────
+
+
+def _gerrit_handler(record: dict):
+    """MockTransport:返回 meta + base64 patch,把请求 URL / Authorization 记进 record。"""
+    import base64
+    import json as _json
+
+    diff_text = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1 +1,2 @@\n-x\n+y\n"
+    meta = ")]}'\n" + _json.dumps([{"subject": "Fix X", "id": "proj~main~42",
+                                    "revisions": {"abc123": {}}}])
+    b64_patch = base64.b64encode(diff_text.encode()).decode()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        record["url"] = str(request.url)
+        record["auth"] = request.headers.get("authorization")
+        u = str(request.url)
+        if "revisions/current/patch" in u:
+            return httpx.Response(200, text=b64_patch)
+        if "/changes" in u:
+            return httpx.Response(200, text=meta)
+        return httpx.Response(404, json={"message": "nope"})
+
+    return handle
+
+
+def test_gerrit_auth_uses_a_prefix_and_basic():
+    """有凭据 → 端点走 /a/ 前缀 + 带 Authorization: Basic。"""
+    from hyperion.services.patch.fetcher import GerritFetcher
+
+    rec = {}
+    f = GerritFetcher(username="alice", http_password="secret-token",
+                      transport=httpx.MockTransport(_gerrit_handler(rec)))
+    art = _run(f.fetch("https://gerrit.example.com/c/proj/+/42"))
+    assert art.source_kind == "gerrit" and "+y" in art.diff   # 抓取本身仍正常
+    assert "/a/changes/" in rec["url"], f"应走 /a/ 前缀,实: {rec['url']}"
+    assert rec["auth"] and rec["auth"].startswith("Basic "), "应带 Basic 鉴权头"
+
+
+def test_gerrit_anonymous_no_a_prefix_no_auth(monkeypatch):
+    """无凭据(env 也没设)→ 匿名:无 /a/ 前缀、无 Authorization 头(回归现有行为)。"""
+    from hyperion.services.patch.fetcher import GerritFetcher
+
+    monkeypatch.delenv("GERRIT_USERNAME", raising=False)
+    monkeypatch.delenv("GERRIT_HTTP_PASSWORD", raising=False)
+    rec = {}
+    f = GerritFetcher(transport=httpx.MockTransport(_gerrit_handler(rec)))
+    _run(f.fetch("https://gerrit.example.com/c/proj/+/42"))
+    assert "/a/" not in rec["url"], f"匿名不该走 /a/,实: {rec['url']}"
+    assert rec["auth"] is None, "匿名不该带鉴权头"
+
+
+def test_gerrit_reads_creds_from_env(monkeypatch):
+    """GERRIT_USERNAME / GERRIT_HTTP_PASSWORD env 在 → 自动鉴权(对齐 GITHUB_TOKEN 惯例)。"""
+    from hyperion.services.patch.fetcher import GerritFetcher
+
+    monkeypatch.setenv("GERRIT_USERNAME", "bob")
+    monkeypatch.setenv("GERRIT_HTTP_PASSWORD", "env-token")
+    rec = {}
+    f = GerritFetcher(transport=httpx.MockTransport(_gerrit_handler(rec)))  # 不显式传凭据
+    _run(f.fetch("https://gerrit.example.com/c/proj/+/42"))
+    assert f.authed is True
+    assert "/a/changes/" in rec["url"] and rec["auth"].startswith("Basic ")
+
+
+# ── URL 分流(Gap B)────────────────────────────────────────────────────────────
+
+
+def test_fetcher_for_url_dispatches():
+    """fetcher_for_url:Gerrit change URL → GerritFetcher;GitHub PR URL → GitHubFetcher。"""
+    from hyperion.services.patch.fetcher import GerritFetcher, GitHubFetcher, fetcher_for_url
+
+    assert isinstance(fetcher_for_url("https://gerrit.example.com/c/proj/+/42"), GerritFetcher)
+    assert isinstance(fetcher_for_url("https://github.com/o/r/pull/1"), GitHubFetcher)
+    # Gerrit project 路径可含斜杠
+    assert isinstance(fetcher_for_url("https://gerrit.example.com/c/a/b/c/+/99"), GerritFetcher)
