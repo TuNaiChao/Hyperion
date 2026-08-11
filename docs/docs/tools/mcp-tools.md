@@ -17,10 +17,10 @@
 
 | 工具 | 类别 | 一句话 |
 |---|---|---|
-| [`memory_recall`](#memory_recall) | 核心 | 翻长期记忆(历史 bug 教训 / codebase fact),带 file:line 溯源 |
-| [`memory_memorize`](#memory_memorize) | 核心 | 写一条记忆(ad-hoc;报告/补丁走 workflow 自动记) |
-| [`search_codebase`](#search_codebase) | 核心 | 语义+符号检索,**只回索引里真实存在的符号**(防幻觉) |
-| [`blast_radius`](#blast_radius) | 核心 | 改动影响面(结构图 BFS) |
+| [`memory_recall`](#memory_recall) | 核心 🔀 | 翻长期记忆(历史 bug 教训 / codebase fact),带 file:line 溯源 |
+| [`memory_memorize`](#memory_memorize) | 核心 🔀 | 写一条记忆(ad-hoc;报告/补丁走 workflow 自动记) |
+| [`search_codebase`](#search_codebase) | 核心 🔀 | 语义+符号检索,**只回索引里真实存在的符号**(防幻觉) |
+| [`blast_radius`](#blast_radius) | 核心 🔀 | 改动影响面(结构图 BFS) |
 | [`fetch_patch`](#fetch_patch) | 核心 | GitHub PR URL → diff + meta |
 | [`validate_patch`](#validate_patch) | 硬门 | 补丁能否干净 apply(零 LLM) |
 | [`export_patch`](#export_patch) | 硬门 | 补丁落盘 `.patch`(空 diff 自检拒写) |
@@ -31,6 +31,11 @@
 
 所有工具查的代码库由 `_resolve_codebase` 定:**`--codebase` 参数 > `HYPERION_CODEBASE` 环境变量 > `config.code_index.repo` > 进程 cwd 目录名**。`HYPERION_CODEBASE` 由 delegate(opencode 父进程)注入、经进程 env 继承透传(local server 的 `environment` 字段不展开 `{env:}`)。
 
+> [!NOTE]
+> **多库:per-call codebase 覆盖。** 上面解析出的是 server 的**默认** codebase,烘焙进闭包。`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` 另接受可选 `codebase` 参数,**每次调用覆盖**默认值 —— 同一个 MCP server 进程(同一个 opencode 会话)里可切多个仓。数据层本就 table-per-repo(code_index)+ 按 `Scope` 隔离(记忆),per-call 只是解锁调用层。不传 `codebase` = 用 server 默认(旧行为,零破坏)。
+
+[工具一览](#工具一览)表里标 🔀 的工具支持 per-call `codebase`;其余(validate / export / fetch / ensure)按绝对路径 / URL 操作,不需要它。
+
 ---
 
 ## memory_recall
@@ -38,7 +43,8 @@
 翻长期记忆:历史 bug 教训 / codebase facts,**定位 / 改补丁前先调**,复用同库的历史根因 / 修法。
 
 ```python
-async def memory_recall(query: str, top_k: int = 5, kind: str | None = None) -> str
+async def memory_recall(query: str, top_k: int = 5, kind: str | None = None,
+                        codebase: str | None = None) -> str
 ```
 
 | 参数 | 类型 | 说明 |
@@ -46,6 +52,7 @@ async def memory_recall(query: str, top_k: int = 5, kind: str | None = None) -> 
 | `query` | `str` | 自然语言查询(概念,不是猜的符号名) |
 | `top_k` | `int` | 返回条数(默认 5) |
 | `kind` | `str?` | 过滤:`"bug_lesson"` 只回历史补丁/修法(排除 codebase fact + 裸代码);省略 = 全部。给 `kind` 时会多取再过滤(`max(top_k*3, top_k)`),不会饿死结果 |
+| `codebase` | `str?` | 🔀 覆盖查哪个库的记忆(默认 = server codebase)。查的 bug 属于另一个仓时传;recall 按 scope 隔离,不串库 |
 
 **输出**:每条一行,带 file:line 溯源 + 置信度 + 日期(对标 mem0 v3 时序)。无结果返回提示串。详见 [memory recall](../services/memory.md#recallpy四路融合)。
 
@@ -60,21 +67,35 @@ async def memory_memorize(
     root_cause: str = "", fix_patch: str = "", symptom: str = "",
     blast_radius_files: list[str] | None = None,
     commit_sha: str | None = None, tags: list[str] | None = None,
+    codebase: str | None = None,
 ) -> str
 ```
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `kind` | `Literal` | `codebase_fact` \| `bug_lesson` |
+| `summary` | `str` | 一句话事实 / 教训(鉴定结论也放这 + `root_cause`) |
+| `fix_patch` | `str` | unified diff;给了则 id 按补丁内容算(见下 NOTE) |
+| `codebase` | `str?` | 🔀 覆盖写进哪个库的记忆(默认 = server codebase)。教训属于另一个仓时传;item 按 scope 命名空间 + 过滤,不污染其他库 |
 
 > [!NOTE]
 > 传了 `fix_patch`(unified diff)→ id **按补丁内容**算(`make_id(scope, kind, fix_patch)`),同一补丁重复 memorize 会**合并(置信度累加)**而非重复入库。配 `blast_radius_files` + `commit_sha` + `tags`(如 `["patch_insight"]`)让教训可检索、可溯源。鉴定结论(intent / 正确性 / 合入建议)放 `summary` + `root_cause`。
 
-**输出**:`memorized id=<id> kind=<kind> (<n> merged/added)`。source_tier 固定 `delegate`(最可信)。
+**输出**:`memorized id=<id> kind=<kind> codebase=<codebase> (<n> merged/added)`。source_tier 固定 `delegate`(最可信)。
 
 ## search_codebase
 
 语义 + 符号检索(BM25 + 向量 + RRF + rerank)。**传概念 / 自然语言**(如 `"p2p scan result routing"`),不是猜的文件名 / 函数名。
 
 ```python
-async def search_codebase(query: str, top_k: int = 5) -> str
+async def search_codebase(query: str, top_k: int = 5, codebase: str | None = None) -> str
 ```
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `query` | `str` | 概念 / 自然语言(不是猜的文件名 / 函数名) |
+| `top_k` | `int` | 返回条数(默认 5) |
+| `codebase` | `str?` | 🔀 覆盖查哪个库的索引(默认 = server codebase)。要找的代码在另一个仓时传;索引 table-per-repo,按仓隔离查 |
 
 **防幻觉契约**:结果**只来自真实索引** —— 每条带 `file:start-end (kind symbol) score` + 首行,模型拿不到编造的路径。比手 grep 全树更准更省。
 

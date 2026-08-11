@@ -163,3 +163,63 @@ def test_memory_recall_kind_filter():
     assert "codebase=" in out_all  # 命中列表或空提示都带 codebase
     out_lesson = _call(mcp, "memory_recall", {"query": "bluetooth connection", "top_k": 3, "kind": "bug_lesson"})
     assert "kind=bug_lesson" in out_lesson  # kind 过滤生效(命中列表与空提示都带 kind 标签)
+
+
+# ════════════════════════ per-call codebase(多库:同 server 进程切仓)═══════════════════════
+
+
+class _FakeMemSvc:
+    """记录 scope 的假 MemoryService —— 让 recall/memorize 的 per-call codebase 测试不碰真 db / 网络。
+
+    build_server() 内 `from hyperion.services.memory import get_memory_service` 在调用时读模块属性,
+    monkeypatch 替掉它即可注入本假对象(绕开真单例)。
+    """
+
+    def __init__(self):
+        self.recall_scopes: list = []
+        self.memorize_scopes: list = []
+
+    async def recall(self, query, scope, *, top_k=None):  # noqa: ANN001 —— 假对象,签名宽松
+        self.recall_scopes.append(scope)
+        return []  # 无命中 → memory_recall 走空提示分支(仍回显 codebase)
+
+    async def memorize(self, items, scope):  # noqa: ANN001
+        self.memorize_scopes.append(scope)
+        return len(items)
+
+
+def test_search_codebase_per_call_codebase():
+    """search_codebase 传 codebase → 真去查那个仓:提示里回显 per-call 名(非闭包默认)。"""
+    mcp = build_server()
+    out = _call(mcp, "search_codebase",
+                {"query": "p2p scan routing", "codebase": "nonexistent_xyz_cb_42"})
+    assert "Traceback" not in out, out
+    # per-call 生效:返回串是传入的 codebase 名,不是闭包默认的 repo(cwd/config 名)
+    assert "nonexistent_xyz_cb_42" in out, out
+    assert any(k in out for k in ("还没建索引", "未找到")), out
+
+
+def test_memory_recall_per_call_codebase(monkeypatch):
+    """memory_recall 传 codebase → recall 用对应 scope(空结果回显 per-call 名 + scope 记录双证)。"""
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_recall",
+                {"query": "bluetooth disconnect", "codebase": "nonexistent_xyz_cb_42"})
+    assert "codebase=nonexistent_xyz_cb_42" in out, out
+    assert fake.recall_scopes, "recall 没被调"
+    assert fake.recall_scopes[-1].codebase == "nonexistent_xyz_cb_42"
+
+
+def test_memory_memorize_per_call_codebase(monkeypatch):
+    """memory_memorize 传 codebase → 写入用对应 scope(返回串回显 + scope 记录双证,不碰真 db)。"""
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_memorize", {
+        "kind": "bug_lesson", "summary": "per-call codebase probe",
+        "codebase": "nonexistent_xyz_cb_42",
+    })
+    assert "codebase=nonexistent_xyz_cb_42" in out, out
+    assert fake.memorize_scopes, "memorize 没被调"
+    assert fake.memorize_scopes[-1].codebase == "nonexistent_xyz_cb_42"

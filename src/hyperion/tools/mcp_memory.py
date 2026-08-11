@@ -71,9 +71,11 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露八个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露九个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
-    codebase 在此一次解析,烘焙进各工具闭包(工具内不再各自猜仓名)。
+    codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
+    search_codebase / blast_radius 另接受 per-call `codebase` 参数覆盖此默认(多库:同一 server
+    进程可切多个仓),不传则用这里的默认 repo。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
        `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
@@ -83,7 +85,6 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     from hyperion.services.memory import get_memory_service
 
     repo = _resolve_codebase(codebase)
-    scope = Scope(owner="default", codebase=repo)
     # host/port 只在给定时透传给 FastMCP(stdio 模式用不上,但给了也无害)
     fastmcp_kwargs: dict = {}
     if host is not None:
@@ -95,7 +96,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ① memory_recall:翻长期记忆(R1 已有,这里薄封一层 scope)────────────
     @mcp.tool()
-    async def memory_recall(query: str, top_k: int = 5, kind: str | None = None) -> str:
+    async def memory_recall(query: str, top_k: int = 5, kind: str | None = None,
+                            codebase: str | None = None) -> str:
         """Recall from Hyperion's long-term memory: historical bug lessons / codebase facts
         relevant to the query, each with file:line provenance + confidence + recency.
 
@@ -103,17 +105,23 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         kind: optional filter — "bug_lesson" returns only past patches/fixes (excludes codebase
               facts + raw code); omit for all kinds. Multiplies fetch then filters, so the kind
               filter won't starve results (absorbs the former patch_search tool).
+        codebase: override which codebase's memory to recall from (default = this server's
+              codebase). Pass when the bug you're investigating belongs to a different repo than
+              the server's default; recall is scope-isolated so it never crosses codebases.
         """
+        # per-call codebase 覆盖(模板同 blast_radius 的 `codebase or repo`);不传 = 闭包默认 repo。
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
         # 给了 kind → 多取再按 kind 过滤(留余量,对齐原 patch_search 的做法);否则按 top_k 直取。
         fetch_k = max(top_k * 3, top_k) if kind else top_k
-        hits = await svc.recall(query, scope, top_k=fetch_k)
+        hits = await svc.recall(query, active_scope, top_k=fetch_k)
         if kind:
             hits = [h for h in hits if (h.kind or "") == kind][:top_k]
         if not hits:
             tag = f", kind={kind}" if kind else ""
-            return f"No memory found for '{query}' (codebase={repo}{tag})."
+            return f"No memory found for '{query}' (codebase={active_repo}{tag})."
         tag = f", kind={kind}" if kind else ""
-        out = [f"Recalled {len(hits)} (by relevance, codebase={repo}{tag}):"]
+        out = [f"Recalled {len(hits)} (by relevance, codebase={active_repo}{tag}):"]
         out += [h.render() for h in hits]
         return "\n".join(out)
 
@@ -126,7 +134,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                               symptom: str = "",
                               blast_radius_files: list[str] | None = None,
                               commit_sha: str | None = None,
-                              tags: list[str] | None = None) -> str:
+                              tags: list[str] | None = None,
+                              codebase: str | None = None) -> str:
         """Write one knowledge item into Hyperion's long-term memory (cross-session reuse).
 
         kind: codebase_fact | bug_lesson. Prefer letting the bug_rca/patch_review flow auto-memorize;
@@ -137,29 +146,35 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         (confidence bump) instead of duplicating. Pair with blast_radius_files + commit_sha + tags
         (e.g. ["patch_insight"]) so the lesson is searchable and provenance-traceable. Put your
         verdict (intent / correctness / merge recommendation) in summary + root_cause.
+        codebase: override which codebase's memory to write into (default = this server's codebase).
+              Pass when the lesson belongs to a different repo than the server's default; the item is
+              scoped (id namespaced + filtered) by this codebase, so it won't pollute others.
         """
         from hyperion.services.memory.schema import Evidence, KnowledgeItem, SourceTier, make_id
 
+        # per-call codebase 覆盖(模板同 blast_radius);不传 = 闭包默认 repo/scope。
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
         blast_radius_files = blast_radius_files or []
         tags = tags or []
         # 给了 fix_patch → id 按补丁内容算(对齐 ingest.py:415),同补丁重复 memorize 走合并而非新增。
-        kid = make_id(scope, kind, fix_patch) if fix_patch else ""
+        kid = make_id(active_scope, kind, fix_patch) if fix_patch else ""
 
         item = KnowledgeItem(
             id=kid,
-            kind=kind, repo=repo, scope=scope, summary=summary, root_cause=root_cause,
+            kind=kind, repo=active_repo, scope=active_scope, summary=summary, root_cause=root_cause,
             symptom=symptom, fix_patch=fix_patch,
             blast_radius_files=list(dict.fromkeys(blast_radius_files)),
             commit_sha=commit_sha, tags=tags,
             evidence=([Evidence(file=file, line=line)] if file else []),
             source="mcp", source_tier=SourceTier.delegate,
         )
-        n = await svc.memorize([item], scope)
-        return f"memorized id={item.id} kind={kind} ({n} merged/added)"
+        n = await svc.memorize([item], active_scope)
+        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added)"
 
     # ── ③ search_codebase:语义+符号检索(防幻觉:只回索引里真实存在的符号)──────
     @mcp.tool()
-    async def search_codebase(query: str, top_k: int = 5) -> str:
+    async def search_codebase(query: str, top_k: int = 5, codebase: str | None = None) -> str:
         """Semantic + symbol search over this codebase's index (BM25 + vector + RRF + rerank).
 
         Pass a CONCEPT / natural-language query (e.g. "p2p scan result routing", "radio work
@@ -169,29 +184,34 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
         Cheaper + more precise than grepping the whole tree by hand. Needs the codebase indexed
         (`uv run hyperion index <path> <name>`); returns a "not indexed" hint otherwise.
+        codebase: override which codebase's index to search (default = this server's codebase).
+              Pass when the code you're looking for lives in a different repo than the server's
+              default; the index is table-per-repo, so each codebase is searched in isolation.
         """
         from hyperion.services.code_index.retrieval import retrieve
+        # per-call codebase 覆盖(模板同 blast_radius);不传 = 闭包默认 repo。
+        active_repo = codebase or repo
         try:
             embedder, store, reranker = _retrieval_bundle()  # 模块级检索单例(embedder/store/reranker)
         except Exception as e:  # noqa: BLE001 —— 依赖没装好给可操作错误串,不抛崩整个 server
             return f"search_codebase 初始化失败(检查 config.code_index / .env): {e}"
 
         try:
-            if store.count(repo) == 0:  # 表不存在或为空
-                return (f"代码库 '{repo}' 还没建索引(表空)。先建:"
-                        f"`uv run hyperion index <仓库路径> {repo}`。")
+            if store.count(active_repo) == 0:  # 表不存在或为空
+                return (f"代码库 '{active_repo}' 还没建索引(表空)。先建:"
+                        f"`uv run hyperion index <仓库路径> {active_repo}`。")
         except Exception:
-            return (f"代码库 '{repo}' 还没建索引。先建:"
-                    f"`uv run hyperion index <仓库路径> {repo}`。")
+            return (f"代码库 '{active_repo}' 还没建索引。先建:"
+                    f"`uv run hyperion index <仓库路径> {active_repo}`。")
 
         try:
-            result = retrieve(query, repo, embedder, store, reranker, top_k=top_k)
+            result = retrieve(query, active_repo, embedder, store, reranker, top_k=top_k)
         except Exception as e:  # noqa: BLE001
             return f"检索失败: {e}"
 
         if not result.hits:
-            return f"未找到与 '{query}' 相关的代码(检索路径 {result.out_mode},codebase={repo})。"
-        out = [f"检索路径 {result.out_mode} · top-{len(result.hits)}(均为索引内真实符号,codebase={repo})"]
+            return f"未找到与 '{query}' 相关的代码(检索路径 {result.out_mode},codebase={active_repo})。"
+        out = [f"检索路径 {result.out_mode} · top-{len(result.hits)}(均为索引内真实符号,codebase={active_repo})"]
         for h in result.hits:
             first = h.text.splitlines()[0][:120] if h.text.splitlines() else ""
             out.append(f"\n{h.file}:{h.start_line}-{h.end_line}  ({h.kind} {h.symbol})  score={h.score:.3f}\n  {first}")
