@@ -43,6 +43,23 @@ _SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9_.~^/@{}\-]+$")  # 防 git ref 注入(�
 _GIT_TIMEOUT = int(os.environ.get("HYPERION_GIT_TIMEOUT", "30"))  # 跨版本 git 命令超时(秒)
 
 
+def _run_git(repo: Path, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> str:
+    """跑一条 git 命令(cwd=repo);非 0 退出 → 抛 ValueError(让工具层转友好串,绝不漏 traceback 给 agent)。
+
+    面向小白:就是「在 repo 目录里跑一条 git —— 成了回 stdout,挂了抛 ValueError」的统一入口。
+    cross_version_diff / merge_eval 共用(原先各自是闭包,提上来消重复)。
+    """
+    try:
+        r = subprocess.run(["git", *args], capture_output=True, stdin=subprocess.DEVNULL,
+                           text=True, encoding="utf-8", errors="replace",
+                           cwd=str(repo), timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"git 命令执行失败({' '.join(args[:2])}…): {exc}") from exc
+    if r.returncode != 0:
+        raise ValueError(f"git 失败(rc={r.returncode}): {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
 def _require_crg() -> None:
     """CRG 是否已装;没装给清晰指引(用 find_spec 探测,不触发真 import 报错)。"""
     if importlib.util.find_spec("code_review_graph") is None:
@@ -176,16 +193,8 @@ def cross_version_diff(base_ref: str, head_ref: str, *, repo_path: str,
             raise ValueError(f"非法 git ref(只允许字母数字 _ . / ~ ^ @ {{ }} -): {ref!r}")
 
     def _git(args: list[str], *, timeout: int = _GIT_TIMEOUT) -> str:
-        # 跑一条 git 命令;非 0 退出 → 抛 ValueError(让工具层转友好串,绝不漏 traceback 给 agent)。
-        try:
-            r = subprocess.run(["git", *args], capture_output=True, stdin=subprocess.DEVNULL,
-                               text=True, encoding="utf-8", errors="replace",
-                               cwd=str(repo), timeout=timeout)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise ValueError(f"git 命令执行失败({' '.join(args[:2])}…): {exc}") from exc
-        if r.returncode != 0:
-            raise ValueError(f"git 失败(rc={r.returncode}): {r.stderr.strip()[:300]}")
-        return r.stdout
+        # 本地别名:绑定 repo,转发到模块级 _run_git(impl 集中,cross_version_diff / merge_eval 共用)。
+        return _run_git(repo, args, timeout=timeout)
 
     # 1) 解析两 ref → sha(顺带验存在;不存在 git 报错 → 上面的 _git 转 ValueError)
     base_sha = _git(["rev-parse", "--verify", base_ref]).strip()
@@ -265,6 +274,172 @@ def cross_version_diff(base_ref: str, head_ref: str, *, repo_path: str,
         "patch_equivalence": patch_equivalence,
         "concern_diff": concern_diff,
         "touched_functions": touched,
+        "note": " | ".join(notes) if notes else "",
+    }
+
+
+def merge_eval(upstream_base_ref: str, upstream_head_ref: str, *,
+               fork_ref: str, repo_path: str,
+               concern_files: list[str] | None = None,
+               max_commits: int = 50, graph: CodeGraph | None = None) -> dict:
+    """上游 commit 合入评估 —— 把上游仓一段 commit 范围逐个拿来问「该不该合入 fork」,
+    给 agent **确定性事实**(零 LLM):逐 commit 的「已修 / 能不能干净打上 / 触及哪些文件函数」。
+    「相不相关 / 该不该合」的最终判断由 agent 综合本工具产出 + search_codebase + call_chain 做出
+    (确定性地板 + LLM 天花板,对标 VeriPort/PortGPT)。
+
+    干啥(面向小白)
+    ----------------
+    你维护一个 fork(如 wpa 的内部分支 release/eagle),上游不停出修复/安全补丁,你想知道哪些该
+    backport 过来。本工具对上游每个 commit 给三态(基于 git 确定性事实):
+      - ``already_fixed``(已修):fork 里已经有等价补丁了(git patch-id 命中)→ 不用再合;
+      - ``recommend_merge``(建议合):fork 没这补丁,且能干净 apply 到 fork → 候选(待 agent 查相关性);
+      - ``conflict``(冲突):fork 没这补丁,且 apply 冲突 → 需人工解冲突;
+      - ``uncertain``:apply 检查没跑成(如 worktree 不干净 / commit 无父),拿不准。
+    「已修」靠 git patch-id(``git log --cherry-mark``)—— 对 diff 算哈希,对空白 / commit message 免疫,
+    是 backport 检测的黄金机制(上游 commit 被 backport 时改了补丁文本才会漏检,那时靠 agent 语义判断)。
+
+    为什么这样分(确定性地板 + LLM 天花板)
+      - patch-id 等价 + apply --check 是 git 原生的确定性事实(零 LLM、可复现)→ 地板;
+      - 「能 apply」不等于「fork 真需要这个补丁」(fork 可能根本没那个 bug / 功能)→ 相关性判断归 agent。
+
+    upstream_base_ref / upstream_head_ref:上游 commit 范围两端(同一仓库的 git ref,如上次同步点
+        到 ``upstream/master`` 最新)。须先把上游 fetch 进本仓(``git remote add upstream <url> &&
+        git fetch upstream``)让这些 ref 可见 —— agent 的活,本工具不做。
+    fork_ref:fork 侧对照分支(如 ``release/eagle``)。两用:① patch-id 等价比对的一方;
+        ② apply 检查的基准(见下 caveat)。
+    repo_path:仓库工作树**绝对路径**(跑 git 的 cwd)。
+    concern_files:只评估触及这些文件的上游 commit(收窄;不给则范围内全量)。
+    max_commits:逐 commit 扫描上限(默认 50,防巨大 range 烧时间)。
+    graph:可选 CodeGraph(有才做 touched_functions 富化;per-commit CRG 映射较慢,超阈值自动跳过)。
+
+    ⚠️ apply 检查 caveat:``applies_cleanly`` 是把 commit 的 diff 跑 ``git apply --check`` 对**当前
+    worktree** —— 故调用前须 ``git checkout <fork_ref>`` 且 worktree 干净(skill 负责叮嘱 agent)。
+    生产级无 touch 检测升 ``git merge-tree --write-tree``(git 2.38+),记 backlog。
+
+    返回 ``{repo, fork_ref, upstream_range, commits:[...], summary:{...}, note}``。
+    失败(非 git 仓 / ref 不存在 / repo_path 无效)→ 抛 ``ValueError``,工具层转友好串。
+    """
+    repo = Path(repo_path).resolve()
+    if not repo.is_dir():
+        raise ValueError(f"repo_path 不是目录: {repo_path}")
+    for ref in (upstream_base_ref, upstream_head_ref, fork_ref):
+        if not _SAFE_GIT_REF.match(ref):
+            raise ValueError(f"非法 git ref(只允许字母数字 _ . / ~ ^ @ {{ }} -): {ref!r}")
+
+    # 解析三 ref → sha(顺带验存在;不存在 git 报错 → _run_git 转 ValueError)
+    base_sha = _run_git(repo, ["rev-parse", "--verify", upstream_base_ref]).strip()
+    head_sha = _run_git(repo, ["rev-parse", "--verify", upstream_head_ref]).strip()
+    fork_sha = _run_git(repo, ["rev-parse", "--verify", fork_ref]).strip()
+
+    notes: list[str] = []
+    pathspec = sorted(concern_files) if concern_files else None
+
+    # 1) 上游范围内的 commit(upstream_base..upstream_head,concern 收窄)
+    log_args = ["log", "--no-merges", "--format=%H%x1f%s", f"--max-count={max_commits}",
+                f"{upstream_base_ref}..{upstream_head_ref}"]
+    if pathspec:
+        log_args += ["--", *pathspec]
+    raw_commits: list[tuple[str, str]] = []
+    for line in _run_git(repo, log_args).splitlines():
+        if "\x1f" in line:
+            sha, subject = line.split("\x1f", 1)
+            raw_commits.append((sha, subject))
+
+    if not raw_commits:
+        return {"repo": str(repo), "fork_ref": fork_ref,
+                "upstream_range": f"{upstream_base_ref}..{upstream_head_ref}",
+                "commits": [], "summary": {"total": 0},
+                "note": "上游范围内无 commit(或被 concern_files 收窄过滤光)。"}
+
+    commit_shas = [sha for sha, _ in raw_commits]
+
+    # 2) 逐 commit 的「已修」判定:git --cherry-pick 内部按 patch-id 把 fork 已有等价的 commit 剔除。
+    #    故 shown(fork...upstream 对称差的 upstream 侧)= 还没等价进 fork 的候选;范围内不在 shown
+    #    里的 commit = 已修(被 cherry 逻辑剔除,或本就可达于 fork)。比逐个算 patch-id 高效(只走对称差,
+    #    不扫 fork 全史)。实证(git 2.x):`=` 标记不会出现 —— 等价 commit 直接被对称差剔除,故取反集。
+    shown: set[str] = set()
+    try:
+        out = _run_git(repo, ["log", "--no-merges", "--cherry-pick", "--right-only",
+                              "--format=%H", f"{fork_ref}...{upstream_head_ref}"])
+        shown = {ln.strip() for ln in out.splitlines() if ln.strip()}
+    except ValueError as exc:
+        notes.append(f"patch-id 等价判定(--cherry-pick)跳过: {exc}")
+    equiv = {sha for sha in commit_shas if sha not in shown}
+
+    # 3) touched_functions 富化(per-commit CRG 映射慢):commit 少才做,多则只给 touched_files
+    touch_funcs_cap = 12
+    do_touch_funcs = graph is not None and len(raw_commits) <= touch_funcs_cap
+    if graph is not None and not do_touch_funcs:
+        notes.append(f"commit 数 > {touch_funcs_cap},touched_functions 富化跳过(仍给 touched_files)。")
+
+    commits_out: list[dict] = []
+    for sha, subject in raw_commits:
+        equivalent_in_fork = sha in equiv
+
+        # apply 检查:commit 的 diff(parent..commit)跑 git apply --recount --check 对当前 worktree。
+        # 扫描用 strict 一步(不走 3way/patch 梯子 —— 这是扫描不是真 apply)。归一化防踩坑#15 末尾换行。
+        applies_cleanly: bool | None
+        try:
+            diff = _run_git(repo, ["diff", "--no-color", f"{sha}^", sha])
+            diff = diff.replace("\r\n", "\n").replace("\r", "\n")
+            if not diff.endswith("\n"):
+                diff += "\n"
+            ar = subprocess.run(["git", "apply", "--recount", "--check"], input=diff,
+                                cwd=str(repo), capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=60)
+            applies_cleanly = ar.returncode == 0
+        except (ValueError, subprocess.SubprocessError):
+            applies_cleanly = None  # commit 无父 / git 挂 → 拿不准,标 uncertain
+
+        # touched_files(git diff-tree 廉价、无 header 污染)
+        try:
+            names = _run_git(repo, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha])
+            touched_files = [ln for ln in names.splitlines() if ln.strip()]
+        except ValueError:
+            touched_files = []
+
+        # touched_functions(可选 CRG 富化);显式 graph is not None 让类型检查收窄(同 cross_version_diff)
+        touched_functions: list[dict] = []
+        if do_touch_funcs and graph is not None:
+            try:
+                from code_review_graph.changes import map_changes_to_nodes, parse_git_diff_ranges
+                ranges = parse_git_diff_ranges(str(repo), f"{sha}^..{sha}")
+                if pathspec:
+                    ranges = {f: rs for f, rs in ranges.items() if f in set(pathspec)}
+                nodes = map_changes_to_nodes(graph._store, ranges)
+                touched_functions = [{"qualified_name": n.qualified_name, "file": n.file_path,
+                                      "line": n.line_start, "kind": n.kind} for n in nodes]
+            except Exception:  # noqa: BLE001 —— 富化失败不致命,只缺这块
+                pass
+
+        # 三态判定:已修优先(确定性高);次看 apply 结果
+        if equivalent_in_fork:
+            state = "already_fixed"
+        elif applies_cleanly is None:
+            state = "uncertain"
+        elif applies_cleanly:
+            state = "recommend_merge"
+        else:
+            state = "conflict"
+
+        commits_out.append({
+            "sha": sha, "subject": subject,
+            "equivalent_in_fork": equivalent_in_fork,
+            "applies_cleanly": applies_cleanly,
+            "touched_files": touched_files,
+            "touched_functions": touched_functions,
+            "state": state,
+        })
+
+    summary: dict[str, int] = {"total": len(commits_out)}
+    for st in ("already_fixed", "recommend_merge", "conflict", "uncertain"):
+        summary[st] = sum(1 for c in commits_out if c["state"] == st)
+
+    return {
+        "repo": str(repo), "fork_ref": fork_ref,
+        "upstream_range": f"{upstream_base_ref}..{upstream_head_ref}",
+        "fork_sha": fork_sha, "upstream_base_sha": base_sha, "upstream_head_sha": head_sha,
+        "commits": commits_out, "summary": summary,
         "note": " | ".join(notes) if notes else "",
     }
 

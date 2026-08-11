@@ -96,7 +96,7 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 3. ✅ feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)—— `8a2c821`,第 11 个 MCP 工具
 4. ✅ 记忆自动 query(P1)—— `21d792e`(定位后用 `problem_summary` 召回历史修法;A1 日志摘要被探针证伪转 B)
 >
-> **#1–#4 全落地(2026-08-11)**。下一优先见「低优 backlog」+「上游 commit 合入评估」。
+> **#1–#4 全落地(2026-08-11)**;**上游 commit 合入评估 全落地(2026-08-11,第 13 MCP 工具 `merge_eval` + `upstream-merge` skill)**。下一优先见「低优 backlog」。
 ~~原 #1 `filter_logs` 强制注入因果起点行~~ → **2026-08-10 复核撤销**:deer-flow/omp 双证专门日志切片工具没必要(opencode 的 read/grep/awk 等价且更灵活,踩坑#2);治踩坑#11 的领域知识(从更早切/用日志词汇/窗口可能漏根因/重心代码)转进 bug-rca SKILL/prompt,`filter_logs` MCP 工具 + `log_filter.py` 删除。详见踩坑#11。
 
-低优 backlog:**上游 commit 合入评估**(2026-08-11 新增需求:① `fetch_upstream_commit` 工具按 commit SHA 抓上游仓 diff —— 补 `fetch_patch`(PR)/GerritFetcher 外的来源;② patch-review skill 加「fork 侧对照」步骤 —— 该上游改动修的 bug 在当前 fork 已修/还在/不相关,用 `search_codebase`+`call_chain` 查;③ 决策三态:已修→不合 / 还在且相关→建议合 / 冲突大→人工。先做最小 ①+②)/ stdio→http(待 opencode 解注册,踩坑#10)/ P-A 遗留(1b deep+去重·Gerrit 凭据;~~patch_search CLI 已 2026-08-10 撤~~)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ 生产级补齐 backlog `.claude/memory/backlog-production-grade.md` #1–59(~~#55 obsolete~~;已完成:#22/#23/#54/#57/#58)。
+低优 backlog:~~**上游 commit 合入评估**~~ **✅已成(2026-08-11)** —— 采 `merge_eval` MCP 工具 + `upstream-merge` skill 路线(pivot 对齐:1 薄工具 + 1 skill,不包 fetch_upstream 工具/不建 workflow):`merge_eval` 逐 commit 三态判定(patch-id 等价 → `already_fixed` / `git apply --check` → `recommend_merge`|`conflict`),skill 负责拉上游本地 + checkout fork_ref + 查相关性 + 报告;详见 [upstream-merge-handoff](.claude/memory/upstream-merge-handoff.md)。未做的原 sub-need ① `fetch_upstream_commit`(按 SHA 抓单 commit diff)暂不做(agent `git show` 等价,踩坑#2)。 / stdio→http(待 opencode 解注册,踩坑#10)/ P-A 遗留(1b deep+去重·Gerrit 凭据;~~patch_search CLI 已 2026-08-10 撤~~)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ 生产级补齐 backlog `.claude/memory/backlog-production-grade.md` #1–60(~~#55 obsolete~~;已完成:#22/#23/#54/#57/#58;#60 merge-tree apply 升级待触发)。

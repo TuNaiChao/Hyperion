@@ -342,3 +342,131 @@ def test_cross_version_diff_small_git_repo(tmp_path):
     if res2["touched_functions"]:
         assert "qualified_name" in res2["touched_functions"][0]
         assert "touched_functions 映射" in res2["note"]
+
+
+# ── merge_eval(上游 commit 合入评估,低优 #1)───────────────────────────────────
+
+
+def test_merge_eval_three_states(tmp_path):
+    """merge_eval:上游一段 commit 逐个评估三态(已修/建议合/冲突)。
+
+    造 hermetic git 仓:main 共祖 → upstream 三 commit(U1 改 a.py / U2 加 c.py / U3 改 b.py)
+    → fork 从 main 起:cherry-pick U1(patch-id 等价 → U1 已修)+ 改 b.py beta 成 50(U3 想改 1→99 上下文对不上 → 冲突)。
+    期:U1=already_fixed · U2=recommend_merge(新文件干净 apply)· U3=conflict。
+    apply 检查对当前 worktree,故全程留在 fork 分支上。git 不在 PATH 则 skip。
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_EDITOR": "true"}
+
+    def g(args):
+        subprocess.run(["git", *args], cwd=str(tmp_path), env=env, check=True,
+                       capture_output=True, text=True)
+
+    # 共祖 main:a.py(alpha=1) + b.py(beta=1)
+    g(["init", "-q"])
+    (tmp_path / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def beta():\n    return 1\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "base"])
+    g(["branch", "-m", "main"])  # 钳制基线分支名(跨 git 版本默认分支名不一)
+
+    # upstream:U1(a.py alpha→2)/ U2(加 c.py gamma)/ U3(b.py beta→99)
+    g(["checkout", "-q", "-b", "upstream"])
+    (tmp_path / "a.py").write_text("def alpha():\n    return 2\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "U1 alpha returns 2"])
+    (tmp_path / "c.py").write_text("def gamma():\n    return 0\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "U2 add gamma"])
+    (tmp_path / "b.py").write_text("def beta():\n    return 99\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "U3 beta returns 99"])
+
+    # fork:从 main 起,cherry-pick U1(upstream~2)+ 改 b.py beta→50(与 U3 冲突)
+    g(["checkout", "-q", "main"])
+    g(["checkout", "-q", "-b", "fork"])
+    g(["cherry-pick", "upstream~2"])  # U1 → patch-id 等价
+    (tmp_path / "b.py").write_text("def beta():\n    return 50\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "F2 beta returns 50"])
+    # worktree 现在在 fork(already checked out)—— merge_eval 的 apply 检查对它
+
+    from hyperion.services.code_index.code_graph import merge_eval
+    res = merge_eval("main", "upstream", fork_ref="fork", repo_path=str(tmp_path))
+
+    # 顶层结构
+    assert res["fork_ref"] == "fork"
+    assert res["upstream_range"] == "main..upstream"
+    assert res["summary"]["total"] == 3
+    by_subj = {c["subject"]: c for c in res["commits"]}
+
+    # U1 cherry-pick 过 → patch-id 等价 → already_fixed
+    u1 = next(v for k, v in by_subj.items() if k.startswith("U1"))
+    assert u1["equivalent_in_fork"] is True
+    assert u1["state"] == "already_fixed"
+
+    # U2 新文件 c.py,fork 没动 c.py → 干净 apply → recommend_merge
+    u2 = next(v for k, v in by_subj.items() if k.startswith("U2"))
+    assert u2["equivalent_in_fork"] is False
+    assert u2["applies_cleanly"] is True
+    assert u2["state"] == "recommend_merge"
+    assert "c.py" in u2["touched_files"]
+
+    # U3 改 b.py beta 1→99,fork 已把 beta 改 50 → 上下文冲突 → conflict
+    u3 = next(v for k, v in by_subj.items() if k.startswith("U3"))
+    assert u3["equivalent_in_fork"] is False
+    assert u3["applies_cleanly"] is False
+    assert u3["state"] == "conflict"
+    assert "b.py" in u3["touched_files"]
+
+    # summary 计数
+    assert res["summary"]["already_fixed"] == 1
+    assert res["summary"]["recommend_merge"] == 1
+    assert res["summary"]["conflict"] == 1
+
+    # CRG 可用时:touched_functions 富化是 list(结构对齐 cross_version_diff 测,宽松不断非空)
+    if _crg_installed():
+        cg = CodeGraph.build(tmp_path, "fixture_me", base_dir=str(tmp_path))
+        res2 = merge_eval("main", "upstream", fork_ref="fork", repo_path=str(tmp_path), graph=cg)
+        assert all(isinstance(c["touched_functions"], list) for c in res2["commits"])
+
+
+def test_merge_eval_empty_range(tmp_path):
+    """upstream_base..upstream_head 无 commit → 空结果 + 提示。"""
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def g(args):
+        subprocess.run(["git", *args], cwd=str(tmp_path), env=env, check=True,
+                       capture_output=True, text=True)
+    g(["init", "-q"])
+    (tmp_path / "x.py").write_text("def f():\n    return 0\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "base"])
+    g(["branch", "-m", "main"])
+
+    from hyperion.services.code_index.code_graph import merge_eval
+    res = merge_eval("main", "main", fork_ref="main", repo_path=str(tmp_path))
+    assert res["summary"]["total"] == 0
+    assert res["commits"] == []
+
+
+def test_merge_eval_not_a_repo(tmp_path):
+    """非 git 仓目录 → ValueError(工具层据此转友好串)。"""
+    from hyperion.services.code_index.code_graph import merge_eval
+    empty = tmp_path / "notarepo"
+    empty.mkdir()
+    with pytest.raises(ValueError):
+        merge_eval("a", "b", fork_ref="c", repo_path=str(empty))

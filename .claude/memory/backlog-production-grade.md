@@ -384,3 +384,7 @@ metadata:
     - **该做的(验证优先,别再加机关)**:找个**和 demo2 不同但相关**的 wpa bug(如另一个 radio work 泄漏 / p2p 扫描别的症状),清空或隔离 memory 跑基线 vs 带 demo2 lesson 跑,对比定位步数/根因准确度/补丁质量。**有增益 → 设计证实,B(P1 自动 query)才值得做;无增益 → recall 用途转向(喂报告/补丁选型而非定位)或降级 dormant。**
     - **暂不做(避免重复过度设计)**:B(P1 自动 query 构造)—— 给未证实机制加更多机关 = 沉没成本驱动加复杂度,先验证。A(给 demo2 加 --trigger)—— 只让机关动起来给观测用,不改善同 bug 质量、反增锚定,别常驻(最多一次性观测)。
     - 目标阶段:**R3 收尾后的验证实验**(在动 P1 自动 query / 加 recall 机关之前必做)。关联 [[r3-memory-closure-handoff]] [[similar-bug-recall-roadmap]] [[avoid-overengineering]] [[pitfall-log]]。
+60. **merge_eval 的 apply 检查 worktree → merge-tree(生产级)** — `src/hyperion/services/code_index/code_graph.py:merge_eval`。
+    - 现状(MVP,2026-08-11):逐 commit apply 检查用 `git apply --recount --check`(strict 一步)对**当前 worktree**。故 SKILL 硬性要求调用前 `checkout fork_ref` + worktree 干净,否则三态失真;且不能并发(共享一个 worktree)。
+    - 升级:`git merge-tree --write-tree <fork_ref> <upstream_commit>`(git 2.38+)在内存里对两个 ref 做 three-way merge,**不 touch worktree** —— 无需 checkout、可并发、对脏 worktree 安全。`--name-only` 出冲突文件清单 → `applies_cleanly` 判定更准。
+    - 优先级:低(MVP strict 检查 + SKILL 的 checkout 约束已能用);触发条件 = 需并发扫多仓 / 或 fork_ref 不能 checkout(HEAD detached 场景)。关联 [[upstream-merge-handoff]]。

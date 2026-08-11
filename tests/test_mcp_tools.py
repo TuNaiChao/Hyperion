@@ -323,3 +323,69 @@ def test_cross_version_diff_not_a_repo(tmp_path):
                 {"base_ref": "HEAD~1", "head_ref": "HEAD", "repo_path": str(tmp_path)})
     assert "Traceback" not in out, out
     assert "没法算" in out, out  # 非 git 仓 → rev-parse 失败 → ValueError → "没法算"
+
+
+# ════════════════════════ merge_eval 工具(低优 #1)════════════════════════
+
+def test_merge_eval_bad_ref(tmp_path):
+    """非法 ref(含 ';' 过不了 _SAFE_GIT_REF)→ ValueError → 工具转友好串,不抛 traceback。"""
+    mcp = build_server()
+    out = _call(mcp, "merge_eval",
+                {"upstream_base_ref": "a;b", "upstream_head_ref": "HEAD",
+                 "fork_ref": "HEAD", "repo_path": str(tmp_path)})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out
+
+
+def test_merge_eval_not_a_repo(tmp_path):
+    """repo_path 合法目录但非 git 仓 → rev-parse 失败 → ValueError → 友好串,不抛。"""
+    import shutil
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    mcp = build_server()
+    out = _call(mcp, "merge_eval",
+                {"upstream_base_ref": "HEAD~1", "upstream_head_ref": "HEAD",
+                 "fork_ref": "HEAD", "repo_path": str(tmp_path)})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out
+
+
+def test_merge_eval_success_via_fake(monkeypatch):
+    """happy path:monkeypatch merge_eval 返固定 dict → 工具格式化「total=N | 三态计数」+ body;
+    fork_ref/max_commits 透传。
+
+    monkeypatch 模块级 merge_eval(工具内 `from ... import merge_eval as _me` 每次调用重读属性 → 拿到假函数,
+    hermetic 不靠真 git 仓)。CodeGraph.open('fake_cb') 会 FileNotFoundError → 工具 try/except → graph=None,假函数忽略 graph。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    seen: dict = {}
+
+    def fake_me(upstream_base_ref, upstream_head_ref, *, fork_ref, repo_path,  # noqa: ANN001
+                concern_files=None, max_commits=50, graph=None):
+        seen.update(fork_ref=fork_ref, max_commits=max_commits, repo_path=repo_path,
+                    concern_files=concern_files)
+        return {"repo": repo_path, "fork_ref": fork_ref,
+                "upstream_range": f"{upstream_base_ref}..{upstream_head_ref}",
+                "commits": [{"sha": "abc123", "subject": "fix: harden foo",
+                             "equivalent_in_fork": False, "applies_cleanly": True,
+                             "touched_files": ["a.c"], "touched_functions": [],
+                             "state": "recommend_merge"}],
+                "summary": {"total": 1, "already_fixed": 0, "recommend_merge": 1,
+                            "conflict": 0, "uncertain": 0},
+                "note": ""}
+
+    monkeypatch.setattr(cg_mod, "merge_eval", fake_me)
+    mcp = build_server()
+    out = _call(mcp, "merge_eval",
+                {"upstream_base_ref": "v1.0", "upstream_head_ref": "v1.1",
+                 "fork_ref": "release/eagle", "repo_path": "/tmp/repo",
+                 "max_commits": 7, "concern_files": ["a.c"], "codebase": "fake_cb"})
+    assert "Traceback" not in out, out
+    assert "total=1" in out, out
+    assert "recommend_merge=1" in out, out
+    assert "abc123" in out, out  # body(json)含 commit sha
+    # 参数透传
+    assert seen["fork_ref"] == "release/eagle"
+    assert seen["max_commits"] == 7
+    assert seen["concern_files"] == ["a.c"]

@@ -10,6 +10,7 @@
   - call_chain        符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(谁调它/它调谁;P1.5 caller/callee 进适配层)。
   - repo_map          全仓 PageRank 排名符号地图(Aider repomap 式,塞进 token 预算;俯瞰「哪些函数结构上最核心」;#38)。
   - cross_version_diff 同仓两 git ref 跨版本对比(base..head 提交门 + concern diff + 触及函数 + cherry 等价;feature 2b;git 为核图可选)。
+  - merge_eval         上游 commit 合入评估(逐 commit 三态:已修/建议合/冲突;patch-id 等价 + apply 检查;低优#1;git 为核图可选,全程 local-git)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
   - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
   - export_report     把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘;空内容自检;harness 转向 D1)。
@@ -74,10 +75,10 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露十二个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十三个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
-    search_codebase / blast_radius / call_chain / repo_map / cross_version_diff 另接受 per-call `codebase` 参数覆盖此默认(多库:
+    search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
     同一 server 进程可切多个仓),不传则用这里的默认 repo。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
@@ -336,6 +337,63 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         body = json.dumps(result, ensure_ascii=False, default=str)
         return (f"cross-version-diff(repo={repo_path}, codebase={target}, "
                 f"{base_ref}..{head_ref}):\n{body[:8000]}")
+
+    # ── ⑤e merge_eval:上游 commit 合入评估(逐 commit 三态:已修/建议合/冲突;git 为核图可选)
+    # 维护 fork 时,把上游一段 commit 范围逐个评估「该不该合入」:patch-id 等价(已修,git --cherry-mark)
+    # + 能否干净 apply(冲突)+ 触及文件/函数(CRG 可选)。确定性地板;「相不相关」归 agent(CRG 查)。
+    # 全程 local-git:上游须先 fetch 进本仓让 ref 可见(agent 跑 git remote add + fetch)。
+    @mcp.tool()
+    async def merge_eval(upstream_base_ref: str, upstream_head_ref: str, fork_ref: str,
+                         repo_path: str, concern_files: list[str] | None = None,
+                         max_commits: int = 50, codebase: str | None = None) -> str:
+        """Upstream-commit merge evaluation: for each commit in an upstream range, decide whether to
+        backport it into the fork. Deterministic per-commit tri-state (no LLM): already_fixed (a git
+        patch-id-equivalent commit already exists in the fork, via git --cherry-mark), recommend_merge
+        (not in fork, applies cleanly), conflict (not in fork, apply fails), uncertain. Also returns
+        touched files/functions.
+
+        This is the deterministic FLOOR — the 'is the fork actually affected / does it need this fix'
+        relevance judgment is YOURS, using touched files/functions + search_codebase + call_chain
+        ('can apply' != 'fork needs it'; a fork may lack the bug/feature entirely).
+
+        Fully local-git. YOU must first fetch the upstream into the repo so the refs resolve:
+        `git -C <repo> remote add upstream <url> && git -C <repo> fetch upstream --no-tags` (idempotent;
+        your job, not this tool's). Before calling, `git -C <repo> checkout <fork_ref>` and ensure a
+        clean worktree — applies_cleanly checks apply against the CURRENT worktree.
+
+        upstream_base_ref/upstream_head_ref: upstream commit range (two git refs in repo_path, e.g.
+            last-sync-point and upstream/master). fork_ref: fork branch to compare against (e.g. release/eagle).
+        repo_path: absolute path of the repo working tree (cwd for git). concern_files: scope to commits
+            touching these files. max_commits: scan cap (default 50). codebase: graph for touched-function
+            enrichment (optional; default = this server's codebase).
+        Needs only the git repo; graph is optional enrichment (runs without it).
+        """
+        from hyperion.services.code_index.code_graph import CodeGraph
+        from hyperion.services.code_index.code_graph import merge_eval as _me
+        target = codebase or repo
+        # 图可选:开得到就富化,开不到(未建 / CRG 未装)→ None,git 核照跑
+        graph = None
+        try:
+            graph = CodeGraph.open(target)
+        except Exception:  # noqa: BLE001 —— FileNotFoundError/ImportError 都降级,不致命
+            pass
+        try:
+            result = _me(upstream_base_ref, upstream_head_ref, fork_ref=fork_ref, repo_path=repo_path,
+                         concern_files=concern_files, max_commits=max_commits, graph=graph)
+        except ValueError as e:  # 坏 ref / 非 git 仓 / repo_path 无效 → 友好串,不抛
+            return (f"merge_eval 没法算(repo={repo_path}, fork={fork_ref}, "
+                    f"{upstream_base_ref}..{upstream_head_ref}): {e}")
+        except Exception as e:  # noqa: BLE001
+            return (f"合入评估失败(repo={repo_path}, fork={fork_ref}, "
+                    f"{upstream_base_ref}..{upstream_head_ref}): {e}")
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        s = result.get("summary", {})
+        return (f"merge-eval(repo={repo_path}, fork={fork_ref}, codebase={target}, "
+                f"{upstream_base_ref}..{upstream_head_ref}): "
+                f"total={s.get('total', 0)} | already_fixed={s.get('already_fixed', 0)} "
+                f"| recommend_merge={s.get('recommend_merge', 0)} | conflict={s.get('conflict', 0)} "
+                f"| uncertain={s.get('uncertain', 0)}\n{body[:8000]}")
 
     # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
     # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);
