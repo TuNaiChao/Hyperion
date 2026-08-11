@@ -82,10 +82,8 @@ metadata:
     - 对齐:在第二个仓库(如 deer-flow 子集)建索引 + curate 评测集,对比 L2 recall 衰减;衰减大说明过拟合 Hyperion 代码风格。
     - 目标阶段:**P1.3 之后 / P2**(有第二个被测仓库时)。
 
-16. **precision 指标校准(P1.3 实测发现)** — `eval/scorer.py` / `runner.py`。
-    - 现状:`precision@5 = |top5∩gold|/5`,小 gold 集(1-2 符号)天然封顶 |gold|/5≈0.2-0.4(P1.3 实测 0.240),退出标准 0.40 数学上不可达。
-    - 对齐:加 `precision_at_min_k(retrieved, gold, k) = |top-k∩gold| / min(k, |gold|)`(R-precision 风格,单 gold 命中=1.0);退出标准条件 2 改用它。
-    - 目标阶段:**P1.3 之后**(scorer/runner 小改,顺手)。
+16. ✅ **已成(2026-08-11)** precision 指标校准 — `eval/scorer.py` / `runner.py` / `tests/services/code_index/test_scorer.py`。
+    - 现状(已成):落地 `scorer.precision_at_min_k = |top-k∩gold|/min(k,|gold|)`(R-precision 风格,单 gold 命中=1.0);runner 报 `rprecision@5`(旧 `precision@5` 列保留参考);退出标准 ② 改用 R-precision;11 单测绿(7 R-precision + 4 回归)。旧 P1.3 实测 precision@5=0.240(定义问题非缺陷)不再卡退出标准;R-precision@5 实测数待重跑评测填(不编)。
 
 (后续每发现一处最小实现就追加一条。)
 

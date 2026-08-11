@@ -42,6 +42,22 @@ def precision_at_k(retrieved: Sequence[str], gold: set[str], k: int) -> float:
     return len(set(retrieved[:k]) & gold) / k
 
 
+def precision_at_min_k(retrieved: Sequence[str], gold: set[str], k: int) -> float:
+    """R-precision 风格 = |top-k ∩ gold| / min(k, |gold|)(小 gold 集退出标准用)。
+
+    普通 precision@k 分母恒为 k,小 gold 集(1-2 符号)天然封顶 ≈ |gold|/k
+    (单 gold、k=5 最高才 0.2)→ 退出标准 0.40 数学不可达(见 backlog #16)。
+    这里分母取 min(k, |gold|):单 gold 命中即 1.0;既不奖励漏召回(k > |gold| 时
+    分母 = |gold|,少命中就降),也不因 gold 小而封顶。gold 空 → 0.0(与 recall 一致)。
+    """
+    if not gold:
+        return 0.0
+    denom = min(k, len(gold))
+    if denom <= 0:
+        return 0.0
+    return len(set(retrieved[:k]) & gold) / denom
+
+
 def hit_rate_at_k(retrieved: Sequence[str], gold: set[str], k: int) -> float:
     """HitRate@k:top-k 里至少命中一个 gold(单查询 0/1;对查询集求均值得 hit rate)。"""
     return 1.0 if (set(retrieved[:k]) & gold) else 0.0

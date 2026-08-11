@@ -200,7 +200,7 @@ res = (tbl.search(query_type="hybrid", vector_column_name="vector", fts_columns=
 
 **指标(自己实现)**:Recall@k、Precision@k、多标签 MRR、nDCG@k(BEIR 标准)。
 
-**退出标准(多指标,95% bootstrap CI)**:① L2 recall@5 ≥ 0.55(CI≥0.45)② precision@5 ≥ 0.40 ③ MRR ≥ 0.45 ④ L1 recall@5 ≥ 0.85(sanity)⑤ BM25 baseline L2 recall@5 ≤ 0.40 ⑥ holdout 衰减 ≤ 15pp。
+**退出标准(多指标,95% bootstrap CI)**:① L2 recall@5 ≥ 0.55(CI≥0.45)② **R-precision@5(`precision@min(k,|gold|)`)≥ 0.40** ③ MRR ≥ 0.45 ④ L1 recall@5 ≥ 0.85(sanity)⑤ BM25 baseline L2 recall@5 ≤ 0.40 ⑥ holdout 衰减 ≤ 15pp。> 条件② 原 `precision@5 ≥ 0.40` 对小 gold 集(1-2 符号)数学上封顶 ≈ |gold|/k 不可达,2026-08-11 改 R-precision(单 gold 命中=1.0),见 [backlog #16](../../.claude/memory/backlog-production-grade.md)。
 
 ### P1.3 实测结果(2026-07-27,Hyperion 自身代码首测)
 评测集 `eval/sets/hyperion.jsonl`:人工 curate **18 条**(8 L1 + 10 L2;production 级 ≥150 + L3 + git-diff 自动抽取见 [backlog #13](../../.claude/memory/backlog-production-grade.md))。在 `src/hyperion`(201 chunk)上建索引(DashScope text-embedding-v4 + qwen3-rerank):
@@ -211,7 +211,7 @@ res = (tbl.search(query_type="hybrid", vector_column_name="vector", fts_columns=
 | L2 (n=10) | **0.650** | 0.240 | 0.483 | 0.496 | 0.800 |
 | L2 无 reranker | 0.600 | 0.220 | 0.378 | 0.402 | 0.800 |
 
-**裁定**:主标准 **L2 recall@5 = 0.650 ≥ 0.55 ✅ 达标**;L1 sanity 1.000 ✅;L2 MRR 0.483 ≥ 0.45 ✅。reranker 主要提升排序质量(L2 MRR +0.105、nDCG +0.094)。precision@5=0.240 未达 0.40 —— **指标定义问题非缺陷**:小 gold 集(1-2 符号)数学上封顶 ≈ |gold|/k,改 `precision@min(k,|gold|)`([backlog #16](../../.claude/memory/backlog-production-grade.md))。BM25 baseline(条件⑤)+ holdout(条件⑥)待补([backlog #14/#15](../../.claude/memory/backlog-production-grade.md))。
+**裁定**:主标准 **L2 recall@5 = 0.650 ≥ 0.55 ✅ 达标**;L1 sanity 1.000 ✅;L2 MRR 0.483 ≥ 0.45 ✅。reranker 主要提升排序质量(L2 MRR +0.105、nDCG +0.094)。precision@5=0.240 未达 0.40 —— **指标定义问题非缺陷**:小 gold 集(1-2 符号)数学上封顶 ≈ |gold|/k。**2026-08-11 已修**:`scorer.precision_at_min_k` 落地(R-precision 风格,单 gold 命中=1.0)+ runner 报 `rprecision@5` + 退出标准 ② 改用它([backlog #16](../../.claude/memory/backlog-production-grade.md) ✅ 已成)。旧 precision@5 列保留作参考;R-precision@5 实测数待重跑评测填(不编)。BM25 baseline(条件⑤)+ holdout(条件⑥)待补([backlog #14/#15](../../.claude/memory/backlog-production-grade.md))。
 
 **结论**:P1.3 主退出标准达标,检索管线端到端跑通。诚实保留:18 条 indicative(非 ≥150 统计 tight),production 级评测是后续。
 

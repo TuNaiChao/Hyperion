@@ -38,6 +38,7 @@ from hyperion.services.code_index.eval.scorer import (
     mean_metrics,
     ndcg_at_k,
     precision_at_k,
+    precision_at_min_k,
     recall_at_k,
     reciprocal_rank,
 )
@@ -46,7 +47,7 @@ from hyperion.services.code_index.store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-_METRIC_KEYS = ["recall@5", "precision@5", "mrr", "ndcg@5", "hit@5"]
+_METRIC_KEYS = ["recall@5", "precision@5", "rprecision@5", "mrr", "ndcg@5", "hit@5"]
 
 
 def load_eval_set(path: Path | str) -> list[dict]:
@@ -94,6 +95,7 @@ def run_eval(
                     "n_hits": len(res.hits),
                     "recall@5": recall_at_k(retrieved, gold, top_k),
                     "precision@5": precision_at_k(retrieved, gold, top_k),
+                    "rprecision@5": precision_at_min_k(retrieved, gold, top_k),
                     "mrr": reciprocal_rank(retrieved, gold),
                     "ndcg@5": ndcg_at_k(retrieved, gold, top_k),
                     "hit@5": hit_rate_at_k(retrieved, gold, top_k),
