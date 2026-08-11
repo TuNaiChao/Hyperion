@@ -14,6 +14,46 @@ from collections import Counter, defaultdict
 logger = logging.getLogger(__name__)
 
 
+def _same_subject(a: dict, b: dict, *, jaccard_threshold: float = 0.5) -> bool:
+    """两个 finding 是否同主题(报告层跨 PR 去重判据)。
+
+    判据:theme 相同 **且** 改动文件集 Jaccard ≥ 阈值。保守——任一不满足或无文件信息 → 不同主题。
+    不碰记忆 dedup(只用于聚合报告计 unique + 标注重复组,底层 finding 全保留)。
+    """
+    if (a.get("theme") or "function") != (b.get("theme") or "function"):
+        return False
+    fa, fb = set(a.get("changed_files") or []), set(b.get("changed_files") or [])
+    if not fa or not fb:
+        return False  # 无文件信息 → 不去重(保守,不误并)
+    return len(fa & fb) / len(fa | fb) >= jaccard_threshold
+
+
+def _group_same_subject(findings: list[dict]) -> list[list[int]]:
+    """基于 _same_subject 把 findings 并成同主题组(并查集)。只回规模 ≥ 2 的组(下标列表)。"""
+    n = len(findings)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _same_subject(findings[i], findings[j]):
+                union(i, j)
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return [grp for grp in groups.values() if len(grp) >= 2]
+
+
 def aggregate(findings: list[dict], codebase: str = "") -> dict:
     """跨 PR 聚合 → ``{stats, cross_summary, citations, high_security_prs}``。
 
@@ -38,6 +78,15 @@ def aggregate(findings: list[dict], codebase: str = "") -> dict:
         "high_risk_count": len(high_risk),
         "hot_modules": [{"module": m, "pr_count": c} for m, c in hot_modules],
     }
+
+    # 报告层跨 PR 同主题去重(changed_files Jaccard + theme);不删 finding,只计 unique + 标注重复组
+    dup_groups = _group_same_subject(findings)
+    n_dup = sum(len(g) - 1 for g in dup_groups)
+    stats["n_unique_subjects"] = len(findings) - n_dup
+    stats["duplicate_subject_groups"] = [
+        {"pr_count": len(g), "titles": [findings[i].get("title", f"#{i}") for i in g]}
+        for g in dup_groups
+    ]
 
     # ② 一次 LLM cited 综合(单批,抄 plan_modules:喂所有 findings → {cross_summary, citations})
     cross_summary, citations = _synthesize(findings, stats)
@@ -88,6 +137,11 @@ def _render_findings_evidence(findings: list[dict], stats: dict) -> str:
     if stats["hot_modules"]:
         lines.append("热模块(community): " + ", ".join(
             f"{m['module']}({m['pr_count']} PRs)" for m in stats["hot_modules"][:6]))
+    dups = stats.get("duplicate_subject_groups") or []
+    if dups:
+        lines.append("\n## 同主题 PR 组(报告层去重:改动文件重叠 + theme 同 → 视为同主题;stats 已计 unique)")
+        for g in dups:
+            lines.append(f"- {g['pr_count']} PRs 同主题: {' / '.join(g['titles'])}")
     lines.append("\n## 各 PR finding(cited,带 file:line)")
     for f in findings:
         lines.append(

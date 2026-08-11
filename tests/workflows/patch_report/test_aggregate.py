@@ -72,3 +72,60 @@ def test_verify_flags_invented_file():
              "aggregate": {"citations": []}}
     md = verify_and_append("report\n", state)
     assert "可疑" in md and "INVENTED.c" in md
+
+
+def test_aggregate_dedup_same_subject(monkeypatch):
+    """两个 PR 改动文件完全重叠 + theme 同 → 判同主题:n_unique_subjects=1,1 组。"""
+    from hyperion.workflows.patch_report import _aggregate
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    findings = [
+        {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
+        {"title": "PR2", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
+    ]
+    st = _aggregate.aggregate(findings, "cb")["stats"]
+    assert st["total_prs"] == 2
+    assert st["n_unique_subjects"] == 1                       # 2 PR 同主题 → 1 unique
+    assert len(st["duplicate_subject_groups"]) == 1
+    assert st["duplicate_subject_groups"][0]["pr_count"] == 2
+
+
+def test_aggregate_dedup_no_overlap(monkeypatch):
+    """不同文件 → 不去重:n_unique_subjects=2,无重复组。"""
+    from hyperion.workflows.patch_report import _aggregate
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    findings = [
+        {"title": "PR1", "theme": "security", "changed_files": ["a.c"], "modules": [], "summary": "s"},
+        {"title": "PR2", "theme": "security", "changed_files": ["z.c"], "modules": [], "summary": "s"},
+    ]
+    st = _aggregate.aggregate(findings, "cb")["stats"]
+    assert st["n_unique_subjects"] == 2
+    assert st["duplicate_subject_groups"] == []
+
+
+def test_aggregate_dedup_different_theme_not_merged(monkeypatch):
+    """文件重叠但 theme 不同 → 不并(主题不同不算重复)。"""
+    from hyperion.workflows.patch_report import _aggregate
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    findings = [
+        {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
+        {"title": "PR2", "theme": "refactor", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
+    ]
+    st = _aggregate.aggregate(findings, "cb")["stats"]
+    assert st["n_unique_subjects"] == 2
+    assert st["duplicate_subject_groups"] == []
+
+
+def test_render_shows_unique_subjects():
+    """报告渲染:有重复组时顶部展示 unique subjects 注记(底层 finding 不删)。"""
+    from hyperion.workflows.patch_report.report import render_patch_report
+    state = {
+        "codebase": "cb",
+        "findings": [],
+        "aggregate": {"stats": {"total_prs": 3, "n_unique_subjects": 2,
+                                "duplicate_subject_groups": [{"pr_count": 2, "titles": ["PR1", "PR2"]}]},
+                      "cross_summary": "CS", "citations": [], "high_security_prs": []},
+    }
+    md = render_patch_report(state)
+    assert "3 PRs" in md
+    assert "2 unique subjects" in md
+    assert "1 组同主题" in md

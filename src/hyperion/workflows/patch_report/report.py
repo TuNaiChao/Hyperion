@@ -17,10 +17,15 @@ def render_patch_report(state) -> str:
     cross = agg.get("cross_summary") or "(无跨 PR 综合)"
     codebase = state.get("codebase", "")
 
+    # 报告层去重注记:有同主题组时标 unique subjects(底层 finding 全保留,不删)
+    n_uniq = stats.get("n_unique_subjects")
+    dup_n = len(stats.get("duplicate_subject_groups") or [])
+    uniq_note = f" · **{n_uniq} unique subjects**({dup_n} 组同主题)" if (n_uniq is not None and dup_n) else ""
+
     out = [
         f"# patch-report · {codebase}",
         "",
-        f"**{stats.get('total_prs', len(findings))} PRs** · "
+        f"**{stats.get('total_prs', len(findings))} PRs**{uniq_note} · "
         f"theme={stats.get('by_theme', {})} · security_tier={stats.get('by_tier', {})} · "
         f"high_security={stats.get('high_security_count', 0)} · high_risk={stats.get('high_risk_count', 0)}",
         "",

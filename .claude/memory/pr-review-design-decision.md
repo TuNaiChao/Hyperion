@@ -19,6 +19,7 @@ metadata:
 - **安全分析分层省 token**:CRG risk_score + 关键词预筛 → 只对命中子集送 LLM 深分类(CWE/taint),不全量 LLM。几百条 PR 才烧得起。
 - **模块归属**:`get_community_ids_by_qualified_names`(graph.py:1227,450 批)+ `get_architecture_overview` 的 `cross_community_edges` = 耦合热力图。
 - **跨 PR 语义近邻去重(不同 PR 修同一 bug)→ backlog**:id 按 diff 去重只管同 patch;语义去重需 embedding 聚类,首发不做。
+- **报告层跨 PR 同主题去重 ✅ 已补(2026-08-11)**:`patch_report/_aggregate.py` 的 `_same_subject`(changed_files Jaccard≥0.5 + theme 同)→ aggregate 计 `n_unique_subjects` + 标 `duplicate_subject_groups`,报告顶部展示「N unique subjects(M 组同主题)」,evidence 也标注组给 LLM cross_summary。**只动报告层、不删 finding、不碰记忆 dedup**(区别于上面记忆层 symptom gap —— 那个仍受 [[memory-append-only-directive]] 张力暂不做)。判据用文件重叠因 PRFinding 无 symptom 字段;未来加 symptom 可升级判据。8 测绿。
 
 **调研核验**:SmartNote(arXiv 2505.17977)已 WebFetch 核验(聚合变更→分类→打分→结构化报告,范式同构);搜索给的 "ToM arXiv 2511.004490" 经核验**实际是脑瘤分割论文**,张冠李戴已拦(见 [[verify-arxiv-cites-before-commit]])。PR 级 change-impact(Springer EMSE)+ map-reduce + gh CLI/vulnerability-spoiler-alert-action 均查实。
 
