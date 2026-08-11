@@ -44,14 +44,21 @@ def cmd_models(args) -> int:
 
 
 def cmd_index(args) -> int:
-    """为一个代码仓库建/更新向量索引(P1 代码理解服务)。
+    """为一个代码仓库建/更新索引 —— 向量索引 + 结构图一次到位(P1 代码理解服务)。
 
     用法:hyperion index <repo_path> [repo_name]
     例:hyperion index src/hyperion hyperion
        hyperion index ~/src/bluez bluez --force
     没给 repo_name → 用 repo_path 的目录名。⚠️ repo_name 必须和 config.code_index.repo
     (search_code 查的表名)一致,否则 search_code 会查空表。
+
+    默认建两样(代码情报工具全都要预建):
+    - 向量索引 → search_codebase(BM25 + 向量 + RRF + rerank)
+    - 结构图   → blast_radius / call_chain / repo_map(CRG tree-sitter 解析 + Leiden 社区)
+    `--no-graph` 只建向量索引(快);CRG(code-review-graph extra)没装则自动跳过结构图并提示,
+    不挡向量索引。已建的结构图默认跳过(省去 full_build),`--force` 才重建。
     """
+    import shutil
     from pathlib import Path
 
     from hyperion.services.code_index.embed import create_embedder
@@ -65,11 +72,40 @@ def cmd_index(args) -> int:
     repo_name = args.repo_name or repo_path.resolve().name
     vs_path = getattr(getattr(cfg.code_index, "vector_store", None), "path", "data/code_index")
 
+    # ── 1)向量索引(search_codebase 用)──────────────────────────────────
     embedder = create_embedder(cfg.code_index.embedding)
     stats = build_index(repo_path, repo_name, embedder, vs_path, force=args.force)
     n = stats.get("indexed", stats.get("total_chunks", "?"))
-    print(f"索引完成 [{stats.get('mode')}]:{repo_name}  {n} chunk  "
+    print(f"向量索引完成 [{stats.get('mode')}]:{repo_name}  {n} chunk  "
           f"commit={stats.get('repo_commit', '-')[:10]}")
+
+    # ── 2)结构图(blast_radius / call_chain / repo_map 用;可选,失败不致命)──
+    # 没这条,降级提示「先建 hyperion index」会把人引向只建了向量索引、结构图仍缺的死路。
+    if args.no_graph:
+        print("结构图:--no-graph 跳过(blast_radius / call_chain / repo_map 不可用)。")
+        return 0
+
+    from hyperion.services.code_index.code_graph import CodeGraph  # CRG 可选 extra,放函数内 lazy import
+
+    graph_dir = Path("data/structgraph") / repo_name
+    db_path = graph_dir / "graph.db"
+    if db_path.exists() and not args.force:
+        print(f"结构图已存在,跳过:{db_path}(用 --force 重建)。")
+        return 0
+    if args.force and graph_dir.exists():
+        shutil.rmtree(graph_dir)  # --force 清旧图,免 stale 节点混进新图
+    print(f"结构图建图中(CRG tree-sitter 解析全仓,大仓需几分钟):{repo_path} …")
+    try:
+        CodeGraph.build(repo_root=str(repo_path), repo_name=repo_name)
+        print(f"结构图建好:{db_path}(blast_radius / call_chain / repo_map 可用)。")
+    except ImportError as e:  # CRG(code-review-graph extra)没装 → 提示装,不挡向量索引
+        print(f"结构图跳过:CRG 未装({e})。装它:`uv sync --extra code-review-graph`。\n"
+              f"  向量索引已就绪(search_codebase 可用);blast_radius / call_chain / repo_map 暂不可用。",
+              file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 —— 建图失败不致命:向量索引已就绪,结构图工具降级提示
+        print(f"结构图建图失败(非致命,向量索引已就绪):{e}\n"
+              f"  blast_radius / call_chain / repo_map 暂不可用;search_codebase 不受影响。",
+              file=sys.stderr)
     return 0
 
 
@@ -386,11 +422,13 @@ def main(argv: list[str] | None = None) -> int:
     sub_models = sub.add_parser("models", help="列出 config.yaml 中配置的模型")
     sub_models.set_defaults(func=cmd_models)
 
-    sub_index = sub.add_parser("index", help="为一个仓库建/更新向量索引")
+    sub_index = sub.add_parser("index", help="为仓库建索引(向量索引 + 结构图,一次到位)")
     sub_index.add_argument("repo_path", help="仓库根目录路径")
     sub_index.add_argument("repo_name", nargs="?", default=None,
                            help="索引名(默认取目录名;须与 code_index.repo 一致)")
-    sub_index.add_argument("--force", action="store_true", help="强制全量重建")
+    sub_index.add_argument("--force", action="store_true", help="强制全量重建(向量索引 + 结构图)")
+    sub_index.add_argument("--no-graph", action="store_true",
+                           help="只建向量索引,不建结构图(快;blast_radius/call_chain/repo_map 将不可用)")
     sub_index.set_defaults(func=cmd_index)
 
     sub_lsp = sub.add_parser("lsp", help="L2 精确导航(clangd):health 自检 / refs 冒烟")

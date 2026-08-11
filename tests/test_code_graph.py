@@ -96,6 +96,40 @@ def test_build_and_query_small_repo(tmp_path):
 
 
 @needs_crg
+def test_impact_radius_path_resolution(tmp_path):
+    """blast_radius 路径容错:CRG 存路径带 repo_root 前缀,agent 给仓库相对路径也要能命中。
+
+    蓝芷(bluez)实测踩到:index 用相对 repo_root → 图存 ``<tmp>/a.py``,agent 喂 ``a.py``
+    会静默返空。_resolve_file_paths 用后缀匹配兜底。这个测固化该行为。
+    """
+    (tmp_path / "a.py").write_text(
+        "def alpha():\n    return beta()\n"
+        "def beta():\n    return 1\n"
+    )
+    (tmp_path / "b.py").write_text(
+        "from a import alpha\n"  # 跨文件调用 → a.py 改动会波及 b.py
+        "def caller():\n    return alpha()\n"
+    )
+    cg = CodeGraph.build(tmp_path, "fixture_ir", base_dir=str(tmp_path))
+
+    # 仓库相对路径(只是 basename)→ 后缀解析到 <tmp>/a.py,非空
+    br_rel = cg.impact_radius(["a.py"])
+    assert len(br_rel["changed_nodes"]) > 0, "相对路径 a.py 应解析到图里的 <tmp>/a.py"
+
+    # 精确的全路径(图存的格式)→ 也命中(精确分支)
+    br_abs = cg.impact_radius([str(tmp_path / "a.py")])
+    assert len(br_abs["changed_nodes"]) > 0
+
+    # 两种喂法命中同一批 changed 节点(changed_nodes 是 GraphNode 对象,属性访问)
+    qn = lambda nodes: {getattr(n, "qualified_name", None) for n in nodes}  # noqa: E731
+    assert qn(br_rel["changed_nodes"]) == qn(br_abs["changed_nodes"])
+
+    # 不存在的文件 → 如实返空(不假装命中)
+    br_none = cg.impact_radius(["does_not_exist.c"])
+    assert br_none["changed_nodes"] == [] and br_none["total_impacted"] == 0
+
+
+@needs_crg
 def test_analyze_changes_and_community_ids(tmp_path):
     """analyze_changes(改动文件+行范围 → risk/changed_functions)+ community_ids_for(符号→社区)。P-A 1b 用。
 

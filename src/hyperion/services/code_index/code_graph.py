@@ -595,9 +595,36 @@ class CodeGraph:
     def impact_radius(self, changed_files: list[str]) -> dict:
         """改动影响面(BFS):给定一批改动文件,返回受波及的节点/文件/边(blast-radius)。
 
-        深度/节点上限用 CRG 默认(MAX_IMPACT_DEPTH / MAX_IMPACT_NODES)。
+        路径容错:CRG 存的文件路径带 repo_root 前缀(如 ``code-test/v25/bluez/src/...``),
+        而 agent / search_codebase / git diff 通常给仓库相对路径(``src/...``)。直接喂相对路径,
+        get_nodes_by_file 的精确匹配会落空 → blast_radius 静默返空(蓝芋试出)。这里先把输入
+        解析成图里真实存的路径(精确 > 后缀),再算影响面。深度/节点上限用 CRG 默认。
         """
-        return self._store.get_impact_radius(changed_files)
+        return self._store.get_impact_radius(self._resolve_file_paths(changed_files))
+
+    def _resolve_file_paths(self, files: list[str]) -> list[str]:
+        """把 agent 给的文件路径解析成图里真实存的路径(精确命中 > 后缀兜底 > 原样)。
+
+        CRG 存路径带 repo_root 前缀;agent 常给仓库相对路径。后缀兜底用「存的路径以 /<输入>
+        结尾」匹配,处理前缀差异(绝对/相对/prefixed 三种都收敛)。多义(短名撞多个文件)→ 全收
+        (宁多勿漏,blast 面本就该宽)。解析不到 → 原样喂下层(让它如实返空,而非假装命中)。
+        """
+        if not files:
+            return files
+        try:
+            stored = set(self._store.get_all_files())
+        except Exception:  # noqa: BLE001 —— 拿不到文件清单就退回原样,不挡查询
+            return files
+        resolved: list[str] = []
+        for f in files:
+            if f in stored:  # 精确命中(图就这个格式)
+                resolved.append(f)
+                continue
+            hits = [x for x in stored if x.endswith("/" + f)]  # 后缀兜底(剥 repo_root 前缀)
+            resolved.extend(hits if hits else [f])
+        # 去重保序
+        seen: set[str] = set()
+        return [x for x in resolved if not (x in seen or seen.add(x))]
 
     # ── P1.5 caller/callee 调用链(首次请进适配层,填 __init__.py 的「延后」)─────
 

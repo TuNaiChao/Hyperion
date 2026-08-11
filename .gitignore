@@ -20,6 +20,10 @@ data/
 # 本地独享不入库(含完整 wpa 源码树 + 嵌套 .git,110M);Mac 那台做 R2 时需手动拷贝。
 example/
 
+# 本地测试素材仓(code-test/:两个版本的 bluez 5.50/5.85 源码树,54M,跨版本/补丁分析实测用)。
+# 第三方系统软件源码不入库;各机器自行放置。ruff 默认 respect-gitignore → 也免扫它的 lint 噪声。
+code-test/
+
 # L2 导航 fixture 的 compile_commands.json(由 tests/fixtures/lsp_c/gen_compile_commands.sh 生成,
 # 绝对路径因机器而异,不提交)
 tests/fixtures/lsp_c/compile_commands.json
