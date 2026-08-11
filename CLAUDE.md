@@ -91,10 +91,12 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 **验证封顶(用户定,强化)**:apply(Tier 0,Hyperion 验)。**编译/测试/复现永不做 —— 全部用户(真机)自验**(系统软件环境重+信号歧义,不值)。`correctness` 基于 apply+读码推理,不报 tested/verified。
 
 **当前核心待做顺序**(用户 2026-08-07 拍板 + 2026-08-10 复核):
-1. **多库地基**(同时多仓刚需;code_index 多实例 + 工具加 codebase 参数 + 记忆全局带 codebase 标签;2a/2b 依赖故前移)
-2. feature 2a 调用链(`call_chain` 工具,CRG 多跳+PageRank)
-3. feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)
-4. 记忆自动 query(P1)
+1. ✅ **多库地基**(同时多仓刚需;code_index 多实例 + 工具加 codebase 参数 + 记忆全局带 codebase 标签;2a/2b 依赖故前移)—— `7127bb1`
+2. ✅ feature 2a 调用链(`call_chain` 工具,CRG 多跳+PageRank)—— `02037c0`,第 10 个 MCP 工具
+3. ✅ feature 2b 跨版本 diff(`cross_version_diff`,常用,依赖 2a)—— `8a2c821`,第 11 个 MCP 工具
+4. ✅ 记忆自动 query(P1)—— `21d792e`(定位后用 `problem_summary` 召回历史修法;A1 日志摘要被探针证伪转 B)
+>
+> **#1–#4 全落地(2026-08-11)**。下一优先见「低优 backlog」+「上游 commit 合入评估」。
 ~~原 #1 `filter_logs` 强制注入因果起点行~~ → **2026-08-10 复核撤销**:deer-flow/omp 双证专门日志切片工具没必要(opencode 的 read/grep/awk 等价且更灵活,踩坑#2);治踩坑#11 的领域知识(从更早切/用日志词汇/窗口可能漏根因/重心代码)转进 bug-rca SKILL/prompt,`filter_logs` MCP 工具 + `log_filter.py` 删除。详见踩坑#11。
 
-低优 backlog:stdio→http(待 opencode 解注册)/ P-A 遗留(1b deep+去重·patch_search CLI·Gerrit 凭据)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ backlog #1-44(~~#55 obsolete~~)。
+低优 backlog:**上游 commit 合入评估**(2026-08-11 新增需求:① `fetch_upstream_commit` 工具按 commit SHA 抓上游仓 diff —— 补 `fetch_patch`(PR)/GerritFetcher 外的来源;② patch-review skill 加「fork 侧对照」步骤 —— 该上游改动修的 bug 在当前 fork 已修/还在/不相关,用 `search_codebase`+`call_chain` 查;③ 决策三态:已修→不合 / 还在且相关→建议合 / 冲突大→人工。先做最小 ①+②)/ stdio→http(待 opencode 解注册,踩坑#10)/ P-A 遗留(1b deep+去重·Gerrit 凭据;~~patch_search CLI 已 2026-08-10 撤~~)/ 委托项(log_symbolizer·static_analysis 归 omp/opencode)/ 生产级补齐 backlog `.claude/memory/backlog-production-grade.md` #1–59(~~#55 obsolete~~;已完成:#22/#23/#54/#57/#58)。
