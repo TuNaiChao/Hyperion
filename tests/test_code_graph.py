@@ -173,3 +173,65 @@ def test_call_chain_bad_direction(tmp_path):
     cg = CodeGraph.build(tmp_path, "fixture_dir", base_dir=str(tmp_path))
     with pytest.raises(ValueError, match="direction"):
         cg.call_chain("alpha", direction="sideways")
+
+
+# ── cross_version_diff(模块级函数,feature 2b)──────────────────────────────
+
+
+def test_cross_version_diff_small_git_repo(tmp_path):
+    """cross_version_diff:同一 git 仓两 ref 间 —— base..head 提交 + concern diff(纯 git,不需 CRG);
+    有 CRG/图时再验 touched_functions 富化。git 不在 PATH 则 skip。
+
+    建 tmp git 仓:commit1 加 a.py(v1),commit2 改 a.py(v2)。cross_version_diff("HEAD~1","HEAD")。
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    env = {**os.environ,
+           "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+    def g(args):
+        subprocess.run(["git", *args], cwd=str(tmp_path), env=env, check=True,
+                       capture_output=True, text=True)
+
+    g(["init", "-q"])
+    (tmp_path / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "v1: add alpha"])
+    (tmp_path / "a.py").write_text("def alpha():\n    return 2\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "v2: change alpha"])
+
+    from hyperion.services.code_index.code_graph import cross_version_diff
+
+    # 纯 git 核(无图):refs / commits / concern_diff / patch_equivalence
+    res = cross_version_diff("HEAD~1", "HEAD", repo_path=str(tmp_path),
+                             concern_files=["a.py"])
+    assert res["refs"]["base_sha"] and res["refs"]["head_sha"]
+    assert res["refs"]["base_sha"] != res["refs"]["head_sha"]
+    assert len(res["commits"]) == 1, res["commits"]
+    assert "v2" in res["commits"][0]["subject"]
+    assert res["concern_diff"], "应有 a.py 的 diff"
+    assert "return 2" in res["concern_diff"]  # 改动行(+    return 2)
+    assert {"new_in_head", "equivalent_in_base"} <= set(res["patch_equivalence"])
+
+    # 没给 concern → 跳全量 diff(防回巨大 diff)+ note 提示
+    res_full = cross_version_diff("HEAD~1", "HEAD", repo_path=str(tmp_path))
+    assert res_full["concern_diff"] == ""
+    assert "跳过全量 diff" in res_full["note"]
+
+    # 有 CRG + 图:touched_functions 富化(alpha 在 a.py 且被 base..head diff 触及)
+    if not _crg_installed():
+        return  # 没装 CRG,git 核部分已验完,富化跳过(不 fail)
+    cg = CodeGraph.build(tmp_path, "fixture_cvd", base_dir=str(tmp_path))
+    res2 = cross_version_diff("HEAD~1", "HEAD", repo_path=str(tmp_path),
+                              concern_files=["a.py"], graph=cg)
+    assert isinstance(res2["touched_functions"], list)
+    # 路径格式/CRG 解析容错:非空才断言结构 + note 含映射说明
+    if res2["touched_functions"]:
+        assert "qualified_name" in res2["touched_functions"][0]
+        assert "touched_functions 映射" in res2["note"]

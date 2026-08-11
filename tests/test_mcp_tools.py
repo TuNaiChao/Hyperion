@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import subprocess
 
+import pytest
+
 from hyperion.tools.mcp_memory import build_server
 
 
@@ -255,3 +257,32 @@ def test_memory_memorize_per_call_codebase(monkeypatch):
     assert "codebase=nonexistent_xyz_cb_42" in out, out
     assert fake.memorize_scopes, "memorize 没被调"
     assert fake.memorize_scopes[-1].codebase == "nonexistent_xyz_cb_42"
+
+
+# ════════════════════════ cross_version_diff 工具 ═════════════════════════
+
+def test_cross_version_diff_bad_ref(tmp_path):
+    """非法 ref(含 ';' → 过不了 _SAFE_GIT_REF)→ ValueError → 工具转友好串,不抛 traceback。
+
+    不需 git:regex 校验在 rev-parse 之前;tmp_path 是合法目录即可(repo_path is_dir 检查过)。
+    """
+    mcp = build_server()
+    out = _call(mcp, "cross_version_diff",
+                {"base_ref": "a;b", "head_ref": "HEAD", "repo_path": str(tmp_path)})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out  # ValueError 被工具兜底成友好串
+
+
+def test_cross_version_diff_not_a_repo(tmp_path):
+    """repo_path 是合法目录但非 git 仓 → git rev-parse 失败 → ValueError → 友好串,不抛。
+
+    需 git(无 git skip):没装 git 时是另一条路径(OSError),语义不同,跳过保持断言精度。
+    """
+    import shutil
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    mcp = build_server()
+    out = _call(mcp, "cross_version_diff",
+                {"base_ref": "HEAD~1", "head_ref": "HEAD", "repo_path": str(tmp_path)})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out  # 非 git 仓 → rev-parse 失败 → ValueError → "没法算"

@@ -30,9 +30,16 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
+import re
+import subprocess
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9_.~^/@{}\-]+$")  # 防 git ref 注入(同 CRG changes.py)
+_GIT_TIMEOUT = int(os.environ.get("HYPERION_GIT_TIMEOUT", "30"))  # 跨版本 git 命令超时(秒)
 
 
 def _require_crg() -> None:
@@ -48,8 +55,10 @@ def _pagerank(graph) -> dict:
 
     分层降级取稳健(不强加 scipy 这种重依赖):
       1. 优先 ``nx.pagerank``(networkx 3.x 默认走 scipy 稀疏矩阵,大图快、省内存);
-      2. scipy 没装(本机常见)→ 降级 networkx 内置的 ``_pagerank_python``(纯 python 幂迭代,
+      2. scipy 没装(本机常见)→ 降级 ``_pagerank_python_pure``(自实现纯 python 幂迭代,
          直接吃邻接表、不建稠密矩阵,故**不 OOM**;大图慢但正确,小图瞬间)。
+         —— 不再 import networkx 私有的 ``_pagerank_python``(下划线私有 API,静态分析报
+         「未知导入符号」,且跨版本无保证),自实现等价算法,行为一致。
 
     两者都返 ``{node: score}``;无边(空图 / 种子孤立)→ ``{}``(调用方按 0.0 兜底)。
     """
@@ -60,9 +69,203 @@ def _pagerank(graph) -> dict:
     try:
         return nx.pagerank(graph)
     except ModuleNotFoundError:
-        # scipy 缺:networkx 的纯 python 版,不建稠密矩阵(大图不 OOM)。私有 API 但跨多版本稳定。
-        from networkx.algorithms.link_analysis.pagerank_alg import _pagerank_python
-        return _pagerank_python(graph)
+        return _pagerank_python_pure(graph)
+
+
+def _pagerank_python_pure(graph, *, alpha: float = 0.85, max_iter: int = 200,
+                          tol: float = 1.0e-6) -> dict:
+    """纯 python PageRank(幂迭代)—— scipy 缺时的降级实现,不建稀疏/稠密矩阵(大图不 OOM)。
+
+    标准 power iteration:dangling 节点(无出边的函数)的 rank 均匀回流给全网,保证
+    概率和恒为 1。与 networkx ``pagerank`` 同算法、同语义(返 ``{node: score}``,和为 1),
+    仅实现更朴素 —— 大图比 scipy 慢,但无重依赖、不 OOM,小图瞬间。
+
+    参数(都有库默认,通常不用传):
+      - ``alpha``:阻尼系数(默认 0.85,业界标准);
+      - ``max_iter``:最大迭代轮(默认 200,足够收敛);
+      - ``tol``:L1 收敛阈值(默认 1e-6)。
+    """
+    nodes = list(graph)
+    n = len(nodes)
+    if n == 0:
+        return {}
+    outdeg = {v: graph.out_degree(v) for v in nodes}  # 出度(dangling 节点 = 0)
+    rank = {v: 1.0 / n for v in nodes}
+    for _ in range(max_iter):
+        dangling = sum(rank[v] for v in nodes if outdeg[v] == 0)  # dangling 总分,均匀回流全网
+        new_rank = {}
+        base = (1.0 - alpha) / n + alpha * dangling / n  # 每个节点的基础分(随机跳转 + dangling 回流)
+        for v in nodes:
+            s = base
+            for u in graph.predecessors(v):  # u→v:u 把 rank/outdeg[u] 分给 v
+                s += alpha * rank[u] / outdeg[u]
+            new_rank[v] = s
+        # L1 收敛:总分差 < tol 就停(不跑满 max_iter)
+        if sum(abs(new_rank[v] - rank[v]) for v in nodes) < tol:
+            rank = new_rank
+            break
+        rank = new_rank
+    return rank
+
+
+def _resolve_concern_files(graph, symbols: list[str]) -> set[str]:
+    """把 concern 符号(bare 名或 qualified)解析成图里的文件路径集合。
+
+    复用 call_chain 同款解析:精确匹配 > bare 名(``qn.split('::')[-1] == sym``)。
+    解析不到的符号静默跳过(上层 note 汇总)。只调一次 ``_build_networkx_graph``,
+    多符号共用,省去反复建图。
+    """
+    nxg = graph._store._build_networkx_graph()
+    files: set[str] = set()
+    qns: set[str] = set()
+    for sym in symbols:
+        if sym in nxg:
+            qns.add(sym)
+        else:
+            hits = [n for n in nxg if str(n).split("::")[-1] == sym]
+            if hits:
+                qns.add(hits[0])  # 多个同名取首个(bare 名歧义上层 note 提示)
+    for nd in graph._store._batch_get_nodes(qns):
+        if nd.file_path:
+            files.add(nd.file_path)
+    return files
+
+
+def cross_version_diff(base_ref: str, head_ref: str, *, repo_path: str,
+                       concern_files: list[str] | None = None,
+                       concern_symbols: list[str] | None = None,
+                       graph: CodeGraph | None = None,
+                       top_commits: int = 30, max_diff_chars: int = 8000) -> dict:
+    """跨版本对比 —— 同一个代码仓的两个 git ref(tag/commit/branch)之间,回答
+    「旧版本(base)→ 新版本(head)之间,我关心的 concern 改了啥 / 修了没」。
+
+    给 agent 的**确定性事实**(零 LLM):「修没修 / 怎么移植」的判断由 agent 综合本工具产出 +
+    search_codebase + call_chain 做出 —— 本工具只管把 git 层的事实喂准。这是 harness 转向后的
+    分工:工具出事实,判断归 agent(对标 deer-flow「round1 确定性脚本、后续 LLM 解释」)。
+
+    干啥(面向小白)
+    ----------------
+    想象你修一个 5.50 版本的 bug,想知道 5.85 有没有已经修了、怎么修的。本工具干三件事:
+      1) 列出 base..head 之间的提交(尤其触及 concern 的)——「中间到底改了哪些 commit」
+         (对标 spec 的确定性门 ``git patch-id``/``git cherry``:MVP 用 git log);
+      2) 给 concern 涉及文件的 ``git diff`` 文本——「具体代码怎么变的」,供 agent 读修法;
+      3) (有结构图时)把 diff 映射到函数级——「哪些函数被触及了」。
+    再附一个 ``git cherry`` 摘要(head 相对 base 的净新补丁数)——「backport 等价」的快速信号。
+
+    为什么用 git 而不是结构 diff 工具(difftastic 之类)
+      - 跨版本对比的正主就是 ``git diff/log/cherry``:结构化、零依赖、确定性。
+      - difftastic/SemanticDiff 是「查看器」(产 AST 可视化),不做函数级分类、不打补丁,
+        对「给 agent 喂事实」不如 git 直接。结构图只做可选的函数级富化。
+
+    base_ref / head_ref:同一仓库的两个 git ref(如 ``"5.50"`` / ``"5.85"``,或 ``"HEAD~5"``/``"HEAD"``)。
+    repo_path:仓库工作树的**绝对路径**(跑 git 命令的 cwd)。
+    concern_files / concern_symbols:只关心这部分;symbols 会在图里解析成文件(需 ``graph``)。
+        都不给则不收窄(全量 commit 列表 + 跳过全量 diff,防回巨大 diff)。
+    graph:可选的 CodeGraph(有才做 concern_symbols 解析 + touched_functions 富化)。
+    top_commits:commit 列表上限(默认 30)。max_diff_chars:concern_diff 回显上限(默认 8000)。
+
+    返回 ``{refs, commits, commits_truncated, patch_equivalence, concern_diff, touched_functions, note}``。
+    失败(非 git 仓 / ref 不存在 / repo_path 无效)→ 抛 ``ValueError``,工具层转友好串。
+    """
+    repo = Path(repo_path).resolve()
+    if not repo.is_dir():
+        raise ValueError(f"repo_path 不是目录: {repo_path}")
+    for ref in (base_ref, head_ref):
+        if not _SAFE_GIT_REF.match(ref):
+            raise ValueError(f"非法 git ref(只允许字母数字 _ . / ~ ^ @ {{ }} -): {ref!r}")
+
+    def _git(args: list[str], *, timeout: int = _GIT_TIMEOUT) -> str:
+        # 跑一条 git 命令;非 0 退出 → 抛 ValueError(让工具层转友好串,绝不漏 traceback 给 agent)。
+        try:
+            r = subprocess.run(["git", *args], capture_output=True, stdin=subprocess.DEVNULL,
+                               text=True, encoding="utf-8", errors="replace",
+                               cwd=str(repo), timeout=timeout)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError(f"git 命令执行失败({' '.join(args[:2])}…): {exc}") from exc
+        if r.returncode != 0:
+            raise ValueError(f"git 失败(rc={r.returncode}): {r.stderr.strip()[:300]}")
+        return r.stdout
+
+    # 1) 解析两 ref → sha(顺带验存在;不存在 git 报错 → 上面的 _git 转 ValueError)
+    base_sha = _git(["rev-parse", "--verify", base_ref]).strip()
+    head_sha = _git(["rev-parse", "--verify", head_ref]).strip()
+
+    notes: list[str] = []
+
+    # 2) concern 文件清单:显式给的 + symbols 在图里解析出的
+    files: set[str] = set(concern_files or [])
+    if concern_symbols and graph is not None:
+        try:
+            files |= _resolve_concern_files(graph, concern_symbols)
+        except Exception as exc:  # noqa: BLE001 —— 图解析失败不致命,降级
+            notes.append(f"concern_symbols 解析失败,已忽略: {exc}")
+    elif concern_symbols and graph is None:
+        notes.append("传了 concern_symbols 但没给 graph,无法解析成文件(给 graph 或改传 concern_files)。")
+
+    pathspec = sorted(files) if files else None
+
+    # 3) base..head 的提交(concern 收窄);确定性门(MVP 用 git log,逐 commit patch-id 留迭代)
+    log_args = ["log", "--no-merges", "--format=%H%x1f%s", f"--max-count={top_commits}",
+                f"{base_ref}..{head_ref}"]
+    if pathspec:
+        log_args += ["--", *pathspec]
+    commits = []
+    for line in _git(log_args).splitlines():
+        if "\x1f" in line:
+            sha, subject = line.split("\x1f", 1)
+            commits.append({"sha": sha, "subject": subject})
+
+    # 4) git cherry 摘要:head 相对 base 的净新 / 等价补丁数(backport 等价信号)
+    new_in_head = equiv_in_base = 0
+    try:
+        for line in _git(["cherry", base_ref, head_ref]).splitlines():
+            if line.startswith("+"):
+                new_in_head += 1
+            elif line.startswith("-"):
+                equiv_in_base += 1
+    except ValueError as exc:
+        notes.append(f"git cherry 跳过: {exc}")
+    patch_equivalence = {"new_in_head": new_in_head, "equivalent_in_base": equiv_in_base}
+
+    # 5) concern 的 diff 文本(给 agent 读修法);没给 concern → 跳全量 diff(可能巨大)
+    if pathspec:
+        try:
+            concern_diff = _git(["diff", f"{base_ref}..{head_ref}", "--", *pathspec],
+                                timeout=max(_GIT_TIMEOUT, 60))[:max_diff_chars]
+            if not concern_diff.strip():
+                notes.append("concern 文件在 base..head 间无改动。")
+        except ValueError as exc:
+            concern_diff = ""
+            notes.append(f"concern_diff 取失败: {exc}")
+    else:
+        concern_diff = ""
+        notes.append("未给 concern,跳过全量 diff(要 diff 传 concern_files)。")
+
+    # 6) touched_functions(有图才给):把 base..head diff 映射到函数节点
+    touched = []
+    if graph is not None:
+        try:
+            from code_review_graph.changes import map_changes_to_nodes, parse_git_diff_ranges
+            ranges = parse_git_diff_ranges(str(repo), f"{base_ref}..{head_ref}")
+            if pathspec:  # 只关心 concern 文件
+                ranges = {f: rs for f, rs in ranges.items() if f in files}
+            nodes = map_changes_to_nodes(graph._store, ranges)
+            touched = [{"qualified_name": n.qualified_name, "file": n.file_path,
+                        "line": n.line_start, "kind": n.kind} for n in nodes]
+            notes.append("touched_functions 映射自 base..head diff 的 NEW(head)侧行号 —— "
+                         "图须对应 head_ref 才行号对齐。")
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"touched_functions 富化失败,已跳过: {exc}")
+
+    return {
+        "refs": {"base": base_ref, "head": head_ref, "base_sha": base_sha, "head_sha": head_sha},
+        "commits": commits,
+        "commits_truncated": len(commits) >= top_commits,
+        "patch_equivalence": patch_equivalence,
+        "concern_diff": concern_diff,
+        "touched_functions": touched,
+        "note": " | ".join(notes) if notes else "",
+    }
 
 
 class CodeGraph:

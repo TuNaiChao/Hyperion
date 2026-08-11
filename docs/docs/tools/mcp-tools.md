@@ -1,17 +1,17 @@
 # MCP 工具参考
 
-> `tools/mcp_memory.py` —— Hyperion 把差异化能力做成 **10 个 MCP 工具**,给 coding agent(opencode 主 / codex / claude code)调。
+> `tools/mcp_memory.py` —— Hyperion 把差异化能力做成 **11 个 MCP 工具**,给 coding agent(opencode 主 / codex / claude code)调。
 > 入口:`hyperion mcp serve [--codebase NAME]`(需 `uv sync --extra mcp`)。server 名 `hyperion`,opencode 按 `hyperion_<tool>` 给工具加前缀。
 
 ## 概览
 
 工具分两类:
 
-- **差异化核心**(coding agent 做不好 / 做不了的):`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` / `fetch_patch`
+- **差异化核心**(coding agent 做不好 / 做不了的):`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` / `cross_version_diff` / `fetch_patch`
 - **确定性硬门**(交付 / 验证,零 LLM):`validate_patch` / `export_patch` / `export_report` / `ensure_repo`
 
 > [!NOTE]
-> 下列工具**均已撤**(2026-08-10 工具审核):`filter_logs`(opencode 的 read/grep/awk 等价)、`build_check`(构建信号歧义 + opencode 能 make)、`patch_search`(被 `memory_recall(kind=...)` 吸收)、`code_nav` @tool 层(能力经这些 MCP 工具暴露)。本表只列现存 9 个。
+> 下列工具**均已撤**(2026-08-10 工具审核):`filter_logs`(opencode 的 read/grep/awk 等价)、`build_check`(构建信号歧义 + opencode 能 make)、`patch_search`(被 `memory_recall(kind=...)` 吸收)、`code_nav` @tool 层(能力经这些 MCP 工具暴露)。本表只列现存 11 个。
 
 ## 工具一览
 
@@ -22,6 +22,7 @@
 | [`search_codebase`](#search_codebase) | 核心 🔀 | 语义+符号检索,**只回索引里真实存在的符号**(防幻觉) |
 | [`blast_radius`](#blast_radius) | 核心 🔀 | 改动影响面(结构图 BFS) |
 | [`call_chain`](#call_chain) | 核心 🔀 | 符号的 N 跳调用链(CALLS 边)+ PageRank |
+| [`cross_version_diff`](#cross_version_diff) | 核心 🔀 | 同仓两 git ref 跨版本对比(提交门 + concern diff + 触及函数 + cherry 等价) |
 | [`fetch_patch`](#fetch_patch) | 核心 | GitHub PR URL → diff + meta |
 | [`validate_patch`](#validate_patch) | 硬门 | 补丁能否干净 apply(零 LLM) |
 | [`export_patch`](#export_patch) | 硬门 | 补丁落盘 `.patch`(空 diff 自检拒写) |
@@ -33,7 +34,7 @@
 所有工具查的代码库由 `_resolve_codebase` 定:**`--codebase` 参数 > `HYPERION_CODEBASE` 环境变量 > `config.code_index.repo` > 进程 cwd 目录名**。`HYPERION_CODEBASE` 由 delegate(opencode 父进程)注入、经进程 env 继承透传(local server 的 `environment` 字段不展开 `{env:}`)。
 
 > [!NOTE]
-> **多库:per-call codebase 覆盖。** 上面解析出的是 server 的**默认** codebase,烘焙进闭包。`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` 另接受可选 `codebase` 参数,**每次调用覆盖**默认值 —— 同一个 MCP server 进程(同一个 opencode 会话)里可切多个仓。数据层本就 table-per-repo(code_index)+ 按 `Scope` 隔离(记忆),per-call 只是解锁调用层。不传 `codebase` = 用 server 默认(旧行为,零破坏)。
+> **多库:per-call codebase 覆盖。** 上面解析出的是 server 的**默认** codebase,烘焙进闭包。`memory_recall` / `memory_memorize` / `search_codebase` / `blast_radius` / `call_chain` / `cross_version_diff` 另接受可选 `codebase` 参数,**每次调用覆盖**默认值 —— 同一个 MCP server 进程(同一个 opencode 会话)里可切多个仓。数据层本就 table-per-repo(code_index)+ 按 `Scope` 隔离(记忆),per-call 只是解锁调用层。不传 `codebase` = 用 server 默认(旧行为,零破坏)。
 
 [工具一览](#工具一览)表里标 🔀 的工具支持 per-call `codebase`;其余(validate / export / fetch / ensure)按绝对路径 / URL 操作,不需要它。
 
@@ -143,6 +144,36 @@ async def call_chain(symbol: str, direction: str = "both", depth: int = 2,
 **输出**:JSON,`{symbol, resolved, direction, depth, callers:[{qualified_name,file,line,kind,hop,pagerank}], callees:[...], truncated, note}`。每个节点带 PageRank 分(被越多重要函数调用 → 分越高)。符号找不到 / direction 非法 → 友好提示串(不抛)。
 
 **前置**:同 `blast_radius` —— 需 `uv sync --extra code-review-graph` + 已建结构图;否则返回可操作提示。
+
+## cross_version_diff
+
+同仓两 git ref(base..head)跨版本对比:回答「我关心的 concern 在旧版本(base)存在、新版本(head)
+修了没?修法是?」—— bug-RCA / 调研里「向上游找已知修法」的高价值场景(feature 2b,对标 PatchSeeker/PortGPT)。
+**确定性事实,零 LLM**(「修没修 / 怎么移植」的判断归 agent,用本工具产出 + search_codebase + call_chain 综合)。
+
+```python
+async def cross_version_diff(base_ref: str, head_ref: str, repo_path: str,
+                             concern_files: list[str] | None = None,
+                             concern_symbols: list[str] | None = None,
+                             top_commits: int = 30, codebase: str | None = None) -> str
+```
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `base_ref` / `head_ref` | `str` | 同一仓库的两个 git ref(tag/commit/branch,如 `5.50`/`5.85` 或 `HEAD~5`/`HEAD`) |
+| `repo_path` | `str` | 仓库工作树**绝对路径**(跑 git 的 cwd;同 `validate_patch`) |
+| `concern_files` | `list[str]?` | 只关心这些文件;给了才回 concern diff(不给则跳全量 diff 防回巨大) |
+| `concern_symbols` | `list[str]?` | 只关心这些符号;在图里解析成文件(需图;没图改传 `concern_files`) |
+| `top_commits` | `int` | commit 列表上限(默认 30) |
+| `codebase` | `str?` | 🔀 覆盖用哪个库的图做富化(默认 = server codebase) |
+
+**产出**(JSON):`refs`(base/head + 解析出的 sha)/ `commits`(base..head 提交,concern 收窄;**确定性门**,对标 spec 的 `git patch-id`/`cherry`)/ `commits_truncated` / `patch_equivalence`(`git cherry` 净新/等价补丁数)/ `concern_diff`(concern 的 `git diff` 文本,给 agent 读修法)/ `touched_functions`(图在才给;base..head diff 映射的触及函数)/ `note`(降级告警)。
+
+**git 为核,图可选**:核心产出(commit 门 + concern diff)纯 git,**不需 CRG/图也能跑** —— 比 blast_radius/call_chain 降级更强(没图也有用)。图只做两件富化:① `concern_symbols`→文件解析(复用 call_chain 的符号解析);② `touched_functions`(图须对应 `head_ref` 才行号对齐)。
+
+**与 blast_radius / call_chain 的分工**:blast_radius = 文件种子·全边·「改这些波及谁」(空间);call_chain = 符号种子·CALLS·「这个函数的调用上下文」(调用链);cross_version_diff = **版本时间轴**·「两个版本之间,我关心的改了啥 / 修了没」(时间)。三者按维度互补。
+
+**降级**:非 git 仓 / ref 不存在 / `repo_path` 无效 → 友好串(不抛 traceback);CRG/图未装 → 跑 git 核,跳 `touched_functions` + `concern_symbols` 解析。
 
 ## fetch_patch
 
