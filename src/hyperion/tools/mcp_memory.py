@@ -8,6 +8,7 @@
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
   - call_chain        符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(谁调它/它调谁;P1.5 caller/callee 进适配层)。
+  - repo_map          全仓 PageRank 排名符号地图(Aider repomap 式,塞进 token 预算;俯瞰「哪些函数结构上最核心」;#38)。
   - cross_version_diff 同仓两 git ref 跨版本对比(base..head 提交门 + concern diff + 触及函数 + cherry 等价;feature 2b;git 为核图可选)。
   - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
   - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
@@ -73,10 +74,10 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露十一个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十二个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
-    search_codebase / blast_radius / call_chain / cross_version_diff 另接受 per-call `codebase` 参数覆盖此默认(多库:
+    search_codebase / blast_radius / call_chain / repo_map / cross_version_diff 另接受 per-call `codebase` 参数覆盖此默认(多库:
     同一 server 进程可切多个仓),不传则用这里的默认 repo。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
@@ -335,6 +336,45 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         body = json.dumps(result, ensure_ascii=False, default=str)
         return (f"cross-version-diff(repo={repo_path}, codebase={target}, "
                 f"{base_ref}..{head_ref}):\n{body[:8000]}")
+
+    # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
+    # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);
+    # repo_map = 全仓最重要符号俯瞰图(卫星图),委托前给 agent 全局视角 / 调研「关键模块」骨架。
+    @mcp.tool()
+    async def repo_map(map_tokens: int = 2048, codebase: str | None = None) -> str:
+        """Whole-repo symbol map ranked by PageRank importance (Aider-style repo map), packed into a token budget.
+
+        Returns a bird's-eye view of which functions are structurally most central across the WHOLE repo
+        (not one symbol's neighborhood — that's call_chain). Runs PageRank over the full call graph: a
+        function called by many important functions ranks higher (= a core hub). Top symbols are greedily
+        packed into ``map_tokens`` (default 2048), grouped by file into a tree. Use it to give yourself a
+        global view before localizing a root cause, or as the 'key modules' skeleton for a research report.
+
+        Complement to call_chain: call_chain is one symbol's call context (flashlight down one path);
+        repo_map is the whole-repo importance overview (satellite map). Also distinct from hub_nodes
+        (degree-based top-15 flat list) — repo_map is PageRank (centrality) based, larger, and tree-grouped.
+        map_tokens: token budget for the map (default 2048).
+        codebase:   override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a 'not built' hint otherwise.
+        """
+        try:
+            from hyperion.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"repo_map 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.repo_map(map_tokens=map_tokens)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run hyperion index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算仓库地图失败({target}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"repo-map(codebase={target}, map_tokens={map_tokens}):"
+                f" {result.get('n_symbols', 0)} symbols / {result.get('n_files', 0)} files"
+                f"{' (truncated by budget)' if result.get('truncated') else ''}\n{body[:8000]}")
 
     # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
     # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。

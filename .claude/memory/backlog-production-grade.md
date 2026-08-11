@@ -212,10 +212,12 @@ metadata:
 
 > 来源:2026-07-28 产品重规划(编排 + 记忆 + 委托),高星参考项目调研。**阶段标注从 P→R**(R0 规划→R1 记忆→R2 bug-RCA MVP→R3 深度调研→R4 团队/PR→R5 生产化);上列 #1–#37 的技术债仍有效,只是阶段标签按新路线对齐(原 P2≈现 R2,原 P3≈现 R1 记忆,原 P5≈现 R3)。详见 [[agent-project-overview]] + [architecture.md §10](../../docs/设计/architecture.md)。
 
-38. **Aider repo-map(P1 调研最高杠杆单点借鉴)** — 新增 `src/hyperion/services/code_index/repomap.py`。
+38. **Aider repo-map(P1 调研最高杠杆单点借鉴)** — ✅**已成(2026-08-11)**,第 12 个 MCP 工具 `repo_map`。
     - 对齐:[Aider-AI/aider](https://github.com/Aider-AI/aider) `aider/repomap.py` + `queries/<lang>/tags.scm`(~48k,Apache-2.0)。tree-sitter `tags.scm` 抽 defs+refs → networkx 建符号引用图 → **PageRank** → 按 token 预算(`map_tokens`)裁剪成"全仓最重要符号"地图。
-    - 落地:**叠在已有 `parser.py` 上**(复用其符号抽取 + 加 references 边 + PageRank);抄各语言 `tags.scm`,**补 `c.tags.scm`** 供 bluez/wpa。产出服务调研报告"系统架构/关键模块"骨架 + bug-RCA 委托前给 delegate 的全局视角。
-    - 目标阶段:**R3**(代码仓深度调研;v0.1 标"延后",v2 因 P1 调研支柱提前)。
+    - **实际落地(偏离原文,B 路线)**:**不新建 `repomap.py`、不抄 `tags.scm`** —— 精读发现 CRG 已对 C/Python 抽好 CALLS 边、Hyperion 已有 `_pagerank`(route2)。改 `CodeGraph.repo_map()`(code_graph.py):整图 CALLS 子图 → `_pagerank`(全局,非种子邻域)→ 降序贪心填 token 预算 → 按文件分组树。零新依赖、零 tags.scm 维护、和 blast_radius/call_chain 一致(都吃 CRG 图)。理由:重抄 tags.scm = 重复造边抽取,撞踩坑#2「别重造」。
+    - **探针实证(wpa 真图)**:149 符号 / 69 文件 塞进 2048 token预算;top = wpa_cli_cmd/wpa_ctrl_command/send_and_recv_msgs(结构核心,合理)。修了两个真 bug:① CRG 存绝对路径 → 渲染剥公共前缀 + 符号行去路径前缀(否则全图被 abs path 淹没);② token 估算须用「显示名」非全长 qn(否则虚高 2.5x 早停,67→149 符号)。
+    - **backlog**:函数签名富化(parse_repo 拿 signature 渲 `def foo(args)` 骨架,要解 CRG `::` ↔ parser `.` 格式匹配)/ CLI 子命令(对齐 call_chain 纯 MCP)/ Aider 式「每符号标谁引用它」。
+    - 目标阶段:**R3**(代码仓深度调研;v0.1 标"延后",v2 因 P1 调研支柱提前)。详见 [[route5-repomap-handoff]]。
 
 39. **Agentless 分层定位漏斗(bug-RCA 委托前的确定性预筛)** — `src/hyperion/workflows/bug_rca/` localize 步。
     - 对齐:[openautocoder/agentless](https://github.com/openautocoder/agentless)(~2.1k,MIT)——无 agent 循环的 localize→repair→validate,~$0.34/issue。localize 是**分层**:file→class→function→line,每级 embedding 相似 + LLM rerank。

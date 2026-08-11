@@ -34,6 +34,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,63 @@ def cross_version_diff(base_ref: str, head_ref: str, *, repo_path: str,
     }
 
 
+def _render_repomap_tree(files: dict, meta: dict, scores: dict) -> str:
+    """把选中的符号按文件分组,渲染成 Aider 式的「仓库地图」树。
+
+    面向小白:想象给一栋大楼画「重要房间分布图」—— 每个文件是一层楼,楼里最重要的房间
+    (PageRank 高的函数)排前面。树形缩进让人(和 LLM)一眼看清「哪些函数在哪、谁重要」。
+
+    - ``files``: ``{文件路径: [符号 qualified_name 列表]}``(由 repo_map 按 PageRank 降序填好)。
+    - ``meta`` / ``scores``: 给每个符号补 kind / 行号 / 分数(来自 CRG 节点 + PageRank)。
+    - CRG 的 file_path / qualified_name 存的是**绝对路径**(如 ``/home/.../wpa/wpa_cli.c::wpa_cli_cmd``),
+      直接显示会让全图被重复的绝对路径前缀淹没(费 token、没法读)。故这里做两件压缩:
+      ① 文件头剥「全仓公共路径前缀」显示相对路径;② 符号行去掉开头的路径前缀,只留 ``Class::symbol``。
+    - 文件按「楼里最高分符号」降序排(核心模块的文件在前);楼内符号再按分降序排。
+    - 返回多行文本,用 ├──/└── 树连接符,文件之间空行分隔。
+    """
+    import os
+
+    paths = list(files.keys())
+    if not paths:  # 没符号塞进预算 → 空地图(repo_map 在 scores 空或预算太小一个都装不下时会传空)
+        return ""
+    # 全仓公共路径前缀:多文件取 commonpath,单文件取其所在目录;算不出(跨盘等)→ 空 → 退化 basename
+    try:
+        prefix = os.path.commonpath(paths) if len(paths) > 1 else os.path.dirname(paths[0])
+    except ValueError:
+        prefix = ""
+
+    def _rel(p: str) -> str:
+        """绝对路径 → 剥公共前缀的相对路径;剥不干净(前缀非真祖先)→ basename 兜底。"""
+        if prefix:
+            r = os.path.relpath(p, prefix)
+            if r and not r.startswith(".."):
+                return r
+        return os.path.basename(p)
+
+    def _sym(qn: str, path: str) -> str:
+        """qn 形如 ``<path>::<Class>::<symbol>``;剥掉开头的 ``<path>::`` 留 ``Class::symbol`` 这段可读名。"""
+        tag = path + "::"
+        return qn[len(tag):] if qn.startswith(tag) else qn.split("::")[-1]
+
+    # 文件排序键 = 该文件里最高分符号的 PageRank(核心文件排前);并列时按路径稳定排
+    def _file_top_score(path: str) -> float:
+        syms = files.get(path) or []
+        return max((scores.get(s, 0.0) for s in syms), default=0.0)
+
+    out_lines: list[str] = []
+    for path in sorted(files, key=lambda p: (-_file_top_score(p), p)):
+        syms = sorted(files[path], key=lambda s: -scores.get(s, 0.0))
+        out_lines.append(_rel(path))
+        for i, qn in enumerate(syms):
+            nd = meta.get(qn)
+            kind = getattr(nd, "kind", "?") if nd else "?"
+            lineno = getattr(nd, "line_start", "?") if nd else "?"
+            branch = "└──" if i == len(syms) - 1 else "├──"
+            out_lines.append(f"{branch} {_sym(qn, path)} ({kind}) L{lineno} pr={scores.get(qn, 0.0):.3f}")
+        out_lines.append("")  # 文件之间空行分隔,增强可读性
+    return "\n".join(out_lines).rstrip()
+
+
 class CodeGraph:
     """一个代码仓的结构图句柄(建一次,查多次)。
 
@@ -483,6 +541,84 @@ class CodeGraph:
         callees, trunc_x = _build(callees_raw)
         return {"symbol": symbol, "resolved": seed, "direction": direction, "depth": depth,
                 "callers": callers, "callees": callees, "truncated": trunc_c or trunc_x, "note": note}
+
+    # ── #38 repo-map:PageRank 排名的全仓符号地图(Aider repomap 式)──────────────
+    def repo_map(self, *, map_tokens: int = 2048) -> dict:
+        """全仓 PageRank 排名的符号地图(Aider repomap 式),塞进 token 预算。
+
+        给 agent 一张「**这个仓里结构上最重要的函数是哪些**」的全局地图 —— 不聚焦某个符号
+        (那是 call_chain 的活),而是俯瞰全仓:整张调用图上跑一次 PageRank,被越多重要函数
+        调用的函数分越高(= 核心枢纽),按分降序贪心填进 token 预算,按文件分组渲染成树。
+
+        面向小白:call_chain 是「顺着这个函数的调用关系往上下游走 N 跳」(手电筒照一条路);
+        repo_map 是「站高处俯瞰整座城,标出最重要的地标」(卫星图)。bug-RCA 委托前给 delegate
+        这张图当全局视角,或深度调研时当「关键模块」骨架。
+
+        算法(对标 Aider repomap,但**复用 CRG 已抽好的 CALLS 边 + Hyperion 已有的 _pagerank**,
+        不另抄 tags.scm):
+          1) ``_build_networkx_graph()`` 拿整图(缓存,同 call_chain)→ 只留 CALLS 边的子图;
+          2) 整图 ``_pagerank``(同 call_chain 用的那个,分层降级)→ 每个符号一个 centrality 分;
+          3) 按分降序排全部符号 → 逐个估算占多少 token(len//4)→ 贪心填到 ``map_tokens`` 截止;
+          4) 选中符号按文件分组 → ``_render_repomap_tree`` 渲染成树。
+
+        ``map_tokens``:地图 token 预算(默认 2048;Aider 默认 1k,这里给大点更适合当 delegate 上下文)。
+        返回 ``{repo, map_text, n_symbols, n_files, map_tokens_budget, map_tokens_used, truncated,
+        top_symbols, note}``。``top_symbols`` 是结构化 top-10(带 file + pagerank 分,给程序化消费);
+        ``map_text`` 是给人/LLM 读的树。无 CALLS 边(空图 / 全孤立)→ 空地图 + note,不抛。
+        """
+        import networkx as nx
+
+        nxg = self._store._build_networkx_graph()  # 缓存整图(同 call_chain:403)
+        # CALLS-only 子图:同 call_chain:427-430 的构造,一字不改(call 边是高信号子集)
+        calls = nx.DiGraph()
+        calls.add_edges_from((u, v) for u, v, d in nxg.edges(data=True) if d.get("kind") == "CALLS")
+        scores: dict[str, float] = _pagerank(calls)  # 现成,分层降级(同 call_chain:439)
+        if not scores:  # 无 CALLS 边 / 空图 → 算不出排名,返空地图(不抛,工具层正常展示)
+            return {"repo": self.repo_name, "map_text": "", "n_symbols": 0, "n_files": 0,
+                    "map_tokens_budget": map_tokens, "map_tokens_used": 0, "truncated": False,
+                    "top_symbols": [], "note": "调用图无 CALLS 边(空仓 / 全孤立符号),算不出排名。"}
+
+        ranked = sorted(scores, key=lambda n: -scores[n])  # PageRank 降序
+        # 批量富化 file/line/kind(_batch_get_nodes 自带 SQLite 变量数分批,大图安全)
+        meta = {nd.qualified_name: nd for nd in self._store._batch_get_nodes(set(ranked))}
+
+        chosen: list[tuple[str, Any, float]] = []  # (qualified_name, node, score)
+        tokens = 0
+        files: dict[str, list[str]] = {}
+        rankable = 0  # 有元数据、能进地图的符号总数(truncated 判定用)
+        for qn in ranked:
+            nd = meta.get(qn)
+            if nd is None or not getattr(nd, "file_path", None):
+                continue
+            rankable += 1
+            fpath = nd.file_path
+            # 显示名 = 剥路径前缀后的可读名(同渲染器 _sym 的剥法);token 估算用它才贴近实际渲染,
+            # 不会因 CRG 的绝对路径前缀把估算撑爆 → 早停少装(踩坑:估算用全长 qn 会虚高 ~2.5x)。
+            disp = qn[len(fpath) + 2:] if qn.startswith(fpath + "::") else qn.split("::")[-1]
+            kind = getattr(nd, "kind", "?")
+            lineno = getattr(nd, "line_start", "?")
+            est = len(f"{disp} ({kind}) L{lineno} pr={scores[qn]:.3f}") // 4 + 1
+            if fpath not in files:  # 新文件首次出现:再加「文件头行 + 空行分隔」的 token 成本
+                est += len(os.path.basename(fpath)) // 4 + 2
+            if tokens + est > map_tokens:
+                break  # 超预算停(贪心:PageRank 高的先进,故截掉的都是相对不重要的)
+            chosen.append((qn, nd, scores[qn]))
+            tokens += est
+            files.setdefault(fpath, []).append(qn)
+
+        map_text = _render_repomap_tree(files, meta, scores)
+        return {
+            "repo": self.repo_name,
+            "map_text": map_text,
+            "n_symbols": len(chosen),
+            "n_files": len(files),
+            "map_tokens_budget": map_tokens,
+            "map_tokens_used": tokens,
+            "truncated": len(chosen) < rankable,  # 有能排的符号但被预算截了
+            "top_symbols": [{"qualified_name": qn, "file": nd.file_path,
+                             "pagerank": round(sc, 6)} for qn, nd, sc in chosen[:10]],
+            "note": "",
+        }
 
     # ── P-A 1b 批量聚合用的改动分析(扩 wrap CRG changes.py,R4.1.2)──────────────
 

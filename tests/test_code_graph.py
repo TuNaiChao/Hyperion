@@ -175,6 +175,113 @@ def test_call_chain_bad_direction(tmp_path):
         cg.call_chain("alpha", direction="sideways")
 
 
+# ── repo_map(PageRank 排名全仓符号地图,#38)────────────────────────────────
+
+
+def test_render_repomap_tree_format():
+    """_render_repomap_tree:纯函数,按文件分组 + PageRank 降序 + 树连接符(不需 CRG,快,恒跑)。
+
+    造两个文件各俩符号 + 假分:验「文件按楼内最高分降序」「楼内按分降序」「树连接符 + pr= 分数格式」。
+    """
+    from types import SimpleNamespace
+
+    from hyperion.services.code_index.code_graph import _render_repomap_tree
+
+    meta = {
+        "a.py::alpha": SimpleNamespace(kind="function", line_start=1),
+        "a.py::alpha2": SimpleNamespace(kind="function", line_start=10),
+        "b.py::beta": SimpleNamespace(kind="function", line_start=5),
+        "b.py::beta2": SimpleNamespace(kind="method", line_start=20),
+    }
+    # b.py 的 beta(0.3)是全仓最高 → b.py 段应排在 a.py 前
+    scores = {"a.py::alpha": 0.10, "a.py::alpha2": 0.05, "b.py::beta": 0.30, "b.py::beta2": 0.20}
+    files = {"a.py": ["a.py::alpha", "a.py::alpha2"], "b.py": ["b.py::beta", "b.py::beta2"]}
+    out = _render_repomap_tree(files, meta, scores)
+    lines = out.splitlines()
+
+    def _idx_containing(sub: str) -> int:
+        # 符号行带 ├── 前缀 + kind/L/pr 后缀,不是裸名 → 用包含匹配找行号
+        for i, ln in enumerate(lines):
+            if sub in ln:
+                return i
+        raise AssertionError(f"{sub!r} 不在输出: {lines}")
+
+    # 文件段顺序:文件头是裸路径精确行;最高分符号所在的文件在前(b.py 0.30 > a.py 0.10)
+    assert lines.index("b.py") < lines.index("a.py")
+    # 路径前缀已剥:符号行只留 Class::symbol(beta/beta2),不再带 "b.py::"
+    assert "b.py::" not in out and "a.py::" not in out
+    # 楼内符号按分降序:beta(0.30) 在 beta2(0.20) 前(尾随空格防 beta 命中 beta2)
+    assert _idx_containing("beta (") < _idx_containing("beta2 (")
+    # 末符号 └──、其余 ├──;分数格式 pr=0.300 / pr=0.200
+    assert "├── beta (function) L5 pr=0.300" in out
+    assert "└── beta2 (method) L20 pr=0.200" in out
+
+
+@needs_crg
+def test_repo_map_small_repo(tmp_path):
+    """repo_map:小仓整图 PageRank → 按文件分组树 + token 预算贪心裁剪(#38)。
+
+    同 call_chain 测的小仓(alpha→beta/gamma,gamma→delta,Foo.method→alpha,b.caller→alpha/beta)。
+    验结构齐全 + token 预算生效(小预算装的符号 ≤ 大预算)+ PageRank 分是 float。CALLS 边提取
+    视 CRG 解析器而定,可能为空(空则覆盖「无 CALLS 边」分支,合法),故按 n_symbols 分支断言。
+    """
+    (tmp_path / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n"
+        "def beta():\n    return 1\n"
+        "def gamma():\n    return delta()\n"
+        "def delta():\n    return 0\n"
+        "class Foo:\n    def method(self):\n        return alpha()\n"
+    )
+    (tmp_path / "b.py").write_text(
+        "from a import alpha, beta\n"
+        "def caller():\n    return alpha() + beta()\n"
+    )
+    cg = CodeGraph.build(tmp_path, "fixture_rm", base_dir=str(tmp_path))
+
+    big = cg.repo_map(map_tokens=2048)
+    # 顶层结构齐全
+    assert big["repo"] == "fixture_rm"
+    for k in ("map_text", "n_symbols", "n_files", "map_tokens_budget",
+              "map_tokens_used", "truncated", "top_symbols", "note"):
+        assert k in big, f"缺键 {k}"
+    assert big["map_tokens_budget"] == 2048
+    assert isinstance(big["truncated"], bool)
+
+    if big["n_symbols"] > 0:  # 有 CALLS 边 → 验排名输出
+        assert big["map_text"], "有符号就应有地图文本"
+        assert big["n_files"] >= 1
+        assert "pr=" in big["map_text"]  # 渲染了分数
+        assert big["map_tokens_used"] <= big["map_tokens_budget"]  # 贪心不超预算
+        assert len(big["top_symbols"]) <= 10
+        for s in big["top_symbols"]:
+            assert all(k in s for k in ("qualified_name", "file", "pagerank"))
+            assert isinstance(s["pagerank"], float)
+        # 小预算装的符号不多于大预算(预算生效);装不下全部 → truncated=True
+        small = cg.repo_map(map_tokens=15)
+        assert small["n_symbols"] <= big["n_symbols"]
+        if small["n_symbols"] < big["n_symbols"]:
+            assert small["truncated"] is True
+    else:  # 无 CALLS 边(空地图分支)
+        assert big["map_text"] == ""
+        assert "CALLS" in big["note"]
+
+
+@needs_crg
+def test_repo_map_no_calls_empty(tmp_path):
+    """无调用边的仓(单函数返常量)→ 期 CALLS 子图空 → 空地图 + note;不抛是硬要求。
+
+    单函数 lonely 无调用 → CALLS 子图无边 → PageRank 返空 → 走空地图分支。若 CRG 意外造了边
+    (n_symbols≠0),也接受 —— 只验「不抛 + 结构齐全」契约,不强绑死空分支。
+    """
+    (tmp_path / "solo.py").write_text("def lonely():\n    return 42\n")
+    cg = CodeGraph.build(tmp_path, "fixture_empty", base_dir=str(tmp_path))
+    res = cg.repo_map()  # 不抛即硬通过
+    assert isinstance(res, dict) and "map_text" in res
+    if res["n_symbols"] == 0:  # 走了空地图分支才验其契约
+        assert res["map_text"] == ""
+        assert "CALLS" in res["note"]
+
+
 # ── cross_version_diff(模块级函数,feature 2b)──────────────────────────────
 
 

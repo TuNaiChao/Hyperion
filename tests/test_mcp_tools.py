@@ -118,6 +118,43 @@ def test_call_chain_bad_direction(monkeypatch):
     assert "没法算" in out, out  # ValueError 被工具兜底成友好串
 
 
+# ════════════════════════ repo_map 工具(#38)════════════════════════
+
+def test_repo_map_not_built():
+    """图未建(或 CRG 后端未装)→ 优雅返回提示串,绝不漏 traceback(策略同 call_chain)。"""
+    mcp = build_server()
+    out = _call(mcp, "repo_map", {"codebase": "nonexistent_xyz_repo_42"})
+    assert "Traceback" not in out, out
+    assert any(k in out for k in ("未建", "不可用", "失败")), out
+
+
+def test_repo_map_success_via_fake_graph(monkeypatch):
+    """happy path:假图 repo_map 返固定 dict → 工具格式化「N symbols / M files」+ body;map_tokens 透传。
+
+    monkeypatch CodeGraph.open 返假图(不靠真图,hermetic):直测工具壳的格式化 + map_tokens/per-call codebase 透传。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    seen: dict = {}
+
+    class _FakeGraph:
+        def repo_map(self, *, map_tokens: int = 2048):  # noqa: ANN002
+            seen["map_tokens"] = map_tokens
+            return {"repo": "fake", "map_text": "f.c\n└── main (function) L1 pr=0.500",
+                    "n_symbols": 1, "n_files": 1, "map_tokens_budget": map_tokens,
+                    "map_tokens_used": 8, "truncated": False,
+                    "top_symbols": [{"qualified_name": "f.c::main", "file": "f.c", "pagerank": 0.5}],
+                    "note": ""}
+
+    monkeypatch.setattr(cg_mod.CodeGraph, "open", lambda target: _FakeGraph())
+    mcp = build_server()
+    out = _call(mcp, "repo_map", {"map_tokens": 512, "codebase": "fake_cb"})
+    assert "Traceback" not in out, out
+    assert "1 symbols / 1 files" in out, out
+    assert "f.c::main" in out  # body(json)含 top_symbols
+    assert seen["map_tokens"] == 512  # map_tokens 透传到 repo_map
+
+
 # ════════════════════════ export_patch 工具 ════════════════════════
 
 def test_export_patch_not_a_dir():
