@@ -21,6 +21,7 @@ class BugRcaState(TypedDict, total=False):
     workspace: str  # workspace 目录路径(node_ingest 建;delegate 在 workspace/code 改码)
     recalled_lessons_ctx: str  # 1.5 recall_lessons 产:历史同类教训渲染段(预进 localize prompt;②[b])
     recalled_lessons: list  # 1.5 recall_lessons 产:RecallHit 列表(observability;空则不预注入)
+    recalled_repair_lessons_ctx: str  # 2.5 recall_for_repair 产:用 problem_summary 召回的历史修法段(预进 repair prompt;P1/B)
     prompt: str  # 3.assemble_repair 产:修复委托提示词
     output_schema: dict  # 3.assemble_repair 产:委托产出契约
     patch: str  # git diff 观察出的补丁(node_delegate_repair_loop 选定后写,非 delegate 吐)

@@ -5,6 +5,7 @@
 recall_lessons —— 但它只翻记忆预注入先验、不定位,和被砍的旧 recall 本质不同,不算重造漏斗):
   ingest → recall_lessons  (1.5 确定性预注入:翻记忆 top-K 同类 bug 教训 → 预进 localize prompt,②[b])
         → delegate_localize_loop  (阶段① 定位:opencode 自定位 + 调 hyperion_* 工具,verify-refine 循环,max K1 轮,同会话)
+        → recall_for_repair  (2.5 确定性预注入 P1/B:用 problem_summary 翻记忆 → 预进 repair prompt;定位后第二刀)
         → assemble_repair
         → delegate_repair_loop    (阶段② 修复:verify-refine 循环,max K2 轮,同会话 + git diff 观察 + validate_patch 门控)
         → report_memorize
@@ -119,6 +120,40 @@ async def node_recall_lessons(state: BugRcaState) -> dict:
     # 各 hit 自带 file:line 溯源 + 置信度 + 日期(render() 已就绪),消费方判新鲜度、偏好最新。
     ctx = "\n".join(h.render() for h in hits)
     return {"recalled_lessons_ctx": ctx, "recalled_lessons": hits}
+
+
+async def node_recall_for_repair(state: BugRcaState) -> dict:
+    """2.5 阶段① 之后的确定性 recall:用 delegate 定位出的 problem_summary 当 query,翻历史同类
+    bug 教训,预进**修复** prompt(P1/B)。
+
+    面向小白:阶段① 外勤读完了日志、搞清了"出啥错"(problem_summary),Hyperion 这时再翻一遍历史案卷
+    —— 但这次拿的是外勤**理解后的一句话**(比最初的 trigger / 原始日志准得多),把更贴的历史修法塞进
+    阶段② 的修复任务单开头。对标 OM-RAG「query = bug 描述本身」(arXiv 2607.21911v1:有检索诊断准确率
+    0.931 vs 无检索 0.238,**检索是必需**)。补 P0 recall_lessons(定位前、用 trigger)之后的第二刀:
+    定位后用 problem_summary 召回、喂修复 —— 关闭「存储用 symptom/root_cause、检索只用 trigger」的
+    不对称(存储侧比检索侧富,这里把检索侧也补富)。
+
+    query 取值优先级:problem_summary(现象一句话)→ root_cause(为什么)→ trigger(原始线索);
+    都没有 / scope 缺 → 返空(绝不阻断;delegate 还能调 hyperion_recall MCP 工具按需深挖)。
+
+    为什么不在定位前用日志做自动 query(P1 原 A1 方案):探针证伪 —— 真实 journalctl 里无关服务的
+    error 行(wpa 日志里混进的 X11 BadWindow 报错)会淹没真信号,纯关键词切片会把检索带偏(踩坑 #11、
+    同 filter_logs 撤销逻辑,2026-08-10)。用 delegate 已理解的 problem_summary 才是高质量 query。
+    """
+    scope = state.get("scope")
+    loc = state.get("localization_json") or {}
+    # problem_summary(现象)最贴近历史 symptom;退到 root_cause(为什么);再退 trigger(原始线索)
+    query = (loc.get("problem_summary") or loc.get("root_cause") or state.get("trigger") or "").strip()
+    if scope is None or not query:  # 没 scope 或实在无线索 → 跳过(不塞垃圾先验)
+        return {"recalled_repair_lessons_ctx": ""}
+    try:
+        svc = get_memory_service()
+        hits = await svc.search(query, scope, top_k=_PREINJECT_TOP_K)
+    except Exception:  # noqa: BLE001 —— recall 失败绝不阻断 bug-RCA 主流程
+        return {"recalled_repair_lessons_ctx": ""}
+    if not hits:
+        return {"recalled_repair_lessons_ctx": ""}
+    return {"recalled_repair_lessons_ctx": "\n".join(h.render() for h in hits)}
 
 
 def _code_dir(state: BugRcaState) -> str:
@@ -267,13 +302,24 @@ def _render_evidence_snippets(localization_json, repo_root: str) -> str:
 
 
 def node_assemble_repair(state: BugRcaState) -> dict:
-    """3. 阶段② 组装修复 prompt:阶段①根因(锁死)+ evidence 代码片段 + 修复 schema(含自审 verdict)。"""
+    """3. 阶段② 组装修复 prompt:阶段①根因(锁死)+ evidence 代码片段 + 历史修法先验 + 修复 schema(含自审 verdict)。"""
     loc = state.get("localization_json") or {}
     root_cause = loc.get("root_cause", "(阶段①未给出)")
     trigger_chain = loc.get("trigger_chain", [])
     snippets = _render_evidence_snippets(loc, state["repo_root"])
     tc_ctx = "\n".join(f"- {t}" for t in trigger_chain) if trigger_chain else "(无)"
-    prompt = f"""你是 C/系统软件 bug 修复专家。**根因已定位,直接改文件**(不要重新定位、不要贴 diff 文本)。
+    # P1(B):阶段① 后用 problem_summary 召回的历史同类 bug 修法,预进修复 prompt(先验非答案)。
+    repair_prior = state.get("recalled_repair_lessons_ctx") or ""
+    prior_block = ""
+    if repair_prior:
+        prior_block = (
+            "### 历史同类 bug 的修法(Hyperion 记忆先验)###\n"
+            "下面是 Hyperion 从历史 bug 分析中沉淀的、可能与本次相关的教训与修法。"
+            "**这是先验/参考,不是答案** —— 本次根因可能不同,务必结合下面锁定的根因独立判断"
+            "(与根因/证据矛盾时以根因为准,别照抄历史补丁)。\n"
+            f"{repair_prior}\n###\n\n"
+        )
+    prompt = f"""{prior_block}你是 C/系统软件 bug 修复专家。**根因已定位,直接改文件**(不要重新定位、不要贴 diff 文本)。
 
 ### Bug 线索 ###
 {state["trigger"]}

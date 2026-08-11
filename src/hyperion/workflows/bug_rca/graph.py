@@ -12,7 +12,7 @@ CLI `hyperion bug-rca` 也保留(向后兼容,加了 deprecate 提示)。**不�
 assemble_localize 三节点与 opencode 重复定位 double localization,改 opencode 自主定位 + MCP 工具。
 R3 收尾 ②[b] 又加回 recall_lessons —— 但它**只翻记忆预注入先验、不定位**,和被砍的旧 recall
 本质不同,不算重造漏斗):
-  ingest → recall_lessons → delegate_localize_loop → assemble_repair → delegate_repair_loop → report_memorize
+  ingest → recall_lessons → delegate_localize_loop → recall_for_repair → assemble_repair → delegate_repair_loop → report_memorize
 
 R3.1 #54-rework(B):双循环同会话 verify-refine ——
   ① delegate_localize_loop:阶段① 定位,max K1 轮(verdict=needs_revisit 则 --continue 重定位);
@@ -35,6 +35,7 @@ from hyperion.workflows.bug_rca.nodes import (
     node_delegate_localize_loop,
     node_delegate_repair_loop,
     node_ingest,
+    node_recall_for_repair,
     node_recall_lessons,
     node_report_memorize,
 )
@@ -49,6 +50,8 @@ def build_graph():
     g.add_node("recall_lessons", node_recall_lessons)
     # 阶段① 定位:opencode 自主定位(调 MCP 工具)+ verify-refine 循环
     g.add_node("delegate_localize_loop", node_delegate_localize_loop)
+    # 2.5 确定性 recall(P1/B):用 problem_summary 召回历史修法,预进修复 prompt(0 决策 turn 先验)
+    g.add_node("recall_for_repair", node_recall_for_repair)
     # 阶段② 修复:opencode edit code/ + git diff 观察 + validate_patch 门控 + verify-refine 循环
     g.add_node("assemble_repair", node_assemble_repair)
     g.add_node("delegate_repair_loop", node_delegate_repair_loop)
@@ -57,7 +60,8 @@ def build_graph():
     g.add_edge(START, "ingest")
     g.add_edge("ingest", "recall_lessons")
     g.add_edge("recall_lessons", "delegate_localize_loop")
-    g.add_edge("delegate_localize_loop", "assemble_repair")
+    g.add_edge("delegate_localize_loop", "recall_for_repair")
+    g.add_edge("recall_for_repair", "assemble_repair")
     g.add_edge("assemble_repair", "delegate_repair_loop")
     g.add_edge("delegate_repair_loop", "report_memorize")
     g.add_edge("report_memorize", END)

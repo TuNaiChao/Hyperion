@@ -1,23 +1,29 @@
 ---
 name: workflow-show-code-in-window
-description: 每个模块的关键 .py 代码在窗口展示由用户手敲,我不直接写源码文件
-metadata:
+description: 代码我自己直接写文件;同时用大白话+比喻跟用户讲清在干啥(面向小白)
+metadata: 
+  node_type: memory
   type: feedback
+  originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
+  modified: 2026-08-11T06:40:24.870Z
 ---
 
-在 Hyperion 项目里,用户要求:**每个模块的关键代码不要直接写入文件,在本对话窗口展示,由用户自己敲入**。
+在 Hyperion 项目里,**代码我自己直接写**(Write/Edit `.py` 源码文件,不再只在窗口展示让用户手敲)。
+同时**用大白话 + 比喻跟用户讲清楚每一步在干什么**,面向小白。
 
 **分工:**
-- `.py` 源码(所有模块,含 config.py / cli.py / tests/)→ 我在窗口给完整代码块,用户手敲入文件。我**不**用 Write/Edit 写 `.py`。
-- `config.yaml` / `pyproject.toml` 等配置文件、`uv sync` 等依赖操作 → 我直接改/执行。
-- 验证命令(`uv sync` / `ruff` / `pytest` / `hyperion ...`)→ 我执行(只读检查),反馈结果。
+- `.py` 源码 / `config.yaml` / `pyproject.toml` / 测试 / 记忆 / 文档 → 我直接 Write/Edit。
+- `uv sync` / `ruff` / `pytest` / `hyperion ...` 等验证命令 → 我执行(串行、先 `cd` 项目根,见 [[route2-call-chain-handoff]] 的 .venv 争用坑),正文打印"测了啥+期望+实际"。
+- commit 用**显式路径**(别 `git add -A`,会误提交 [[commit-python-syntax-notes]] 的 Python语法.md/todo.md);push 单独确认。
 
-**Why:** 这是学习型项目,用户要"真正吃透架构"(见 [[agent-project-overview]]、[[research-deerflow-first]]),亲手敲代码是内化的方式。
+**讲解要求(用户 2026-08-11 明确):**
+- 干每个模块前/同时,**讲清它的作用**:在这套 agent 里负责什么、为啥需要、跟 deer-flow 对应零件的关系。
+- 用**大白话 + 比喻**(面向小白),别晦涩、别默认读者懂底层。
+- 代码的 **docstring 与注释一律中文**(见 [[comment-style-beginner-friendly]])。
+- 注释解释 why 和非显而易见处,不复述代码。
 
-**How to apply:** 逐模块交付——展示一个完整 `.py`(给清文件路径)→ 用户敲入 → 我跑验证 → 下一个。配置类我直接动手。展示代码时给可直接粘贴的完整内容、注明文件路径,不要只给片段。
+**Why:** 2026-08-11 反转 —— 之前是"窗口展示、用户手敲"作学习手段;现在用户改为"我自己敲,听我讲解即可"。仍要吃透架构,但通过讲解而非亲手敲。
 
-**代码呈现标准(用户明确要求):**
-- 代码的 **docstring 与注释一律用中文**。
-- 每个模块给出代码前,先讲清**它的作用**:在 agent 里负责什么、为什么需要、与 deer-flow 对应零件的关系。
-- 对关键代码段附**逐段中文说明**,让用户"理解着敲"(学习型项目,要真正吃透)。
-- 注释要"合适"——解释 why 和非显而易见处,不要无意义复述代码。
+**How to apply:** 每个模块 —— 我直接写文件 + 正文用大白话讲清"这是啥、为啥这么写"(可给关键片段辅助讲解,但不是让用户敲)→ 跑验证 → 下一个。
+
+**⚠️ 注意区分受众:** 代码**注释**面向小白(大白话+比喻);但 **skill / agent prompt** 面向**模型**(指令性,不教学、不叙事)—— 见 [[skill-prompt-writing-style]]。别混。
