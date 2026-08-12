@@ -18,6 +18,7 @@
 - [rerank 投票适用边界](rerank-mechanism-where-it-shines.md) — 2026-07-31 patch 投票 rerank 移除(无 oracle 平凡烧 token);检索 rerank 保留。
 - [runtime 中间件策略](runtime-middleware-policy.md) — 不抄 deer-flow 30+,pull-by-need 加;扩展口已留(middleware 列表+state_schema 自动合并)。
 - [opencode MCP 接线硬细节](opencode-mcp-wiring.md) — opencode 配置:顶层 `mcp` 键、`command` 单数组、env 叫 `environment`、local 不展开 `{env:}`;工具名 `server_tool`;http MCP 不注册→用 stdio(timeout≥120000ms)。
+- [opencode 配置漂移](opencode-config-drift.md) — opencode 实际加载 cwd 根 `opencode.json`,不是 `config/opencode_hyperion.json` 模板;两文件都在 git 无同步机制→改模板必漂移(2026-08-12 backport e2e 踩到:加 agent 只改模板,opencode 看不到)。
 - [R3.2 research e2e 交接](r32-research-e2e-handoff.md) — 2026-08-03 GREEN,commit c03008c;修 4 真 bug(recursion_limit/memorize 没 await/优雅降级/@tool 死锁=踩坑 #7/#8)。
 - [R3.2.x P1 TurnBudget 交接](r32x-p1-turn-budget-handoff.md) — 2026-08-03 GREEN+commit;TurnBudget 治 recursion_limit;修 2 bug(踩坑 #9:keying 用 thread_id;middleware 节点漏算)。
 - [Skill 子系统设计](skill-design-decision.md) — ⚠️ 2026-08-07 pivot 后 S1–S5 暂缓 YAGNI(opencode 原生发现 .claude/skills/ 已工作)。
@@ -46,4 +47,4 @@
 - [Tier2 #5 index 前置门槛交接](tier2-index-prerequisite-handoff.md) — 2026-08-11 Tier2 #5:`hyperion index` 一键建向量+结构图;修 blast_radius 路径 bug(绝对路径前缀)。bluez 真机 4 工具全通。
 - [Tier2 #4 P-A 遗留交接](tier2-pa-gerrit-lineverify-handoff.md) — 2026-08-11 Tier2 #4 第 1 档:GerritFetcher 鉴权(env GERRIT_USERNAME/HTTP_PASSWORD)+ URL 分流(fetcher_for_url)+ 报告行锚定验证(diff_hunk_lines)。
 - [backport 工作流 backlog](backport-workflow-backlog.md) — 2026-08-11 记 backlog:跨版本 backport「v25 已修→改 v20」,两独立发行版线。实测:patch-id 跨独立线失效/merge_eval 不可信;倾向 A 方案(函数名粗筛+opencode 语义判)。
-- [backport 工作流交接](backport-workflow-handoff.md) — **2026-08-12 落地完成,代码完未 commit**:1 backport skill + 1 agent block,**0 新工具**(用户选 #1;grep+read 够)。核心差异:无确定性"判 bug"工具(VeriPort vulnerability oracle,Hyperion 不编译→语义判);merge_eval 跨独立线不可用不用。sdp 探针全绿(step3 语义判 v20:1255 有同一溢出 + step6 validate_patch strict 过)。
+- [backport 工作流交接](backport-workflow-handoff.md) — **2026-08-12 落地 + e2e 真机全绿(commit 9311973+3a12721)**:1 backport skill + 1 agent block,**0 新工具**(用户选 #1;grep+read 够)。核心差异:无确定性"判 bug"工具(VeriPort vulnerability oracle,Hyperion 不编译→语义判);merge_eval 跨独立线不可用不用。**e2e:opencode 自驱 sdp 任务 23 工具 7 步全过**,语义判 v20:1261 有同一溢出(金标一致)+ validate_patch strict 过 + 未 memorize(守边界)。

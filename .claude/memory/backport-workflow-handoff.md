@@ -1,11 +1,14 @@
 ---
 name: backport-workflow-handoff
-description: "2026-08-12 跨版本回移植(v25 fix → v20)backport skill 落地 —— 1 skill 0 新工具,镜像 upstream-merge;语义判 bug(A 方案)+ 路径适配 + validate_patch 验 apply;sdp 真数据探针 step3/step6 全绿"
-metadata:
+description: "2026-08-12 跨版本回移植(v25 fix → v20)backport skill 落地 + e2e 真机全绿 —— 1 skill 0 新工具,镜像 upstream-merge;语义判 bug(A 方案)+ 路径适配 + validate_patch 验 apply。commit 9311973(opencode 同步 3a12721)"
+metadata: 
+  node_type: memory
   type: project
+  originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
+  modified: 2026-08-12T05:18:18.512Z
 ---
 
-**2026-08-12 backport 工作流落地完成(代码完未 commit)**:1 个 `backport` skill + 1 个 opencode agent block,**0 个新 MCP 工具**(用户拍板 #1)。sdp 真数据探针 step3/step6 全绿。
+**2026-08-12 backport 工作流落地完成 + e2e 真机全绿**:1 个 `backport` skill + 1 个 opencode agent block,**0 个新 MCP 工具**(用户拍板 #1)。commit `9311973`(skill+agent+handoff+CLAUDE.md)+ `3a12721`(opencode.json 同步,见 [[opencode-config-drift]])。**e2e(opencode 自驱 sdp 任务)23 工具 7 步全过**,backport 卡 + 纯净补丁落盘,v20 仓已还原测试前。
 
 ## 做了啥
 
@@ -62,10 +65,24 @@ upstream-merge 有确定性锚(`merge_eval` patch-id 三态);**backport 没有�
 - **不做 PoC/regression oracle** —— 不编译铁律。
 - **不做跨独立仓 patch-id 判等** —— merge_eval 已证不可信,靠语义判。
 
-## 待 commit 文件
+## e2e 真机结果(2026-08-12,opencode 自驱 sdp 任务)
+
+`hyperion-backport` agent 自驱跑完 sdp backport,**23 个工具调用、7 步全过**(2.5min,exit 0):
+1. `skill(backport)` → `read`(v25 patch)→ `grep`(v20 定位 `sdp_extract_seqtype`)
+2. `memory_recall`(codebase=bluez_v20)+ `read` v20 `sdp.c`/`sdpd-request.c`
+3. **step3 硬门语义判**:`read` v20 `sdp.c:1222` 函数体,`:1261` 裸 `*size = bt_get_be32(buf)` 无 INT_MAX 检查 → **判:有同一 bug**(准确,金标一致)
+4. `call_chain`(codebase=bluez_v20)4 个外部 caller 都处理返回 0 失败路径 → 适配安全
+5. `edit` 改 v20 sdp.c(照 v25 意图:`val32` 中间变量 + `INT_MAX` 守卫)
+6. **step6 硬门**:`validate_patch` strict → ✅ clean apply(agent 还先撤销自己 edit 验 forward-check,再重新应用 —— 验证姿势正确)
+7. `export_patch`(落 `bluez.patch` 全量 + `bluez-backport-sdp_extract_seqtype.patch` 纯净 2-hunk)+ `export_report`(backport 卡)
+
+**关键验证点全绿**:语义判 bug 准(无确定性工具靠 LLM read 函数体)/ strict apply 过 / 路径适配对(`lib/bluetooth/sdp.c`→`lib/sdp.c`)/ 未 memorize(守「验证后才记」边界)。**gotcha:v20 仓 dirty(quilt 基线),export_patch 落全量补丁含基线 → agent 额外手搓纯净 2-hunk 补丁单独落盘**(SKILL.md 提示了「从我的 hunk 取」)。
+
+## 已 commit 文件(commit 9311973 + 3a12721)
 
 - `.claude/skills/backport/SKILL.md`(新)
 - `config/opencode_hyperion.json`(+ hyperion-backport agent block)
+- `opencode.json`(cwd 实际加载,同步模板 —— 见 [[opencode-config-drift]])
 - handoff memory + MEMORY.md + CLAUDE.md(backport backlog → 已成)
 
 关联 [[backport-workflow-backlog]](原实测 backlog) [[upstream-merge-handoff]] [[pitfall-log]](#2 漏斗) [[skill-prompt-writing-style]] [[bug-rca-skill-toolbox-hitl]]。
