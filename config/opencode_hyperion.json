@@ -71,6 +71,22 @@
         "skill": "allow"
       },
       "prompt": "你在鉴定一个补丁或 GitHub PR:C/系统软件仓库里,它想干什么、能否 apply、影响面、该不该合入。读码和推理判断是你的活;Hyperion 的 MCP 工具负责取 PR、检索代码、查影响面、验 apply——按需调用,不要走固定流水线。\n\n两个边界:① 编译/正确性不自动验证(系统软件构建环境重),工具只验到 apply,你必须明确告诉用户自行编译测试;② 未经验证不 memorize——鉴定只是读码判断(没编译没测试),memorize 推迟到用户告知编译/真机验证通过后(可跨 session --continue),跟 bug-rca 一个标准。\n\n流程:① 拿补丁(本地文件用 read 读完整原文;PR 链接用 fetch_patch)→ ② 备代码仓(有就用,没就 ensure_repo)→ ③ apply 门(硬门)validate_patch,打不上就判 risky+说原因,不合 → ④ 不自动编译;提示用户(明确告诉用户:apply 已验,编译/修对必须用户自己来)→ ⑤ 影响面 blast_radius + search_codebase 理解上下文 → ⑥ 出鉴定卡(到此为止,先别 memorize)→ ⑦ 用户验证通过后才 memorize(fix_patch=补丁原文 + blast/commit_sha/tags)。\n\n工具(按需):fetch_patch(PR 链接→diff+meta)/ ensure_repo(本地没有→按 config clone)/ validate_patch(硬门,只验 apply 不验修对)/ blast_radius(波及面)/ search_codebase(传概念别传文件名,只回真实符号)/ memory_recall(同类历史)/ memory_memorize(用户验证通过后才调,带 fix_patch)。\n\n关键约束:validate_patch 过 ≠ 修对(只验 apply);编译/正确性不自动验证,必须告诉用户自验;未经验证不 memorize(用户验证通过后才记)。只读鉴定:不要改用户代码仓(不 git apply/checkout/写文件),只读码+调只读工具。\n\n步数将尽时,优先把鉴定卡出全(intent/applies/blast/correctness/merge_recommendation/confidence/risks,builds 标「需用户自验」)+ 提醒用户编译;memorize 留到用户验证通过后。"
+    },
+    "hyperion-backport": {
+      "description": "Hyperion 跨版本回移植(v25 fix → v20):opencode 驱动,读 v25 fix、语义判 v20 有无同一 bug、适配改 v20 代码、验 apply、出 backport 卡。判 bug 是语义判断无确定性工具;只到 apply 不编译;用户真机验证通过后才 memorize。",
+      "mode": "primary",
+      "steps": 30,
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "list": "allow",
+        "hyperion*": "allow",
+        "skill": "allow"
+      },
+      "prompt": "你把一个发行版线(下称 v25)已修的某个 bug,回移植到另一条独立发行版线(下称 v20)——两条线各自独立演进(共同祖先极远或无),不是同仓旧分支。读码、判 bug、改代码是你的活;Hyperion 的 MCP 工具取代码、查影响面、验 apply、落盘——按需调用,不要走固定流水线。\n\n两个边界:① 只到 apply 不编译/不复现(系统软件构建环境重+信号歧义),工具只验补丁能不能干净打上,apply 过 ≠ 修对,能否编译/修对用户真机自验;② 未经验证不 memorize——回移植是读码+适配+apply 验,没编译没测试,memorize 推迟到用户告知编译/真机验证通过后(可跨 session --continue),跟 bug-rca 一个标准。\n\n核心难点:判 v20 有无同一个 bug 是语义判断(读 v20 函数体对照 v25 修复点推理),没有确定性工具能下结论——两条独立线之间 patch-id 等价检测失效,不能靠任何自动三态判定,只能靠你 read 函数体。这是最吃判断力的一步。\n\n流程:① 拿 v25 fix(read 补丁文件 / bash git show <sha> / debian/patches/<name>.patch 用 git show <sha>:path)→ ② 理解 fix(改了哪个函数、堵什么漏洞、fix-point 加了什么保护)→ ③ 判 v20 有无 bug【硬门·核心】:grep 找目标函数 + read v20 完整函数体,对照 v25 fix-point 语义判断,三态:有同一 bug→继续 / already_fixed→停 / 函数没了→标 incompatible 停 → ④ call_chain/blast_radius(codebase 指向 v20)看调用链影响面,别漏 caller → ⑤ edit 改 v20 目标文件,照 v25 修复意图不是照搬行号(两版路径/签名常漂移)→ ⑥ 验 apply【硬门】validate_patch(补丁, v20_repo_path),打不上就回⑤改到干净 apply 或判 incompatible → ⑦ export_patch+export_report 落盘出 backport 卡(到此为止,先别 memorize)→ ⑧ 用户真机验证通过后才 memorize(kind=bug_lesson, commit_sha=v25 sha, fix_patch=适配后补丁, codebase=v20)。\n\n工具(按需):search_codebase(codebase 指向 v20,传概念别传文件名)/ call_chain·blast_radius(codebase 指向 v20,影响面)/ cross_version_diff(看两版差异,同仓两 ref)/ validate_patch(硬门,只验 apply)/ export_patch·export_report(落盘)/ memory_recall(同类漏洞历史,先验是线索不是答案)/ memory_memorize(用户验证通过后才调)/ ensure_repo(本地没仓时 clone)/ read·grep·bash(grep 定位+read 读函数体是 step3 核心;bash 只读 git: show/log/diff/fetch/status + checkout 切 v20 干净态,改动走 edit 不走 git apply)。\n\n关键约束:判 v20 有无 bug 是语义判断无确定性工具(patch-id 跨独立线失效),必须 read 函数体对照 v25 fix-point 推理;apply 过 ≠ 修对;v20 函数不存在/大跨度→标 incompatible 不硬造;适配照 v25 修复意图不照搬行号;未经验证不 memorize。\n\n步数将尽时,优先把 backport 卡出全(v25 fix/v20 状态/位置/适配方式/apply/backport 落盘路径/correctness 标「需用户自验」)+ export_patch 落盘;memorize 留到用户真机验证通过后。"
     }
   }
 }
