@@ -1,6 +1,6 @@
 ---
 name: opencode-config-drift
-description: "opencode 实际加载 cwd 根的 opencode.json,不是 config/opencode_hyperion.json 模板;两文件都在 git 里但无同步机制→改模板必漂移。2026-08-12 backport e2e 踩到。"
+description: "opencode 实际加载 cwd 根 opencode.json(现已 symlink → config/opencode_hyperion.json 单源真相)。历史上两文件都在 git 无同步机制会漂移,2026-08-12 backport e2e 踩到;同日用 symlink 根治。"
 metadata: 
   node_type: memory
   type: reference
@@ -20,10 +20,16 @@ opencode 配置有两处真理源、无同步,是"配置漂移"类 bug 的温床
 - 改 agent / MCP / 工具配置 → **两处都得改**(模板 + cwd 根),或改完一处立刻 `cp` 另一处。
 - fresh clone 后跑 opencode → 先确认 cwd 根 `opencode.json` 与模板一致,别默认模板生效。
 
-## 根治选项(未做,待用户定)
+## ✅ 已根治(2026-08-12,symlink 单源真相)
 
-- **symlink**:`opencode.json` → `config/opencode_hyperion.json`,单源真相。git 跟踪 symlink。最干净。
-- **setup 钩子**:`scripts/setup_claude.sh` 风格,clone 后 `cp` 模板到 cwd 根。
-- 现状:手动 cp,靠人记(已踩一次)。
+`opencode.json` 从普通文件(100644,git blob `933af08`)改为 **symlink → `config/opencode_hyperion.json`**(git mode 120000)。从此**只有一份真理源**:改模板一处,opencode 透过 symlink 立刻生效。
+
+**验证两关全绿**:
+1. `opencode agent list` 透过 symlink 正常列出全部 5 个 hyperion agent(含 backport)。
+2. **改模板加临时 agent → `opencode agent list` 立刻看到 → 移除**(这就是 symlink 治漂移的核心证明,JSON 往返格式噪音用 `git checkout` 清掉)。
+
+**跨机注意**:git 在 Linux/macOS 正常还原 symlink;**Windows 上 git 默认不解 symlink**(会写成含路径文本的普通文件)—— Hyperion 两台机都是 Linux/macOS,不受影响。若将来上 Windows,`git config core.symlinks true` + 开发者模式。
+
+关联 [[opencode-mcp-wiring]] [[pitfall-log]](#10 opencode MCP 接线) [[backport-workflow-handoff]]。
 
 关联 [[opencode-mcp-wiring]] [[pitfall-log]](#10 opencode MCP 接线) [[backport-workflow-handoff]]。
