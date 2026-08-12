@@ -147,6 +147,8 @@ async def node_memorize(state: PatchReportState) -> dict:
         return {"facts_memorized": 0}
     text = (agg.get("cross_summary") or "") + "\n" + (
         f"stats: {agg.get('stats')}\n高安全 PR: {agg.get('high_security_prs')}")
+    if agg.get("trend"):
+        text += "\n发展趋势: " + agg["trend"]
     if not text.strip():
         return {"facts_memorized": 0}
     cfg = get_app_config()

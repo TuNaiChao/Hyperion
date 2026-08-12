@@ -58,7 +58,7 @@ def test_analyze_one_pr_happy_path(monkeypatch, tmp_path):
         title="Add new var", changed_files=["f.c"])
 
     canned = ('{"summary":"adds new var at f.c:2","citations":'
-              '[{"file":"f.c","line":2,"symbol":"new","claim":"added"}],"theme":"function"}')
+              '[{"file":"f.c","line":2,"symbol":"new","claim":"added"}],"theme":"feature"}')
     monkeypatch.setattr("hyperion.platform.models.create_chat_model",
                         lambda role: _StubModel(canned))
 
@@ -66,8 +66,8 @@ def test_analyze_one_pr_happy_path(monkeypatch, tmp_path):
 
     assert finding["url"] == art.url
     assert finding["applies"] is True                # diff 干净打到 f.c
-    assert finding["theme"] == "function"
-    assert finding["security_tier"] == "none"        # CRG 降级(无 changed_funcs)→ none
+    assert finding["theme"] == "feature"
+    assert finding["security_tier"] == "none"        # theme=feature + CRG 降级 → none
     assert finding["risk_score"] == 0.0              # CRG 降级 → 0
     assert finding["citations"]                       # cited-reporter 出了引用
     assert finding["citations"][0]["file"] == "f.c"
@@ -85,7 +85,7 @@ def test_analyze_one_pr_llm_degrades_on_bad_json(monkeypatch, tmp_path):
     finding = _run(_analyze_one_pr(art, repo_root=str(repo), codebase="test_nograph_xyz"))
     assert finding["citations"] == []                 # 降级:空引用
     assert finding["summary"]                         # 仍有降级 summary
-    assert finding["theme"] == "function"             # 降级默认
+    assert finding["theme"] == "other"                # 降级默认(8 类里的兜底)
 
 
 def test_diff_to_abs_ranges():
@@ -97,11 +97,27 @@ def test_diff_to_abs_ranges():
     assert ranges["/repo/f.c"] == [(1, 3)]            # @@ -1 +1,2 @@ → new_start=1, span=2(context+added)
 
 
-def test_security_tier_keyword_hit():
-    """changed_funcs 名字命中 SECURITY_KEYWORDS(auth)+ risk 高 → high。"""
+def test_security_tier_theme_security_bumped():
+    """theme=security 时 tier 至少 relevant(治 tier/theme 脱节 bug:LLM 判 security → tier 跟上)。
+
+    旧版只看 CRG 函数名词表,改的函数名不含安全词就判 none,即使 LLM 读 diff 已判 theme=security。
+    现在 theme=security → relevant;theme=security 且 risk 高/命中安全词 → high。
+    """
+    from hyperion.workflows.patch_report._analyze import _security_tier
+
+    # theme=security + 普通函数名(不含安全词)+ 低 risk → 仍 relevant(不再 none,这是 BUG 1 的修复)。
+    assert _security_tier("security", [{"name": "read_databaseid"}], 0.0) == "relevant"
+    # theme=security + risk 高 → high。
+    assert _security_tier("security", [], 0.7) == "high"
+    # theme=security + 命中安全词 → high。
+    assert _security_tier("security", [{"name": "auth_login"}], 0.0) == "high"
+
+
+def test_security_tier_non_security_falls_back_to_keywords():
+    """theme 非 security 时退化到旧 CRG 词表 + risk 预筛(兜底抓 LLM 漏判的)。"""
     from hyperion.workflows.patch_report._analyze import _security_tier
 
     funcs = [{"name": "auth_login", "qualified_name": "x::auth_login"}]
-    assert _security_tier(funcs, 0.7) == "high"
-    assert _security_tier(funcs, 0.2) == "relevant"   # 命中词但 risk 低 → relevant
-    assert _security_tier([], 0.2) == "none"          # 无 funcs → none
+    assert _security_tier("bugfix", funcs, 0.7) == "high"      # 命中词 + risk 高 → high
+    assert _security_tier("bugfix", funcs, 0.2) == "relevant"  # 命中词但 risk 低 → relevant
+    assert _security_tier("bugfix", [], 0.2) == "none"         # 无 funcs 无 risk → none

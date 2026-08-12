@@ -88,24 +88,25 @@ def aggregate(findings: list[dict], codebase: str = "") -> dict:
         for g in dup_groups
     ]
 
-    # ② 一次 LLM cited 综合(单批,抄 plan_modules:喂所有 findings → {cross_summary, citations})
-    cross_summary, citations = _synthesize(findings, stats)
+    # ② 一次 LLM cited 综合(单批,抄 plan_modules:喂所有 findings → {cross_summary, trend, citations})
+    cross_summary, trend, citations = _synthesize(findings, stats)
     return {
         "stats": stats,
         "cross_summary": cross_summary,
+        "trend": trend,
         "citations": citations,
         "high_security_prs": [f.get("title") for f in high_security],
     }
 
 
-def _synthesize(findings: list[dict], stats: dict) -> tuple[str, list[dict]]:
-    """一次 LLM:所有 findings 作证据 → {cross_summary(锚 file:line), citations}。失败降级(不抛)。"""
+def _synthesize(findings: list[dict], stats: dict) -> tuple[str, str, list[dict]]:
+    """一次 LLM:所有 findings 作证据 → {cross_summary, trend(发展趋势), citations}。失败降级(不抛)。"""
     from hyperion.platform.config import get_app_config
     from hyperion.platform.models import create_chat_model
     from hyperion.services.memory.backends.native.extract import _extract_json_object
 
     if not findings:
-        return "", []
+        return "", "", []
     evidence = _render_findings_evidence(findings, stats)
     cfg = get_app_config()
     role = cfg.model_roles.get("patch_analyzer") or cfg.model_roles.get("summarizer") or cfg.models[0].name
@@ -116,21 +117,29 @@ def _synthesize(findings: list[dict], stats: dict) -> tuple[str, list[dict]]:
         raw = msg.content if isinstance(msg.content, str) else str(msg.content)
     except Exception as e:  # noqa: BLE001
         logger.warning("aggregate LLM 失败,降级: %s", e)
-        return fallback, []
+        return fallback, "", []
     data = _extract_json_object(raw)
     if not data:
         logger.warning("aggregate 抠不到 JSON,降级。")
-        return fallback, []
+        return fallback, "", []
     summary = str(data.get("cross_summary") or "")[:1200]
+    trend = str(data.get("trend") or "")[:1200]
     cites = [c for c in (data.get("citations") or []) if isinstance(c, dict)]
-    return summary, cites
+    return summary, trend, cites
 
 
 def _render_findings_evidence(findings: list[dict], stats: dict) -> str:
     """把 findings + stats 渲染成 LLM 证据串(每条 finding 的 summary 是 cited,带 file:line)。"""
+    # theme 分布用中文标签(给 LLM 看「这批 PR 的性质画像」,喂发展趋势章)。
+    from hyperion.workflows.patch_report._analyze import THEME_LABELS
+    by_theme = stats["by_theme"]
+    theme_pic = ", ".join(
+        f"{THEME_LABELS.get(t, t)}×{n}" for t, n in
+        sorted(by_theme.items(), key=lambda kv: -kv[1])
+    ) or "(无)"
     lines = [
         "## 统计(确定性)",
-        f"共 {stats['total_prs']} PRs;theme={stats['by_theme']};"
+        f"共 {stats['total_prs']} PRs;分类画像: {theme_pic};"
         f"security_tier={stats['by_tier']};high_security={stats['high_security_count']};"
         f"high_risk={stats['high_risk_count']}",
     ]
@@ -150,7 +159,7 @@ def _render_findings_evidence(findings: list[dict], stats: dict) -> str:
     return "\n".join(lines)
 
 
-_AGG_PROMPT = """你在汇总一批 PR 的鉴定(每条 PR 已分析过),产出跨 PR 聚合结论。
+_AGG_PROMPT = """你在汇总一批 PR 的鉴定(每条 PR 已分析过),产出跨 PR 聚合结论 + 发展趋势。
 
 ### 证据 ###
 {evidence}
@@ -159,7 +168,11 @@ _AGG_PROMPT = """你在汇总一批 PR 的鉴定(每条 PR 已分析过),产出�
 只输出一个 JSON 对象(无 markdown 围栏、无解释),符合:
 {{
   "cross_summary": "这批 PR 整体在干啥 + 重点风险 / 安全告警(≤500 字,结论尽量锚具体 PR 的 file:line)",
+  "trend": "这批 PR 反映出的【发展趋势 / 演进方向】分析(≤500 字)。从分类画像 + 各 PR 改动归纳:"
+          "这个软件仓近期在往哪个方向走?(如:安全加固收紧 / 依赖清理瘦身 / 配置默认值调整 / 架构重构 / 新能力扩展)。"
+          "给出 2-4 条趋势,每条先一句话点出趋势,再附证据(锚哪些 PR/文件)。只基于上面证据,不臆测证据外的内容。",
   "citations": [{{"file": "...", "line": <int 或 null>, "symbol": "...", "claim": "这条引用说明啥"}}]
 }}
 - 安全相关结论标注「建议人工复核」(自动分类非正式验证)。
+- trend 是「这批 PR 共同反映的演进方向」,不是逐条 PR 复述;优先从分类画像的安全×N / 配置×N / 依赖×N 这种**集中分布**里提炼方向。
 - citations 的 file:line 必须来自上面证据里 PR 提到的(Verifier 会回查;编造的过不了)。"""

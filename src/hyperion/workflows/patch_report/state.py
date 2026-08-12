@@ -16,8 +16,8 @@ class PRFinding(TypedDict, total=False):
     title: str
     applies: bool  # validate_patch 结果(能否干净 apply)
     risk_score: float  # CRG analyze_changes 的 overall risk_score(0..1)
-    security_tier: str  # "none" | "relevant" | "high"(SECURITY_KEYWORDS + risk 预筛;high 才送 LLM 深 CWE)
-    theme: str  # security | function | refactor | perf(LLM 判)
+    security_tier: str  # "none" | "relevant" | "high"(theme=security 至少 relevant;叠 CRG 安全词 + risk)
+    theme: str  # 8 类(LLM 判):security|bugfix|feature|config|deps|refactor|perf|other(见 _analyze.THEMES)
     modules: list  # 改动函数所属 community_id 列表(按 module 分桶用)
     changed_files: list  # PR 改动文件(verify + render + 归因用)
     summary: str  # cited:该 PR 干了啥 / 风险(每条结论锚 file:line)

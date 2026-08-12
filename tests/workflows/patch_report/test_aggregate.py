@@ -12,7 +12,7 @@ def test_aggregate_stats(monkeypatch):
     """聚合:确定性分桶统计(theme/tier/high_security/hot_modules)+ 高安全 PR 列表。"""
     from hyperion.workflows.patch_report import _aggregate
 
-    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cross summary", [{"file": "a.c", "line": 1}]))
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cross summary", "trend text", [{"file": "a.c", "line": 1}]))
     findings = [
         {"title": "PR1", "theme": "security", "security_tier": "high", "risk_score": 0.7,
          "modules": [1], "summary": "s1", "citations": [], "changed_files": ["a.c"]},
@@ -28,6 +28,7 @@ def test_aggregate_stats(monkeypatch):
     assert st["hot_modules"][0] == {"module": 1, "pr_count": 2}  # module 1 在两条 PR 都出现
     assert agg["high_security_prs"] == ["PR1"]
     assert agg["cross_summary"] == "cross summary"
+    assert agg["trend"] == "trend text"
 
 
 def test_render_patch_report_sections():
@@ -132,7 +133,7 @@ def test_verify_no_artifacts_skips_line_check():
 def test_aggregate_dedup_same_subject(monkeypatch):
     """两个 PR 改动文件完全重叠 + theme 同 → 判同主题:n_unique_subjects=1,1 组。"""
     from hyperion.workflows.patch_report import _aggregate
-    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
         {"title": "PR2", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
@@ -147,7 +148,7 @@ def test_aggregate_dedup_same_subject(monkeypatch):
 def test_aggregate_dedup_no_overlap(monkeypatch):
     """不同文件 → 不去重:n_unique_subjects=2,无重复组。"""
     from hyperion.workflows.patch_report import _aggregate
-    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c"], "modules": [], "summary": "s"},
         {"title": "PR2", "theme": "security", "changed_files": ["z.c"], "modules": [], "summary": "s"},
@@ -160,7 +161,7 @@ def test_aggregate_dedup_no_overlap(monkeypatch):
 def test_aggregate_dedup_different_theme_not_merged(monkeypatch):
     """文件重叠但 theme 不同 → 不并(主题不同不算重复)。"""
     from hyperion.workflows.patch_report import _aggregate
-    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", []))
+    monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
         {"title": "PR2", "theme": "refactor", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
