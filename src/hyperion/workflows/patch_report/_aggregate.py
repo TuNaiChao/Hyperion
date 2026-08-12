@@ -156,6 +156,10 @@ def _render_findings_evidence(findings: list[dict], stats: dict) -> str:
         lines.append(
             f"- [{f.get('theme', '?')}/{f.get('security_tier', '?')}|risk={f.get('risk_score', 0):.2f}] "
             f"{f.get('title', '?')}: {f.get('summary', '')[:240]}")
+        # 逐字列出改动文件,给 cross-summary citations 直接复制(防 LLM 把文件名记串/缩写/用标题)。
+        cf = f.get("changed_files") or []
+        if cf:
+            lines.append("  改动文件(可引用): " + ", ".join(cf[:20]))
     return "\n".join(lines)
 
 
@@ -175,4 +179,6 @@ _AGG_PROMPT = """你在汇总一批 PR 的鉴定(每条 PR 已分析过),产出�
 }}
 - 安全相关结论标注「建议人工复核」(自动分类非正式验证)。
 - trend 是「这批 PR 共同反映的演进方向」,不是逐条 PR 复述;优先从分类画像的安全×N / 配置×N / 依赖×N 这种**集中分布**里提炼方向。
-- citations 的 file:line 必须来自上面证据里 PR 提到的(Verifier 会回查;编造的过不了)。"""
+- citations 的 file:**必须从上面证据里「改动文件(可引用)」逐字复制一个路径**,不得自己拼/缩写/合并/用 PR 标题当文件名。
+  (常见错:把两条 PR 的 .patch 名记串成一个不存在的名、或把标题当文件 —— Verifier 会回查标可疑。)
+  cross_summary 正文里提到文件时,也只用这些逐字路径。"""
