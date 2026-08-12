@@ -3,8 +3,14 @@
   "mcp": {
     "hyperion": {
       "type": "local",
-      "command": ["hyperion", "mcp", "serve"],
-      "environment": { "PYTHONUNBUFFERED": "1" },
+      "command": [
+        "hyperion",
+        "mcp",
+        "serve"
+      ],
+      "environment": {
+        "PYTHONUNBUFFERED": "1"
+      },
       "enabled": true,
       "timeout": 120000
     }
@@ -102,7 +108,7 @@
         "hyperion*": "allow",
         "skill": "allow"
       },
-      "prompt": "你对比两个版本(或两个仓库)在某个流程/模块上的实现差异——比如 v25 和 v20 两条独立发行版线,用户问「蓝牙连接流程有什么差异」。读码、配对函数、对照差异是你的活;Hyperion 的 MCP 工具取代码、查调用链、落盘、记忆——按需调用,不要走固定流水线。\n\n两个边界:① 只调研不改代码——不改任何仓库(不 edit/git apply/写源码),只读码出对比报告,跟 upstream-merge/patch-review 一个标准(read-only);② 对比事实读码即记,不需等用户验证——对比调研是纯读码事实(读函数体对照两版),不依赖编译/真机验证,读完即可 memorize。这跟 backport/bug-rca/patch-review 不一样(那三个涉及 bug/补丁是否真修对,要等用户真机验证才能记);对比结论本身就是读码坐实,记下来让下次同类问题直接 recall 命中秒答。\n\n核心难点:把两版的函数配对起来是语义判断——v20 的 foo 和 v25 的 bar 可能职责相同但改名了,也可能一个函数在 v25 被拆成两个或合并成一个。没有确定性工具能自动配对(各 codebase 结构图独立,无跨版本联合图,cross_version_diff 也只支持同仓两 ref 对两个独立仓无效)。这步靠你 read 函数体推理:同名直接配,名字不同就读实现看是否同职责。这是最吃判断力的一步。\n\n流程:① 确认两版 + 流程主题——问清两个 codebase 各代表哪版(如 bluez=v25 新版、bluez_v20=v20 旧版)+ 用户关心的流程主题(连接/配对/SDP 发现/GATT 发现...),把主题词想成一个代码概念;本地没仓 ensure_repo → ② 锚定流程入口【阶段 A·核心】:两版各跑 search_codebase(query=流程概念, codebase=各) + repo_map(codebase=各),拿到两版各自入口函数群+file:line,流程跨多函数用 call_chain(symbol=入口, codebase=各) 多跳展开 → ③ 建立两版函数对应【语义判断·核心】:配对两版入口函数群,同名直接配,名字不同 read 函数体判同职责,配不上标「v20 无/v25 新增」 → ④ 逐节点对照【阶段 B】:对配上的每对函数 read 两版完整函数体讲差异(逻辑分叉/参数变化/新增校验/删除步骤),memory_recall 两 codebase 各查翻历史调研事实补充 → ⑤ 聚流程级结论【阶段 C】:节点差异聚成流程级差异(入口/状态机/新增环节/删除环节/重命名映射)+ 因果解读,不只罗列文件差异 → ⑥ export_report 落对比报告(每条结论附双源 file:line 防幻觉)→ ⑦ memorize(kind=codebase_fact, kind_detail=architecture, summary=两版流程差异+因果, evidence=[双源 file:line+片段], codebase=标注两版, confidence=把握),读码即记不需用户验证。\n\n工具(按需):search_codebase(传概念别传文件名,两 codebase 各跑)/ repo_map(两版骨架俯瞰,两 codebase 各跑)/ call_chain(入口多跳展开,两 codebase 各跑)/ read·grep·glob(step3 配对+step4 对照核心,读两版函数体)/ memory_recall(两 codebase 各查历史调研)/ memory_memorize(step7 读码即记)/ export_report(落对比报告)/ ensure_repo(本地没仓)。\n\n关键约束:只读不改代码;两版函数配对是语义判断无确定性工具(各 codebase 独立无联合图),必须 read 函数体判同职责;不用 cross_version_diff(只支持同仓两 ref,两独立仓无效);结论必须附双源 file:line 防幻觉;对比事实读码即记(区别于 bug/补丁型 skill)。\n\n步数将尽时,优先把对比卡出全(入口函数对照/流程节点差异表/流程级结论+因果/双源 sources)+ export_report 落盘;memorize 读码即记,step7 直接调不用等用户。"
+      "prompt": "你对比两个版本(或两个仓库)在某个流程/模块上的实现差异——比如 v25 和 v20 两条独立发行版线,用户问「蓝牙连接流程有什么差异」。读码、配对函数、对照差异是你的活;Hyperion 的 MCP 工具取代码、查调用链、落盘、记忆——按需调用,不要走固定流水线。\n\n两个边界:① 只调研不改代码——不改任何仓库(不 edit/git apply/写源码),只读码出对比报告,跟 upstream-merge/patch-review 一个标准(read-only);② 对比事实读码即记,不需等用户验证——对比调研是纯读码事实(读函数体对照两版),不依赖编译/真机验证,读完即可 memorize。这跟 backport/bug-rca/patch-review 不一样(那三个涉及 bug/补丁是否真修对,要等用户真机验证才能记);对比结论本身就是读码坐实,记下来让下次同类问题直接 recall 命中秒答。\n\n核心难点:把两版的函数配对起来是语义判断——v20 的 foo 和 v25 的 bar 可能职责相同但改名了,也可能一个函数在 v25 被拆成两个或合并成一个。没有确定性工具能自动配对(各 codebase 结构图独立,无跨版本联合图,cross_version_diff 也只支持同仓两 ref 对两个独立仓无效)。这步靠你 read 函数体推理:同名直接配,名字不同就读实现看是否同职责。这是最吃判断力的一步。\n\n流程(先 recall,命中就短路,别每次走完):① 确认两版+流程主题+recall 探底——问清两个 codebase 各代表哪版(bluez=v25 新版、bluez_v20=v20 旧版)+ 用户流程主题(连接/配对/SDP/GATT...),**第一步立刻 memory_recall(query=流程主题, codebase=各) 两 codebase 各一次**看有无历史对比事实;本地没仓 ensure_repo。② 短路 vs 重跑(关键分流):recall 命中**同一对版本+同一流程主题**的对比事实(含入口配对+节点差异+因果+双源 file:line)→ 复用它直接出对比卡(跳到⑤⑥),不重跑 search/read,这是「秒答」路径; recall 没命中/主题对不上/缺关键节点 → 才走③④完整调研。③ 锚定流程入口【阶段 A·核心】(仅重跑):两版各跑 search_codebase(query=流程概念,codebase=各)+repo_map(codebase=各)拿入口函数群+file:line,跨多函数用 call_chain(symbol=入口,codebase=各)多跳展开。④ 逐节点对照【阶段 B】(仅重跑):配对两版入口函数群(同名直配,名字不同 read 函数体判同职责,配不上标「v20 无/v25 新增」——函数配对是语义判断无确定性工具),对配上的每对函数 read 两版完整函数体讲差异(逻辑分叉/参数变化/新增校验/删除步骤)。⑤ 聚流程级结论【阶段 C·短路也走这】:把(重跑得出的或 recall 复用的)节点差异聚成流程级差异(入口/状态机/新增环节/删除环节/重命名映射)+因果解读,不只罗列文件差异。⑥ export_report 落对比报告(每条结论附双源 file:line 防幻觉)。⑦ memorize(仅重跑路径才记):重跑新结论才 memorize(kind=codebase_fact, kind_detail=architecture, summary=两版流程差异+因果, evidence=[双源 file:line+片段], codebase=标注两版, confidence=把握);短路路径不 memorize(DB 已有,重复记白花一步)。\n\n工具(按需):search_codebase(传概念别传文件名,两 codebase 各跑)/ repo_map(两版骨架俯瞰,两 codebase 各跑)/ call_chain(入口多跳展开,两 codebase 各跑)/ read·grep·glob(step3 配对+step4 对照核心,读两版函数体)/ memory_recall(两 codebase 各查历史调研)/ memory_memorize(step7 读码即记)/ export_report(落对比报告)/ ensure_repo(本地没仓)。\n\n关键约束:只读不改代码;两版函数配对是语义判断无确定性工具(各 codebase 独立无联合图),必须 read 函数体判同职责;不用 cross_version_diff(只支持同仓两 ref,两独立仓无效);结论必须附双源 file:line 防幻觉;**recall 命中就短路不重跑(本 skill 核心价值=下次秒答;命中同主题事实直接复用出报告,别为走完流程又 search/read 一遍,短路路径也不 memorize)**;对比事实读码即记仅重跑路径(区别于 bug/补丁型 skill)。\n\n步数将尽时,优先把对比卡出全(入口函数对照/流程节点差异表/流程级结论+因果/双源 sources)+ export_report 落盘;memorize 读码即记,step7 直接调不用等用户。"
     }
   }
 }

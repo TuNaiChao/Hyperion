@@ -26,15 +26,19 @@ allowed-tools:
 
 ## 运行模式
 
-1. **确认两版 + 流程主题**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),后面检索用概念不用文件名。
+> **先 recall,命中就短路**。这个 skill 的价值一半在「记忆让下次秒答」—— 所以**第一步永远是 `memory_recall`**(两 codebase 各查一次这个流程主题的对比)。若召回的历史对比事实**已覆盖用户问的主题 + file:line 双源齐全**,**直接复用它出对比卡(下面步骤 5/6),不要重跑 search/read**;只有没命中、或命中但主题对不上/缺关键节点时,才走完整的 A→B→C 调研。判据见 step 2 的「短路 vs 重跑」。
+
+1. **确认两版 + 流程主题 + recall 探底**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**第一步立刻 `memory_recall(query=<流程主题>, codebase=<各>)` 两 codebase 各一次**,看有没有历史对比事实。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),检索用概念不用文件名。
 
    > **⚠ 仓库路径**:工具(`search_codebase`/`repo_map`/`call_chain`)返回的 file:line 是索引时的**相对路径**(带 repo_root 前缀,如 `code-test/v25/bluez/src/...`)。你要 `read` 函数体时,若相对路径在你的 cwd 下打不开(常见:仓库目录被 gitignore → `glob` 看不见;或 cwd 不是项目根),**直接问用户要仓库绝对路径**,或用 `ensure_repo` 拿到 `data/repos/` 下的落点 —— **别浪费步数满盘 glob/find**(本 skill 无 bash 权限,find 也用不了)。拿到绝对路径前缀后,把索引返回的相对路径拼成绝对路径再 `read`。
-2. **锚定流程入口【核心·阶段 A】**:对**两版各跑一次** `search_codebase(query=<流程概念>, codebase=<各>)` + `repo_map(codebase=<各>)`。拿到**两版各自的入口函数群 + file:line**(工具只回索引内真实符号,防幻觉)。流程跨多个函数 → 用 `call_chain(symbol=<入口函数>, codebase=<各>)` 从入口多跳展开,看清整条流程涉及的函数链。
-3. **建立两版函数对应【语义判断·核心】**:把两版入口函数群**配对** —— 同名直接配(`bt_connect` ↔ `bt_connect`);名字不同就 `read` 函数体判**是否同职责**(v20 `bt_connect` ↔ v25 是否拆成了 `bt_connect`+`att_connect`?)。配不上的标「v20 无 / v25 新增」。**这是语义判断,无确定性工具**,靠读函数体推理。
-4. **逐节点对照【阶段 B】**:对配上的每对函数,`read` 两版完整函数体,讲清差异 —— 逻辑分叉 / 参数变化 / 新增校验 / 删除的步骤 / 重构。流程上的每个关键节点(入口、状态转换、资源释放...)都对照一遍。`memory_recall(query, codebase=<各>)` 两 codebase 各查一次,翻历史调研事实补充上下文(可能之前调研过相关模块)。
-5. **聚流程级结论【阶段 C】**:把节点差异聚成**流程级差异** —— 入口差异 / 状态机差异 / 新增环节 / 删除环节 / 重命名映射。给出因果解读:为什么 v25 多了某个环节(如新协议层)/ 为什么改名(职责拆分)。不要只罗列文件差异,要讲清流程层面变了什么。
+2. **短路 vs 重跑(关键分流)**:看 step 1 的 recall 结果 ——
+   - **短路(直接出报告)**:recall 命中了**同一对版本 + 同一流程主题**的对比事实,内容已包含入口配对 + 流程节点差异 + 因果结论 + 双源 file:line。→ **复用它,跳到 step 5 出对比卡 + step 6 export_report,不重跑 search/read**。用户要的「秒答」就是这条路径。最多按用户的具体问法补一两句,别整轮重读。
+   - **重跑(走完整 A→B→C)**:recall 没命中、或命中的主题对不上(问的是连接,记忆里只有配对)、或缺关键节点(只覆盖了一半流程)。→ 走下面 step 3-5 的完整调研。**这才是该花 read 预算的时候**。
+3. **锚定流程入口【核心·阶段 A】**(仅重跑路径):对**两版各跑一次** `search_codebase(query=<流程概念>, codebase=<各>)` + `repo_map(codebase=<各>)`。拿到**两版各自的入口函数群 + file:line**(工具只回索引内真实符号,防幻觉)。流程跨多个函数 → 用 `call_chain(symbol=<入口函数>, codebase=<各>)` 从入口多跳展开,看清整条流程涉及的函数链。
+4. **逐节点对照【阶段 B】**(仅重跑路径):① 把两版入口函数群**配对** —— 同名直接配;名字不同就 `read` 函数体判**是否同职责**(v20 的 `foo` ↔ v25 是否拆成了 `foo`+`bar`?)。配不上的标「v20 无 / v25 新增」。**函数配对是语义判断,无确定性工具**(各 codebase 结构图独立无联合图)。② 对配上的每对函数,`read` 两版完整函数体,讲清差异 —— 逻辑分叉 / 参数变化 / 新增校验 / 删除的步骤 / 重构。流程每个关键节点(入口、状态转换、资源释放...)都对照一遍。
+5. **聚流程级结论【阶段 C·短路路径也走这】**:把(重跑得出的、或 recall 命中直接复用的)节点差异聚成**流程级差异** —— 入口差异 / 状态机差异 / 新增环节 / 删除环节 / 重命名映射。给出因果解读:为什么 v25 多了某个环节(如新协议层)/ 为什么改名(职责拆分)。不要只罗列文件差异,要讲清流程层面变了什么。
 6. **落对比报告**:`export_report` 落盘对比报告 .md。**每条结论必须附双源 file:line**(v25 的 + v20 的),对齐 cited-reporter 防幻觉。
-7. **memorize(读码即记)**:`memorize(kind=codebase_fact, kind_detail=architecture, summary=<两版流程差异 + 因果>, evidence=[<双源 file:line + 代码片段>], codebase=<标注两版>, confidence=<你的把握>)`。这条事实读码即坐实,**不需等用户验证** —— 下次有人问同类问题(「v20/v25 连接差异」)直接 recall 命中秒答。
+7. **memorize(仅重跑路径才记)**:重跑得出的新结论才 `memorize(kind=codebase_fact, kind_detail=architecture, summary=<两版流程差异 + 因果>, evidence=[<双源 file:line + 代码片段>], codebase=<标注两版>, confidence=<你的把握>)`。**短路路径不要 memorize**(recall 已命中的事实 DB 里有了,重复记浪费调用,且按 summary 算 id 会去重——不污染但白花一步)。这条事实读码即坐实,**不需等用户验证**。
 
 ## 工具(按需调)
 
@@ -43,9 +47,9 @@ allowed-tools:
 | `hyperion_search_codebase(query, codebase?)` | step 2 锚定入口 | 传**概念**别传文件名(如"蓝牙连接建立流程");两 codebase 各跑一次;只回真实符号 |
 | `hyperion_repo_map(codebase?)` | step 2 俯瞰两版骨架 | Aider repomap 式 PageRank 符号地图,找流程入口模块;两 codebase 各跑一次 |
 | `hyperion_call_chain(symbol, codebase?)` | step 2 流程展开 | 从入口种子多跳展开,看流程涉及的函数链;两 codebase 各跑 |
-| `read` / `grep` / `glob` | step 3/4 读两版函数体 | **核心**:step 3 配对判同职责 + step 4 逐节点对照全靠 read 两版函数体 |
-| `hyperion_memory_recall(query, codebase?)` | step 4 / 全程 | 翻历史调研事实(两 codebase 各查);下次同类问题命中即秒答 |
-| `hyperion_memory_memorize(...)` | step 7(读码即记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;**不需用户验证** |
+| `read` / `grep` / `glob` | step 4 读两版函数体(仅重跑路径) | **核心**:step 4 配对判同职责 + 逐节点对照全靠 read 两版函数体。**短路路径不用** |
+| `hyperion_memory_recall(query, codebase?)` | **step 1 第一步**(两 codebase 各查) | 命中同主题对比事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
+| `hyperion_memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
 | `hyperion_export_report(content, repo_path, out_dir)` | step 6 落盘 | 写对比报告 .md |
 | `hyperion_ensure_repo(name)` | 本地没仓 | 只读 clone |
 
@@ -55,7 +59,8 @@ allowed-tools:
 - **两版函数配对是语义判断** —— 没有确定性工具能自动配对;各 codebase 结构图独立无跨版本联合图,`cross_version_diff` 也只支持同仓两 ref(两个独立仓无效)。必须 `read` 函数体判同职责。
 - **不用 cross_version_diff** —— 它是「同一个 git 仓的两个 ref」对比,v20/v25 这种两独立仓无效;两版差异靠各 codebase 检索 + read 对照。
 - **结论必须附双源 file:line** —— 每条差异结论都要标 v25 的 + v20 的 file:line,防幻觉,对齐 cited-reporter。
-- **对比事实读码即记** —— 不像 bug/补丁要等真机验证;对比结论读码坐实,step 7 可直接 memorize,下次秒答。
+- **对比事实读码即记** —— 不像 bug/补丁要等真机验证;对比结论读码坐实,step 7 可直接 memorize(仅重跑路径),下次秒答。
+- **recall 命中就短路,不重跑** —— step 1 recall 命中同主题对比事实时,直接复用出报告,**不要为了「走完流程」又 search/read 一遍**。这是本 skill 的核心价值(下次秒答);重跑只在没命中/主题对不上时才做。短路路径不 memorize(DB 已有,重复记白花一步)。
 
 ## 对比卡(你的输出格式)
 
@@ -87,3 +92,5 @@ memorize: 已记 kind=codebase_fact(读码即记,下次同类问题 recall 秒�
 - **只罗列文件差异不讲流程级结论** —— step 5 要把节点差异聚成流程变了什么 + 为什么,不是 git diff 堆栈。
 - **结论不带双源 file:line** —— 每条差异都要标两版的 file:line,防幻觉。
 - **等用户验证才 memorize** —— 对比是读码事实,读完即记(区别于 bug/补丁型 skill);不记就丢了「下次秒答」。
+- **recall 命中还重跑一遍** —— step 1 recall 命中同主题对比事实后,直接复用出报告(step 5/6);别为了「走完 7 步」又 search×4 + read×20 全跑一遍。那是冷路径才该做的事,热路径重跑 = 浪费步数、「秒答」价值落空。
+- **短路路径重复 memorize** —— recall 已命中的事实 DB 里有,短路时再 memorize 是浪费调用(虽按 summary 算 id 会去重不污染,但白花步数)。只有重跑得出**新结论**才 memorize。
