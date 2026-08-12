@@ -248,11 +248,16 @@ class _FakeMemSvc:
 
     def __init__(self):
         self.recall_scopes: list = []
+        self.search_scopes: list = []
         self.memorize_scopes: list = []
 
     async def recall(self, query, scope, *, top_k=None):  # noqa: ANN001 —— 假对象,签名宽松
         self.recall_scopes.append(scope)
         return []  # 无命中 → memory_recall 走空提示分支(仍回显 codebase)
+
+    async def search(self, query, scope, *, top_k=5, **kw):  # noqa: ANN001 —— memory-only 路(memory_recall 工具用)
+        self.search_scopes.append(scope)
+        return []
 
     async def memorize(self, items, scope):  # noqa: ANN001
         self.memorize_scopes.append(scope)
@@ -271,15 +276,20 @@ def test_search_codebase_per_call_codebase():
 
 
 def test_memory_recall_per_call_codebase(monkeypatch):
-    """memory_recall 传 codebase → recall 用对应 scope(空结果回显 per-call 名 + scope 记录双证)。"""
+    """memory_recall 传 codebase → search 用对应 scope(空结果回显 per-call 名 + scope 记录双证)。
+
+    同时确认走的是 memory-only 的 search(不混 code chunk),不是混合检索的 recall ——
+    见 memory-design-review-2026-08-12:memory_recall 职责是翻长期记忆,代码检索另有 search_codebase。
+    """
     fake = _FakeMemSvc()
     monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_recall",
                 {"query": "bluetooth disconnect", "codebase": "nonexistent_xyz_cb_42"})
     assert "codebase=nonexistent_xyz_cb_42" in out, out
-    assert fake.recall_scopes, "recall 没被调"
-    assert fake.recall_scopes[-1].codebase == "nonexistent_xyz_cb_42"
+    assert fake.search_scopes, "memory-only search 没被调(应走 svc.search 不是 svc.recall)"
+    assert not fake.recall_scopes, "memory_recall 不该走混合检索 svc.recall(会返 code chunk)"
+    assert fake.search_scopes[-1].codebase == "nonexistent_xyz_cb_42"
 
 
 def test_memory_memorize_per_call_codebase(monkeypatch):

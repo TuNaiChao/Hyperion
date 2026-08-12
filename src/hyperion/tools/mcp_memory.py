@@ -106,9 +106,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         relevant to the query, each with file:line provenance + confidence + recency.
 
         Call this BEFORE localizing/patching to reuse prior root-causes/fixes for this codebase.
-        kind: optional filter — "bug_lesson" returns only past patches/fixes (excludes codebase
-              facts + raw code); omit for all kinds. Multiplies fetch then filters, so the kind
-              filter won't starve results (absorbs the former patch_search tool).
+        kind: optional filter — "bug_lesson" returns only past patches/fixes (excludes
+              codebase facts); omit for all kinds. Multiplies fetch then filters, so the kind
+              filter won't starve results (absorbed the former patch_search tool).
         codebase: override which codebase's memory to recall from (default = this server's
               codebase). Pass when the bug you're investigating belongs to a different repo than
               the server's default; recall is scope-isolated so it never crosses codebases.
@@ -116,9 +116,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         # per-call codebase 覆盖(模板同 blast_radius 的 `codebase or repo`);不传 = 闭包默认 repo。
         active_repo = codebase or repo
         active_scope = Scope(owner="default", codebase=active_repo)
-        # 给了 kind → 多取再按 kind 过滤(留余量,对齐原 patch_search 的做法);否则按 top_k 直取。
+        # memory-only 检索(svc.search = recall 关掉 code/structural 两路 + 不 bump)。
+        # 故意不调 svc.recall():那个会混进 code_index 的代码 chunk,而本工具的职责是翻「长期记忆」
+        # (bug_lesson / codebase_fact),代码检索另有 search_codebase 工具 —— 混进来既是职责重叠
+        # (踩坑#2 变体),也和本 docstring 矛盾,还会用无关 code chunk 稀释记忆信号。
+        # 给了 kind → 多取再按 kind 过滤(留余量);否则按 top_k 直取。
         fetch_k = max(top_k * 3, top_k) if kind else top_k
-        hits = await svc.recall(query, active_scope, top_k=fetch_k)
+        hits = await svc.search(query, active_scope, top_k=fetch_k)
         if kind:
             hits = [h for h in hits if (h.kind or "") == kind][:top_k]
         if not hits:
