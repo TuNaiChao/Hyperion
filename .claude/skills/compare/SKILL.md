@@ -27,6 +27,8 @@ allowed-tools:
 ## 运行模式
 
 1. **确认两版 + 流程主题**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),后面检索用概念不用文件名。
+
+   > **⚠ 仓库路径**:工具(`search_codebase`/`repo_map`/`call_chain`)返回的 file:line 是索引时的**相对路径**(带 repo_root 前缀,如 `code-test/v25/bluez/src/...`)。你要 `read` 函数体时,若相对路径在你的 cwd 下打不开(常见:仓库目录被 gitignore → `glob` 看不见;或 cwd 不是项目根),**直接问用户要仓库绝对路径**,或用 `ensure_repo` 拿到 `data/repos/` 下的落点 —— **别浪费步数满盘 glob/find**(本 skill 无 bash 权限,find 也用不了)。拿到绝对路径前缀后,把索引返回的相对路径拼成绝对路径再 `read`。
 2. **锚定流程入口【核心·阶段 A】**:对**两版各跑一次** `search_codebase(query=<流程概念>, codebase=<各>)` + `repo_map(codebase=<各>)`。拿到**两版各自的入口函数群 + file:line**(工具只回索引内真实符号,防幻觉)。流程跨多个函数 → 用 `call_chain(symbol=<入口函数>, codebase=<各>)` 从入口多跳展开,看清整条流程涉及的函数链。
 3. **建立两版函数对应【语义判断·核心】**:把两版入口函数群**配对** —— 同名直接配(`bt_connect` ↔ `bt_connect`);名字不同就 `read` 函数体判**是否同职责**(v20 `bt_connect` ↔ v25 是否拆成了 `bt_connect`+`att_connect`?)。配不上的标「v20 无 / v25 新增」。**这是语义判断,无确定性工具**,靠读函数体推理。
 4. **逐节点对照【阶段 B】**:对配上的每对函数,`read` 两版完整函数体,讲清差异 —— 逻辑分叉 / 参数变化 / 新增校验 / 删除的步骤 / 重构。流程上的每个关键节点(入口、状态转换、资源释放...)都对照一遍。`memory_recall(query, codebase=<各>)` 两 codebase 各查一次,翻历史调研事实补充上下文(可能之前调研过相关模块)。

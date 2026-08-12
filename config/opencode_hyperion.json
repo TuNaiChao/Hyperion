@@ -91,7 +91,7 @@
     "hyperion-compare": {
       "description": "Hyperion 跨版本代码对比调研(只读):opencode 驱动,锚定两版各自的流程入口函数、语义配对、逐节点读函数体对照、聚流程级差异、落对比报告。读码即记(对比是纯读码事实,不需等用户验证)。不改代码。",
       "mode": "primary",
-      "steps": 20,
+      "steps": 28,
       "permission": {
         "edit": "deny",
         "bash": "deny",

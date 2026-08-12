@@ -1,6 +1,6 @@
 ---
 name: compare-skill-handoff
-description: "2026-08-12 跨版本代码对比调研 compare skill 落地 —— 1 skill 0 新工具,镜像 upstream-merge 只读调研型;3 阶段对比法(锚定入口→语义配对→逐节点对照);memorize 读码即记(本 skill vs 其他 4 个的核心差异=下次秒答)。蓝连流程真数据探针全绿。"
+description: "2026-08-12 跨版本代码对比调研 compare skill 落地 + opencode e2e 真机全绿 —— 1 skill 0 新工具,镜像 upstream-merge 只读调研型;3 阶段对比法(锚定入口→语义配对→逐节点对照);memorize 读码即记(本 skill vs 其他 4 个的核心差异=下次秒答)。e2e:44 工具 16 步,报告落盘+2 条记忆写 DB(raw 查证);steps 28;两环境坑记 opencode-mcp-wiring。"
 metadata:
   node_type: memory
   type: project
@@ -76,4 +76,21 @@ bluez v25 = `code-test/v25/bluez` / v20 = `code-test/v20/bluez`;索引 `data/cod
 - `config/opencode_hyperion.json`(+ hyperion-compare agent block,经 symlink 自动到 opencode.json)
 - handoff memory + MEMORY.md + CLAUDE.md(低优 backlog 标「已成」)
 
-关联 [[backport-workflow-handoff]] [[upstream-merge-handoff]] [[opencode-config-drift]] [[pitfall-log]](#2 漏斗) [[skill-prompt-writing-style]] [[route3-cross-version-handoff]](cross_version_diff 能力边界)。
+## ✅ opencode e2e 真机全绿(2026-08-12,hyperion-compare 自驱蓝连流程对比)
+
+`hyperion-compare` agent 自驱跑完 v20/v25 蓝牙连接流程对比,**44 工具调用、16 步自然收尾**(steps 上限 28 没撞)。报告落盘 `data/compare/bluez-rca.md`(81 行)+ **memorize 2 条 codebase_fact 写进 DB(id `f8613b28`/`cc82239d`,raw DB 查证非幻觉)**。
+
+工具序列对得上 skill 设计:`skill(compare)` → `search_codebase`×4 + `repo_map`×2(两 codebase 各跑,锚定入口)→ `read`×23 + `grep`×7(逐节点读两版函数体对照)→ `memory_recall`×2 → `export_report`×1(落盘)→ `memory_memorize`×2(读码即记)。
+
+agent 自驱结论(与我手工探针一致,且更深):**连接主流程两版 1:1 同构**(`connect_next`/`hci_create_connection` 逐字节相同),差异在四个控制面 —— ① 错误码升级为结构化字符串码(ERR_BREDR_CONN_*/LE_CONN_*)② 连接权能护栏收紧(bonding 互斥/profile 权限过滤)③ **bearer 子系统落地**(v25 新增 src/bearer.c,`device_add_connection` 多 `flags` 参 + `state->initiator` + `btd_bearer_connected`)④ LE 状态前置。**与我探针发现的 `device_add_connection` v25 多 flags+bearer 通知完全吻合**。
+
+### ⚠ e2e 踩到两个环境坑(已记 [[opencode-mcp-wiring]])
+
+1. **opencode 不读 `.env`,LLM provider key 走 shell env** —— `opencode run` 报 401 Invalid API key(uniontech-ai/deepseek-v4-flash-0731 via ai.getdeepin.org),但 `.env` 里 `UNIONTECH_AI_API_KEY` 明明有。opencode 的 `"apiKey":"{env:UNIONTECH_AI_API_KEY}"` 从 **shell 环境变量**读,不 load `.env`。**修法:跑前 `set -a; . ./.env; set +a`**。
+2. **code-test/ gitignored → opencode glob 看不见** —— 第一轮 e2e agent 卡在找仓库路径(glob 尊重 .gitignore 过滤掉 code-test/),耗光 steps=20 预算没到落盘。**且 compare 是只读 skill(bash deny),agent 不能 find/ls 找路径**。**修法:prompt 里给仓库绝对路径;steps 20→28(读两版大函数体需要预算)**。**SKILL 已可考虑加一句提示**(索引返回相对路径时 read 用绝对前缀 / 或让用户给路径)。
+
+### steps 20→28 的依据
+
+e2e1(steps=20)跑满 20 step 撞上限,只到 step 3(锚定+配对),没到 read 对照/export/memorize。e2e2(steps=28 + 绝对路径)16 步自然收尾,全 7 步走完。**28 留够 read 两版函数体的预算**(compare 的重活在 step 4 逐节点对照,不像 backport 只读单边)。config 已定 28。
+
+关联 [[backport-workflow-handoff]] [[upstream-merge-handoff]] [[opencode-config-drift]] [[opencode-mcp-wiring]](e2e 两个环境坑) [[pitfall-log]](#2 漏斗) [[skill-prompt-writing-style]] [[route3-cross-version-handoff]](cross_version_diff 能力边界)。
