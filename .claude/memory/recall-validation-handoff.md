@@ -1,8 +1,11 @@
 ---
 name: recall-validation-handoff
-description: backlog #59「recall→定位 价值」验证实验结论 —— ⚠️2026-08-12 N=2 修正:N=1 的"recall 3-4× 提速"未复现,不稳健,delegate 运行间噪声主导
-metadata:
+description: "backlog #59「recall→定位 价值」验证实验结论 —— ⚠️2026-08-12 N=2 修正:N=1 的\"recall 3-4× 提速\"未复现,不稳健,delegate 运行间噪声主导"
+metadata: 
+  node_type: memory
   type: project
+  originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
+  modified: 2026-08-12T08:12:03.385Z
 ---
 
 **⚠️ 2026-08-12 N=2 复核修正:N=1 的"recall 类似 bug 教训 → 定位 3-4× 提速"结论被推翻。** N=2 两臂都 1 轮定位收敛,baseline 自身从 32 步掉到 17 步(臂内方差 = recall 边际效应),recall 反而 26 步 + verified=False(假阴性)。recall 对定位轮数有时帮有时不帮,gap 压不过 glm-5.2 运行间噪声。**原 N=1"3-4× 提速"表述作废**;recall 保留(无害+质量持平),B(P1 自动 query)降级(真上前需 N≥5 定性)。详见下方「N=2 修正」段。**2026-08-11 原 N=1 结论(作废,留档):recall 一个"类似 bug"的教训 → 定位 证实有增益。**
@@ -86,6 +89,15 @@ N=2 触发了对记忆设计的整体复核(voxos/mem0/arXiv 2025-2026 最佳实
 **复核同时发现一个真 bug 并已修(B)**:`memory_recall` MCP 工具调错了 `svc.recall()`(混合检索,会返 code_index 的代码 chunk),与其 docstring(翻长期记忆)矛盾 + 与 `search_codebase` 职责重叠(踩坑#2 变体)→ 改走 `svc.search()`(memory-only)。这本身也是 recall 信号被吃的一个来源(无关 code chunk 稀释记忆)。**注意:orchestrator 预注入节点早调 `svc.search()` 已对,C(注入方式)原担忧不存在 → C 并入 A 不立项。**
 
 **后续评估 recall 价值,用定性(防误诊/带事实),别再据 step-count。**
+
+## 2026-08-12 compare 正例:recall 增益取决于「注入层是否短路」(本条修正上方「recall 无稳定增益」的适用边界)
+
+bug-RCA 测出「recall 无稳定 step-count 增益」后,在 **compare 跨版本对比 skill** 上测出了**反例 —— recall 有巨大增益(-90% 工具 / ~7× 提速)**。关键差异**不在 recall 本身,在注入层**:
+
+- **bug-RCA(上面测的)**:recall 命中的是**线索**(类似 bug 教训),不能短路流程,只能辅助定位 → delegate 仍要自己读码推理 → step-count 增益被噪声吃掉。**结论「无稳定提速」对「线索型 recall」成立。**
+- **compare**:recall 命中的是**结论**(完整的流程对比事实,带双源 file:line,可直接复用)→ **能短路**。但首次 e2e 暴露注入层 gap:SKILL 写成固定 7 步流水线,agent recall 命中后仍整轮重跑(42 工具/read×22,与冷路径几乎一样,agent 自述「按流程需要重新验证」)。**修法:SKILL + prompt 显式写「recall 命中→短路,不重跑」** → 改后 4 工具/read×0/~40s 出报告(质量不降,复用记忆)。
+
+**核心教训(给所有带 memory_recall 的 skill)**:**「记忆召回」≠「记忆被用」**。recall 工具命中只是召回层工作;**注入层**(skill/prompt)必须显式写「命中→短路/复用」分支,否则 agent 把固定流程当流水线走完,记忆召回了但不影响行为。判据 = **recall 命中的是线索还是结论**:线索型(bug-RCA/backport/patch-review/upstream-merge 的同类历史)不能短路,只能当定位辅助,无 step-count 增益属正常;结论型(compare 的对比事实)能短路,增益巨大,但**必须显式写短路指令否则白搭**。详见 [[compare-skill-handoff]]。
 
 ## 不做(YAGNI)
 

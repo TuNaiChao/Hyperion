@@ -93,4 +93,31 @@ agent 自驱结论(与我手工探针一致,且更深):**连接主流程两版 1
 
 e2e1(steps=20)跑满 20 step 撞上限,只到 step 3(锚定+配对),没到 read 对照/export/memorize。e2e2(steps=28 + 绝对路径)16 步自然收尾,全 7 步走完。**28 留够 read 两版函数体的预算**(compare 的重活在 step 4 逐节点对照,不像 backport 只读单边)。config 已定 28。
 
-关联 [[backport-workflow-handoff]] [[upstream-merge-handoff]] [[opencode-config-drift]] [[opencode-mcp-wiring]](e2e 两个环境坑) [[pitfall-log]](#2 漏斗) [[skill-prompt-writing-style]] [[route3-cross-version-handoff]](cross_version_diff 能力边界)。
+## ✅✅ 「下次秒答」验证 + recall 短路修复(2026-08-12,commit 770c97e)
+
+验证「记忆让下次秒答」:全新 session 问同一问题,看 recall 是否被优先用。
+
+**e3(改前,无短路指令)**:recall 命中(两 codebase 各召回完整对比事实 1245/894 字符)且**被第一步调用**(优先级对了),**但 agent 仍整轮重跑** —— read×22 + search×4,与冷路径几乎一样(42 工具 vs 44)。agent 自述:「记忆已命中(conf=0.50),**但按 compare skill 流程我需要重新跑一遍读码验证**」。还重复 memorize×2(按 id 去重不污染,但白花步数)。
+
+**根因 = 注入层 gap**(对标 [[memory-design-review-2026-08-12]] 那类复核):召回层工作了,但 SKILL.md 把流程写成固定 7 步 playbook,agent 当「每次必走完」的流水线,recall 命中后没敢短路。
+
+**修法(SKILL.md + agent prompt 改「recall 优先 + 命中短路」)**:
+- step 1 第一步必 `memory_recall` 两 codebase 各查;命中同主题对比事实 → 复用直接出对比卡(step 5/6),**不重跑 search/read**。
+- 短路路径**不 memorize**(DB 已有);只有没命中/主题对不上才走完整 A→B→C。
+- 关键约束 + 「不要」段都加「recall 命中就短路,别为走完流程又 search/read 一遍」。
+
+**e4(改后,短路生效)**:`skill` → `memory_recall`×2 → `export_report`,**完事**。4 工具 / read×0 / memorize×0 / ~40s。报告质量不降(入口配对表 + 3 大差异面 + 双源 file:line 全在,复用记忆)。
+
+| 路径 | 工具 | read | memorize | 历时 | 质量 |
+|---|---|---|---|---|---|
+| 冷 e2e2(首次) | 44 | 23 | 2 | ~5min | 完整 |
+| 热 e3(改前无短路) | 42 | 22 | 2(重复) | ~4min | 完整但重跑浪费 |
+| **热 e4(改后短路)** | **4** | **0** | **0** | **~40s** | 完整(复用记忆) |
+
+**结论**:-90% 工具 / -100% read / ~7× 提速,报告质量不降。compare skill 价值闭环坐实:**首次调研→读码即记→下次 recall 命中→零重跑秒答**。
+
+### gotcha(给后续 skill 的教训)
+
+**「记忆召回」≠「记忆被用」**。recall 工具能命中只是召回层工作;**注入层**(skill/prompt 指令)必须显式写「命中→短路」分支,否则 agent 会把固定流程当流水线走完,记忆成了「召回了但不影响行为」。这条对其他带 memory_recall 的 skill(backport/bug-rca/patch-review/upstream-merge)同构 —— 只是那些 skill 的 recall 是「线索」(定位辅助),compare 的 recall 是「结论」(可直接复用),所以 compare 最该短路。后续若给其他 skill 加短路,判据 = recall 命中的是线索还是结论。
+
+关联 [[backport-workflow-handoff]] [[upstream-merge-handoff]] [[opencode-config-drift]] [[opencode-mcp-wiring]](e2e 两个环境坑) [[memory-design-review-2026-08-12]](注入层复核同构) [[pitfall-log]](#2 漏斗) [[skill-prompt-writing-style]] [[route3-cross-version-handoff]](cross_version_diff 能力边界)。
