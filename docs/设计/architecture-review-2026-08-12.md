@@ -97,11 +97,11 @@ LangChain 引 Windsurf 工程师原话(*"embedding search becomes unreliable as 
 
 ### 3.2 ⚠️ 两个真实短板
 
-**短板 1(扩展悬崖):向量检索是 O(N) 内存全量余弦,无 ANN。**
+**短板 1(扩展悬崖):向量检索是 O(N) 内存全量余弦,无 ANN。** ✅ 已治(建议 A,2026-08-13)
 [store.py:387-413](../../src/hyperion/services/memory/backends/native/store.py) 把 scope 内所有 active embedding 行 load 进内存逐条算 `np.dot`。DDL 注释(store.py:14-15)自承「几百条没问题,ANN 在 backlog」。
 - **关键张力**:`code_index` 已用 **LanceDB(有原生 ANN)**,但记忆向量没用它 —— 可统一的点。
 - 记忆条数上千后,每次 recall 全量扫描 → p95 延迟劣化(Mem0 论文核心卖点之一就是 91% lower p95 latency)。
-→ **建议 A**(见 §五),**优先级最高**。
+→ **建议 A**(见 §五),**优先级最高**。**已落地**:渐进式 sqlite-vec —— `count(scope)>ann_threshold(默认 500)` 切 vec0 KNN(cosine metric,partition_key=owner+codebase 隔离),否则现状 Python loop(benchmark 实测 N<200 loop 更快、N>500 vec0 快 2-4×;numpy 向量化已证死路)。双路径阈值切换 + 加载失败降级纯 loop(绝不崩)。详见 §五 建议 A 落地段。
 
 **短板 2:中文 FTS5 分词弱。**
 [store.py:97](../../src/hyperion/services/memory/backends/native/store.py) `tokenize='unicode61 remove_diacritics 2'` 不做中文分词。纯中文关键词召回打折,靠向量路径兜底。
@@ -145,14 +145,12 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 > 优先级:🥇 硬刚需 / 🥈 高性价比 / 🥉 按触发 / 📋 长期。
 > 完成后把 `[ ]` 改 `[x]` + 记 commit。
 
-### [ ] 🥇 建议 A:记忆向量换 ANN(补扩展悬崖 · 生产级)
+### [x] 🥇 建议 A:记忆向量换 sqlite-vec ANN(渐进式 · 补扩展悬崖)✅ 2026-08-13
 
 - **痛点**:§3.2 短板 1。记忆向量 O(N) 全量余弦,无 ANN。
-- **做法**:记忆 embedding 迁到 LanceDB(复用 code_index 既有栈)或 `sqlite-vec`。store.py `search_vector` 从全量扫改 ANN 查询。
-- **触发条件**:**记忆条数 >500**(现 bluez 真机规模未到,但跨 codebase 累积会到)。
-- **对标**:Mem0 论文核心卖点(91% lower p95 latency)。
-- **预估**:中改动(store.py 向量读写 + recall.py 查询路径);接 backlog-production-grade。
-- **验证**:召回结果与现全量余弦 top-k 一致(ANN 近似召回率 ≥98%);不跑编译。
+- **做法(调研后校正)**:**不迁 LanceDB**(store docstring 明确拒绝:SQLite 关系操作是 KI 核心;LanceDB 留 code_index)。改用 **sqlite-vec**(SQLite 扩展,同栈零冲突,0.1.9 已在 site-packages)。调研三关键:① deer-flow 生产级纯 BM25 零向量(这规模段 ANN 易过度设计);② numpy 向量化是死路(benchmark 实测:瓶颈在逐行 frombuffer 解码 BLOB,不在循环);③ sqlite-vec benchmark 实测 N>500 稳定快 2-4×、N<200 反慢 3× → **双路径阈值切换**。
+- **落地**:`search_vector` 检测 `count>ann_threshold(默认 500)` → vec0 KNN(cosine metric,distance=1-sim 转换误差<1e-7),否则现状 loop。延迟建表(镜像 code_index `_open_or_create` 维度探测);`upsert` 同事务双写 vec0(DELETE+INSERT,vec0 无 ON CONFLICT);partition_key=owner+codebase 硬隔离 KNN;active/repo 过滤 KNN 后回主表做(over_fetch=limit×4 补漏)。`auto_index:bool` + `ann_threshold:int` 开关,加载失败降级纯 loop(绝不崩)。**校正 1 处探针盲点**:sqlite-vec 默认 metric 是 L2 非 cosine → 建表须显式 `distance_metric=cosine` + 跳过零向量(cosine 未定义)。5 单测(延迟建表+双写/阈值分流/KNN 与 loop 召回一致/partition 隔离+active 过滤/auto_index=False 降级)+ 全记忆 42 绿。详见 [suggestion-a-handoff](../../.claude/memory/suggestion-a-sqlite-vec-ann-handoff.md)。
+- **触发条件**:已满足(count>500 自动切;现真机规模未到但代码就绪)。
 
 ### [x] 🥈 建议 B:摘要触发改 token 感知(小改动 · 直击短板 1)✅ 2026-08-12
 

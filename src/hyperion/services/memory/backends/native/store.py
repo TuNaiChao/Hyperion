@@ -10,9 +10,10 @@
 为什么用 SQLite(不另开 LanceDB)
   - KI ≠ 代码 chunk:需要关系操作(按 scope/kind 过滤、冲突软删 superseded_by IS NULL、
     access_count 累加),SQLite 最合适;LanceDB 留给 code_index 的代码 chunk,不造第三套检索栈。
-  - 同类参考实现全是 SQLite:deer-flow deermem、mnemopi beam、code-review-graph graph.db。
-  - 向量:存 float32 blob,cosine 在 Python 里算(v1 知识项量级小,几百条 O(N) 无感;
-    千万级再上 ANN,记 backlog)。
+  - 同类参考实现全是 SQLite:deer-flow deermem(纯 BM25 零向量)、mnemopi beam、code-review-graph graph.db。
+  - 向量:存 float32 blob。**渐进式 ANN(建议 A)** —— count(scope)>ann_threshold(默认 500)时
+    search_vector 切 sqlite-vec vec0 KNN(C 扩展,partition_key 按 owner+codebase 隔离);否则 Python
+    逐行 cosine(benchmark 实测:N<200 loop 更快,N>500 vec0 快 2-4×)。双路径阈值切换,加载失败降级纯 loop。
 
 bi-temporal(借 graphiti):矛盾/失效时设 invalid_at + superseded_by(软删),永不物理删除 ——
 能回答"这个 bug 在 X 时点还存不存在"(系统考古关键)。检索默认只看 active 的。
@@ -25,6 +26,7 @@ dumb CRUD:本文件只存/取/查;智能(合并/冲突/巩固)在 memorize.py / 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -33,7 +35,13 @@ from typing import Any
 
 from hyperion.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
 
+logger = logging.getLogger(__name__)
+
 _SCHEMA_VERSION = 1
+
+# sqlite-vec 虚拟表名(向量 ANN;建议 A)。延迟建表 —— 首次写带 embedding 的 KI 时按探测维度建。
+_VEC_TABLE = "ki_vec"
+_DEFAULT_ANN_THRESHOLD = 500  # count(scope) 超此 → search_vector 切 vec0 KNN(benchmark 交叉点 ~200-500)
 
 # 知识项的所有列(单表查询用 _KI_COLS;多表 JOIN 用 _cols("ki") 加别名前缀)。
 _KI_FIELD_LIST = [
@@ -270,7 +278,14 @@ class MemoryStore:
         embedding=excluded.embedding, updated_at=excluded.updated_at
     """  # created_at/owner/codebase 不在 SET —— upsert 保持原创建时间与租户身份
 
-    def __init__(self, store_path: str | Path, *, db_name: str = "memory.db"):
+    def __init__(
+        self,
+        store_path: str | Path,
+        *,
+        db_name: str = "memory.db",
+        auto_index: bool = True,
+        ann_threshold: int = _DEFAULT_ANN_THRESHOLD,
+    ):
         self._path = Path(store_path)
         self._path.mkdir(parents=True, exist_ok=True)
         self._db_file = self._path / db_name
@@ -284,12 +299,33 @@ class MemoryStore:
         self._conn.executescript(_SCHEMA)
         self._conn.execute("INSERT OR IGNORE INTO ki_meta(key,value) VALUES ('schema_version', ?)", (str(_SCHEMA_VERSION),))
 
+        # ── sqlite-vec 加载(建议 A:向量 ANN 加速)──
+        # 绝不崩:加载/建表失败 → _vec_ok=False → search_vector 走纯 loop(记忆是核心,向量加速是优化)。
+        self._auto_index = auto_index
+        self._ann_threshold = ann_threshold
+        self._vec_ok = False            # sqlite-vec 是否加载成功
+        self._vec_dim: int | None = None  # vec0 表维度(None=还没建表);建表后记进 ki_meta('vec_dim')
+        if auto_index:
+            try:
+                import sqlite_vec
+
+                self._conn.enable_load_extension(True)
+                self._conn.load_extension(sqlite_vec.loadable_path())
+                self._vec_ok = True
+                # 冷启动恢复:若库已有 vec0 表(之前建过),从 ki_meta 读回 dim
+                stored = self._conn.execute("SELECT value FROM ki_meta WHERE key='vec_dim'").fetchone()
+                self._vec_dim = int(stored["value"]) if stored else None
+            except Exception as e:  # noqa: BLE001 - sqlite-vec 没装/加载失败不阻断 memory(只少 ANN 加速)
+                logger.warning("memory store: sqlite-vec 加载失败,降级纯 loop 向量检索: %s", e)
+                self._vec_ok = False
+
     # —— 写 ——
 
     def upsert(self, items: list[KnowledgeItem]) -> int:
         """批量 upsert(按 id;存在则更新除 created_at/owner/codebase 外字段)。返回条数。
 
         ON CONFLICT 原地更新 → rowid 稳定 → FTS rowid 映射不乱。整批一个 BEGIN IMMEDIATE 事务。
+        带 embedding 的行同事务双写 vec0 表(建议 A:向量 ANN 加速)。
         """
         if not items:
             return 0
@@ -298,11 +334,91 @@ class MemoryStore:
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 self._conn.executemany(self._UPSERT, rows)
+                self._vec_upsert(rows)  # 同事务双写 vec0(失败不阻断主表,降级 loop)
                 self._conn.execute("COMMIT")
             except BaseException:
                 self._conn.execute("ROLLBACK")
                 raise
         return len(rows)
+
+    # —— sqlite-vec ANN(建议 A)——
+
+    def _ensure_vec_table(self, dim: int) -> bool:
+        """首次写向量时按探测维度建 vec0 表(partition_key=owner+codebase)。
+
+        返 True=表就绪(本次或之前建好,且维度一致);False=不可用(未加载/维度冲突/建表失败)→ 降级 loop。
+        镜像 code_index store.py:_open_or_create(repo, dim) 的"探测维度再建表"模式。
+        维度冲突(配置换 model 改 dim)→ 不重建(重建=运维 reindex),返 False 降级 loop。
+        """
+        if not self._vec_ok:
+            return False
+        if self._vec_dim is None:
+            try:
+                # distance_metric=cosine:distance = 1 - cosine_sim(实测转换误差<1e-7)。
+                # 不用默认 L2(L2 distance ≠ cosine,需归一化双源,复杂)。cosine metric 直接对齐 loop 语义。
+                self._conn.execute(
+                    f"CREATE VIRTUAL TABLE IF NOT EXISTS {_VEC_TABLE} USING vec0("
+                    f"embedding float[{dim}] distance_metric=cosine, owner TEXT, codebase TEXT)"
+                )
+                self._conn.execute("INSERT OR REPLACE INTO ki_meta(key,value) VALUES ('vec_dim', ?)", (str(dim),))
+                self._vec_dim = dim
+            except Exception as e:  # noqa: BLE001 - 建表失败降级,不崩
+                logger.warning("memory store: vec0 建表失败,降级 loop: %s", e)
+                self._vec_ok = False
+                return False
+        return self._vec_dim == dim
+
+    def _vec_upsert(self, rows: list[dict[str, Any]]) -> None:
+        """把带 embedding 的行同步进 vec0 表(与主表同事务)。
+
+        vec0 虚拟表无 ON CONFLICT → delete-then-insert 幂等(按 rowid)。
+        rowid 稳定(ON CONFLICT 原地更新不挪),但 executemany 不返回 rowid → 按 id 回查映射。
+        失败静默降级(只写主表)—— 记忆是核心,vec0 是加速层,绝不阻断 upsert。
+        """
+        if not self._auto_index or not self._vec_ok:
+            return
+        import numpy as np
+
+        # 探测维度建表(用第一条带非零 embedding 的行);全无 embedding → 跳过
+        dim: int | None = None
+        for r in rows:
+            if r["embedding"]:
+                dim = np.frombuffer(r["embedding"], dtype=np.float32).shape[0]
+                break
+        if dim is None:
+            return  # 这批没向量 → 不碰 vec0
+        if not self._ensure_vec_table(dim):
+            return  # 表不可用(维度冲突/建表失败)→ 降级,主表已写
+
+        try:
+            # 收集要写 vec0 的行:有 embedding 且非全零(cosine metric 下全零向量 distance 未定义,会崩;
+            # 零向量仍进主表 embedding BLOB,loop 路 cosine 自然算出 sim≈0 排末尾,不崩)。
+            def _is_zero(b: bytes) -> bool:
+                return not np.frombuffer(b, dtype=np.float32).any()
+
+            to_write = [r for r in rows if r["embedding"] and not _is_zero(r["embedding"])]
+            if not to_write:
+                return
+            # 按 id 回查 rowid(executemany ON CONFLICT 不返回 rowid;rowid 稳定)
+            ids = [r["id"] for r in to_write]
+            ph = ",".join("?" * len(ids))
+            rowid_map = dict(self._conn.execute(
+                f"SELECT id, rowid FROM knowledge_items WHERE id IN ({ph})", ids
+            ).fetchall())
+            vec_rows = [
+                (rowid_map[r["id"]], r["embedding"], r["owner"], r["codebase"])
+                for r in to_write if r["id"] in rowid_map
+            ]
+            if not vec_rows:
+                return
+            # delete-then-insert(vec0 无 ON CONFLICT;executemany 对 vec0 实测可用)
+            self._conn.executemany(f"DELETE FROM {_VEC_TABLE} WHERE rowid=?", [(vr[0],) for vr in vec_rows])
+            self._conn.executemany(
+                f"INSERT INTO {_VEC_TABLE}(rowid, embedding, owner, codebase) VALUES (?,?,?,?)",
+                vec_rows,
+            )
+        except Exception as e:  # noqa: BLE001 - vec0 写失败降级,主表事务继续 COMMIT
+            logger.warning("memory store: vec0 双写失败,降级(下次 search 走 loop): %s", e)
 
     def bump_access(self, item_id: str) -> None:
         """被召回命中:access_count+1, last_recalled=now(升级 mental_model 的依据)。
@@ -387,13 +503,35 @@ class MemoryStore:
     def search_vector(self, query_vec: Any, scope: Scope, *, repo: str | None = None, limit: int = 20) -> list[tuple[KnowledgeItem, float]]:
         """向量检索(cosine):返回 [(item, cosine)],越大越相关。
 
-        v1:scope 内所有带向量的 active 项 load 出来,Python 里算 cosine(O(N),几百条无感;
-        千万级上 ANN,记 backlog)。维度不匹配的项跳过(防配置改后脏数据崩)。
+        渐进式 ANN(建议 A):count(scope)>ann_threshold 且 vec0 可用 → sqlite-vec KNN(C 扩展,
+        partition_key 按 owner+codebase 隔离);否则 Python 逐行 cosine(benchmark:N<200 loop 更快)。
+        vec0 查询异常/维度不符 → 自动降级 loop。契约不变,recall.py 无感。
+        """
+        if query_vec is None:
+            return []
+        # 分流:超阈值 + vec0 可用 → KNN;否则现状 loop
+        if self._should_use_ann(scope):
+            hits = self._search_vec0(query_vec, scope, repo=repo, limit=limit)
+            if hits is not None:  # None=KNN 异常应降级
+                return hits
+        return self._search_vec_loop(query_vec, scope, repo=repo, limit=limit)
+
+    def _should_use_ann(self, scope: Scope) -> bool:
+        """是否走 vec0 KNN:auto_index 开 + vec0 加载成功 + 表已建 + count(scope)>阈值。"""
+        return (
+            self._auto_index
+            and self._vec_ok
+            and self._vec_dim is not None
+            and self.count(scope) > self._ann_threshold
+        )
+
+    def _search_vec_loop(self, query_vec: Any, scope: Scope, *, repo: str | None, limit: int) -> list[tuple[KnowledgeItem, float]]:
+        """纯 Python 逐行 cosine(小规模快路径 + vec0 降级兜底)。
+
+        scope 内所有带向量的 active 项 load 出来算 cosine(O(N);几百条无感)。维度不匹配的项跳过。
         """
         import numpy as np
 
-        if query_vec is None:
-            return []
         clauses, params = _scope_filter(scope, repo)
         # R3.5+(2026-08-06):不再过滤 superseded_by(旧版本可召回作参考);只排除手动 invalidate。
         clauses += ["embedding IS NOT NULL", "invalid_at IS NULL"]
@@ -411,6 +549,51 @@ class MemoryStore:
             scored.append((_row_to_ki(r), sim))
         scored.sort(key=lambda x: x[1], reverse=True)
         return scored[:limit]
+
+    def _search_vec0(
+        self, query_vec: Any, scope: Scope, *, repo: str | None, limit: int
+    ) -> list[tuple[KnowledgeItem, float]] | None:
+        """vec0 KNN + 回主表取 KI + active/repo 过滤。返 None=异常(应降级 loop)。
+
+        distance(cosine distance,越小越近)→ sim = 1 - distance(cosine similarity,越大越近)。
+        partition_key=owner+codebase 硬隔离 KNN;active(invalid_at)与 repo 只能 KNN 后过滤
+        (vec0 不支持非 partition_key 的 WHERE)→ over_fetch=limit×4 补漏名额(对齐 recall.py cand)。
+        """
+        import numpy as np
+
+        try:
+            q = np.asarray(query_vec, dtype=np.float32)
+            if q.shape[0] != self._vec_dim:
+                return None  # 查询维度与表维度不符 → 降级 loop(loop 逐行校验跳过)
+            if not q.any():
+                return None  # 全零查询向量:cosine 未定义 → 降级 loop(loop 算出 sim≈0 自然返低分)
+            # KNN:多取 4× 喂后面的 active/repo 过滤(repo 过滤更易漏,故 repo 时才放大)
+            over_fetch = limit * 4 if repo else limit * 2
+            knn = self._conn.execute(
+                f"SELECT rowid, distance FROM {_VEC_TABLE} "
+                "WHERE embedding MATCH ? AND k = ? AND owner = ? AND codebase = ? ORDER BY distance",
+                [q.tobytes(), over_fetch, scope.owner, scope.codebase],
+            ).fetchall()
+            if not knn:
+                return []
+            rowids = [r["rowid"] for r in knn]
+            dist_map = {r["rowid"]: float(r["distance"]) for r in knn}
+            # 回主表取 KI + active 过滤 + repo 过滤(vec0 不支持这些 WHERE)
+            ph = ",".join("?" * len(rowids))
+            clauses = [f"rowid IN ({ph})", "invalid_at IS NULL"]
+            params: list[Any] = list(rowids)
+            if repo:
+                clauses.append("repo = ?")
+                params.append(repo)
+            main_rows = self._conn.execute(
+                f"SELECT rowid, {_KI_COLS} FROM knowledge_items WHERE {' AND '.join(clauses)}", params
+            ).fetchall()
+            scored = [(_row_to_ki(mr), 1.0 - dist_map[mr["rowid"]]) for mr in main_rows]
+            scored.sort(key=lambda x: x[1], reverse=True)  # sim 越大越相关
+            return scored[:limit]
+        except Exception as e:  # noqa: BLE001 - KNN 异常降级 loop
+            logger.warning("memory store: vec0 KNN 失败,降级 loop: %s", e)
+            return None
 
     def close(self) -> None:
         self._conn.close()

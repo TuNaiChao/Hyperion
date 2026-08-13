@@ -80,7 +80,7 @@ class NativeMemoryService(MemoryService):
     def from_config(cls, cfg: AppConfig, **host_hooks: Any) -> NativeMemoryService:
         mcfg = cfg.memory
         ncfg = mcfg.native
-        store = MemoryStore(mcfg.store_path)
+        store = MemoryStore(mcfg.store_path, auto_index=ncfg.auto_index, ann_threshold=ncfg.ann_threshold)
 
         # embedder / reranker / code_bundle 都复用 code_index(embed/rerank=off 则不用)
         embedder = reranker = code_bundle = None

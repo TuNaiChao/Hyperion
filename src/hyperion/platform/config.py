@@ -125,6 +125,8 @@ class NativeMemoryConfig(BaseModel):
     decay_halflife_days: float = 180.0  # 衰减半衰期(天):exp(-age/halflife);Weibull 留 backlog
     promote_access_count: int = 3  # 被召回≥N 次 → 升级 mental_model(Letta 3+ 规则)
     auto_consolidate: bool = True  # recall 命中达标条目 → 后台异步 consolidate 自转(对标 Cognee self-improving;见 service.recall)
+    auto_index: bool = True  # 向量 ANN(sqlite-vec vec0):True→count>ann_threshold 切 KNN;False→纯 Python loop
+    ann_threshold: int = 500  # N>此值切 vec0 KNN(N≤此走 loop 更快;benchmark 实测 1024 维交叉点 ~200-500)
     merge_step: float = 0.3  # 重提时 Bayes 置信度累加步长(mnemopi veracity)
 
 
