@@ -5,6 +5,7 @@
 做不好/做不了的 —— 记忆/代码情报/影响面/补丁验证/补丁落盘/报告落盘;定位推理+改代码+日志切片都留给 opencode 的 read/grep/awk):
   - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
   - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
+  - memory_dump       把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)。
   - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
   - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
   - call_chain        符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(谁调它/它调谁;P1.5 caller/callee 进适配层)。
@@ -55,6 +56,39 @@ def _resolve_codebase(explicit: str | None) -> str:
     return Path.cwd().name
 
 
+def _render_audit_card(it) -> str:
+    """把一条 KnowledgeItem 渲染成体检用的溯源卡(大白话:这条记忆 + 它多可信 + 哪来的 + 还有效吗)。
+
+    和 RecallHit.render() 的区别:recall 是按相关性挑几条给 LLM 看(精简、带 score);
+    体检卡是给「审记忆库」用的 —— 一次把每条都摊开,重点看四个审计维度:
+      ① 置信度 confidence   —— 这条结论我们自己有多大把握(0..1);
+      ② 来源档 source_tier  —— 哪来的(委托 agent 最可信 / 工具检索最低);
+      ③ 溯源 evidence+commit_sha —— 能不能追到具体代码行/commit(溯源弱的高置信条目要补);
+      ④ 时效 valid_at/invalid_at —— 还有效吗,有没有被取代(bi-temporal,失效的标 STALE)。
+    access_count 顺带给(被反复召回 = 该不该升级 mental_model 的信号)。
+    """
+    # 溯源行:有 evidence 就列 file:line(最多 3 条),没 evidence 就空 —— 体检时一眼看出「这条有没有锚到代码」
+    if it.evidence:
+        ev = "; ".join(f"{e.file}:{e.line}" if e.line else e.file for e in it.evidence[:3])
+    else:
+        ev = ""
+    loc = f"  @{ev}" if ev else "  @无证据(file:line)"
+    # 置信度 + 来源档凑一行:体检的核心信号 —— 高置信 + 低来源档(如 tool)要警惕,低置信 + 高来源档可补强
+    conf = f"conf={it.confidence:.2f}" if it.confidence else "conf=—"
+    tier = f"tier={it.source_tier}"
+    sha = f"  sha={it.commit_sha[:8]}" if it.commit_sha else ""  # 有 commit 才标(溯源锚点;没有是体检发现的「溯源弱」信号之一)
+    # bi-temporal:失效点 / 被取代 → 标 STALE,体检时这些是「该清理/已过期」的条目
+    stale = ""
+    if it.invalid_at is not None:
+        stale = f"  STALE(invalid {it.invalid_at:%Y-%m-%d})"
+    elif it.superseded_by:
+        stale = f"  STALE(被 {it.superseded_by[:8]} 取代)"
+    # 记录时间 + 被召回次数:created_at 看新旧,access_count 看利用率(低置信却高 access = 待巩固)
+    dt = f"  {it.created_at:%Y-%m-%d}" if it.created_at else ""
+    acc = f"  hits={it.access_count}" if it.access_count else ""
+    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{stale}".rstrip()
+
+
 def _retrieval_bundle():
     """懒构造 (embedder, store, reranker)——code_index 检索三件套(search_codebase 用)。
 
@@ -75,10 +109,10 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露十三个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十五个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
-    search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
+    memory_dump / search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
     同一 server 进程可切多个仓),不传则用这里的默认 repo。
     server 名 "hyperion" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 hyperion_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
@@ -179,6 +213,41 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         )
         n = await svc.memorize([item], active_scope)
         return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added)"
+
+    # ── ②b memory_dump:把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)──
+    # recall 是「按 query 相关性挑几条」(得先知道问啥);memory_dump 是「一次把全量摊开看」——
+    # 体检记忆库:「关于这个仓我们到底记了啥 / 每条多可信 / 哪来的 / 还有效吗」。这是可审计知识库的入口。
+    # 包 MemoryService.list_items(已是契约,0 新服务代码),每条渲染成带溯源的体检卡(_render_audit_card)。
+    @mcp.tool()
+    async def memory_dump(kind: str | None = None, include_invalid: bool = False,
+                          codebase: str | None = None) -> str:
+        """Dump (browse/audit) Hyperion's long-term memory for a codebase — every knowledge item with
+        its confidence + provenance + bi-temporal status. NOT a relevance search.
+
+        The opposite of memory_recall (which finds a few items by query relevance): memory_dump lists
+        ALL items so you can audit the knowledge base — "what do we actually know about this repo" /
+        "how trustworthy is each memory" / "which are stale or superseded". Each item renders as a
+        provenance card: summary / kind / confidence / source_tier / evidence file:line / commit_sha /
+        valid_at / access_count, with stale (invalid_at / superseded_by) items flagged STALE.
+
+        Use this for a memory health-check (what's high vs low confidence, what lacks provenance, what's
+        stale, where there are unresolved conflicts between high-confidence items).
+        kind:            optional filter — codebase_fact | bug_lesson | mental_model (omit = all).
+        include_invalid: also show soft-deleted / superseded items (default False = active only).
+        codebase:        override which codebase's memory to dump (default = this server's codebase).
+        """
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
+        items = await svc.list_items(active_scope, kind=kind, include_invalid=include_invalid)
+        if not items:
+            tag = f", kind={kind}" if kind else ""
+            inv = ", include_invalid" if include_invalid else ""
+            return f"No memory for codebase={active_repo}{tag}{inv}."
+        tag = f", kind={kind}" if kind else ""
+        out = [f"Memory dump: {len(items)} items (codebase={active_repo}{tag}"
+               f"{', +invalid' if include_invalid else ''}):"]
+        out += [_render_audit_card(it) for it in items]
+        return "\n".join(out)[:8000]
 
     # ── ③ search_codebase:语义+符号检索(防幻觉:只回索引里真实存在的符号)──────
     @mcp.tool()

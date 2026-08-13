@@ -129,14 +129,14 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 - **合理 YAGNI(别建)**:`Sandbox`(R5 砍,与「不编译」冲突)、`Authorization`/多租户(R4 砍,本地 harness 不需要)、`Skill*`(opencode 原生发现 .claude/skills/ 已工作)、`Uploads`/`ViewImage`/`Title`(harness 无 UI)。**砍得对。**
 - **可能值得补**:`MemoryMiddleware`(记忆自动注入,deer-flow #22)、token 感知摘要触发。
 
-### 4.2 工具:14 个 MCP,统一「薄工具 + skill 编排」路线
+### 4.2 工具:15 个 MCP,统一「薄工具 + skill 编排」路线
 
-[mcp_memory.py](../../src/hyperion/tools/mcp_memory.py) 14 工具全薄封装:
+[mcp_memory.py](../../src/hyperion/tools/mcp_memory.py) 15 工具全薄封装:
 - **代码情报**(7):`search_codebase`/`call_chain`/`repo_map`/`repo_overview`/`blast_radius`/`cross_version_diff`/`merge_eval`
-- **记忆**(2):`memory_recall`/`memory_memorize`
+- **记忆**(3):`memory_recall`/`memory_memorize`/`memory_dump`
 - **硬门 + 落盘**(5):`validate_patch`/`export_patch`/`export_report`/`fetch_patch`/`ensure_repo`
 
-复杂编排(7 步 backport / 3 阶段 compare / 4 阶段 onboarding)放 skill 不放工具。✅ 对齐踩坑#2 + LangChain「tool selection RAG 在 >20 工具才有意义」(现 14 个,YAGNI)。
+复杂编排(7 步 backport / 3 阶段 compare / 4 阶段 onboarding / 5 步记忆体检)放 skill 不放工具。✅ 对齐踩坑#2 + LangChain「tool selection RAG 在 >20 工具才有意义」(现 15 个,YAGNI)。
 
 ---
 
@@ -193,13 +193,15 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 - **YAGNI**:落「①代码情报 + ③skill」,纯读不编译。✅
 - **形态**:镜像 compare/upstream-merge(单 `SKILL.md` + opencode agent block,read-only 权限)。
 
-### [ ] 🥈 功能 2:记忆体检 skill(团队知识转移 · 差异化卖点)
+### [x] 🥈 功能 2:记忆体检 skill(团队知识转移 · 差异化卖点)✅ 2026-08-13
 
 - **现状**:`memory_recall` 是 query 式(得先知道问啥),无「把某模块/符号所有记忆 + 置信度 + 溯源一次性摊开」能力。
-- **做法**:**0 新工具或加 1 个 `memory_dump(symbol?, codebase?)` 薄工具**,产出「关于 X 我们知道什么 + 每条多可信 + 来自哪个报告/commit」。**把 bi-temporal + provenance 字段最擅长的事做成可审计知识库。**
-- **前沿对标**:Mem0/Cognee 都没有这种「带溯源的团队记忆体检」;LangChain「select episodic/semantic memory」分类。
-- **YAGNI**:落「②记忆」,纯读。✅ **差异化,不追平。**
-- **形态**:`memory_dump` 工具(薄,接 store.py list_items + 渲染)+ 可选 skill 包装。
+- **做法(路线确认)**:**加第 15 个薄工具 `memory_dump(kind?, include_invalid?, codebase?)`** —— 包已是契约的 `MemoryService.list_items`([manager.py:61](../../src/hyperion/services/memory/manager.py#L61) + [service.py:161](../../src/hyperion/services/memory/backends/native/service.py#L161)),每条渲染成溯源卡(confidence/source_tier/evidence file:line/commit_sha/bi-temporal STALE/access_count)。**0 新服务代码,只差 MCP 薄封装。** skill 用它体检:摊全量 → 逐条读 → 聚四类健康信号(溯源弱/待巩固/已过期/未决矛盾)+ 建议。
+- **非 spec-drift(区别于功能1)**:本会话查实确实无浏览/导出工具(现 memory_recall query / memory_memorize write 两件套),`list_items` 早已是契约只是没暴露 —— 故加 1 工具是对的,不是规范误差。
+- **前沿对标**:2025-2026 治理型 agent memory 关键维度 = provenance + confidence + staleness + audit trails(Atlan/Mem0/OvalEdge/PMC-NIH 多源)。Hyperion 的 KnowledgeItem **天生带这些字段**(bi-temporal `valid_at`/`invalid_at` + `source_tier`/`evidence`/`commit_sha` + `access_count` + `superseded_by`)—— 功能 2 把这套字段最擅长的事(可审计知识库)做成可见。Mem0/Cognee 没这种「带溯源的团队记忆体检」(调研坐实)。
+- **YAGNI**:落「②记忆」,纯读(体检只看+建议,不改库)。✅ **差异化,不追平。**
+- **形态**:`memory_dump` 工具(薄,接 `svc.list_items` + `_render_audit_card` 渲染)+ `memory-health-check` skill 包装(镜像 onboarding/compare read-only,但更严:连记忆库都只读不写;体检默认不 memorize,仅发现未决矛盾才记一条「需裁决」)。
+
 
 ### [ ] 📋 功能 3:记忆图边强化(对标 Graphiti/Cognee 图原生 · 长期低优)
 

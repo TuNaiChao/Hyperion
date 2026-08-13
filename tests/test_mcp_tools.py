@@ -299,6 +299,8 @@ class _FakeMemSvc:
         self.recall_scopes: list = []
         self.search_scopes: list = []
         self.memorize_scopes: list = []
+        self.list_items_calls: list = []          # memory_dump 用(记录每次调用的 scope/kind/include_invalid)
+        self.list_items_return: list = []         # 注入返回值(默认空 → 工具走空提示分支)
 
     async def recall(self, query, scope, *, top_k=None):  # noqa: ANN001 —— 假对象,签名宽松
         self.recall_scopes.append(scope)
@@ -311,6 +313,10 @@ class _FakeMemSvc:
     async def memorize(self, items, scope):  # noqa: ANN001
         self.memorize_scopes.append(scope)
         return len(items)
+
+    async def list_items(self, scope, *, kind=None, include_invalid=False):  # noqa: ANN001 —— memory_dump 用
+        self.list_items_calls.append((scope, kind, include_invalid))
+        return self.list_items_return
 
 
 def test_search_codebase_per_call_codebase():
@@ -353,6 +359,62 @@ def test_memory_memorize_per_call_codebase(monkeypatch):
     assert "codebase=nonexistent_xyz_cb_42" in out, out
     assert fake.memorize_scopes, "memorize 没被调"
     assert fake.memorize_scopes[-1].codebase == "nonexistent_xyz_cb_42"
+
+
+# ════════════════════════ memory_dump 工具(第 15;记忆库体检入口)═════════════════════════
+
+def test_memory_dump_empty(monkeypatch):
+    """memory_dump 空库 → 友好提示串(回显 codebase),不抛 traceback、不碰真 db。
+
+    包 MemoryService.list_items(已是契约);空返回 → 工具走空提示分支。hermetic:假 svc 返 []。
+    """
+    fake = _FakeMemSvc()  # list_items_return 默认 [] → 空提示分支
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_dump", {"codebase": "nonexistent_xyz_cb_42"})
+    assert "Traceback" not in out, out
+    assert "nonexistent_xyz_cb_42" in out, out          # 回显 per-call codebase
+    assert fake.list_items_calls, "list_items 没被调"
+    # per-call codebase 透传到 scope
+    assert fake.list_items_calls[-1][0].codebase == "nonexistent_xyz_cb_42"
+
+
+def test_memory_dump_renders_audit_cards(monkeypatch):
+    """memory_dump 有条目 → 每条渲染成溯源卡(confidence/tier/evidence/sha/STALE 信号透传)+ header 计数。
+
+    hermetic:假 svc 注入 2 条 KnowledgeItem(一条高 conf 带 evidence/sha,一条低 conf 无证据),
+    断言 header「2 items」+ 两条 summary + 审计字段都进串。
+    """
+    from hyperion.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
+
+    scope = Scope(owner="default", codebase="bluez")
+    item_hi = KnowledgeItem(
+        kind="bug_lesson", repo="bluez", scope=scope,
+        summary="sdp 缓冲区溢出根因", confidence=0.9,
+        source_tier=SourceTier.delegate, commit_sha="abcdef1234",
+        evidence=[Evidence(file="lib/sdp.c", line=1222, snippet="memcpy")],
+        access_count=3,
+    )
+    item_lo = KnowledgeItem(
+        kind="codebase_fact", repo="bluez", scope=scope,
+        summary="连接流程入口 device_add_connection", confidence=0.2,
+        source_tier=SourceTier.tool,  # 无 evidence 无 sha → 溯源弱信号(@无证据)
+    )
+    fake = _FakeMemSvc()
+    fake.list_items_return = [item_hi, item_lo]
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_dump", {"codebase": "bluez"})
+    assert "Traceback" not in out, out
+    assert "2 items" in out, out                              # header 计数
+    assert "sdp 缓冲区溢出根因" in out, out                  # 高置信条 summary
+    assert "连接流程入口" in out, out                         # 低置信条 summary
+    assert "conf=0.90" in out, out                            # 置信度透传
+    assert "conf=0.20" in out, out
+    assert "tier=delegate" in out and "tier=tool" in out, out  # 来源档透传
+    assert "sha=abcdef12" in out, out                         # commit_sha 截断 8 位
+    assert "lib/sdp.c:1222" in out, out                       # evidence file:line
+    assert "@无证据" in out, out                              # 溯源弱信号(无 evidence 的条目标出)
 
 
 # ════════════════════════ cross_version_diff 工具 ═════════════════════════
