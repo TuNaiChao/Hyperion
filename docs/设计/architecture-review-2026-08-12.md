@@ -129,14 +129,14 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 - **合理 YAGNI(别建)**:`Sandbox`(R5 砍,与「不编译」冲突)、`Authorization`/多租户(R4 砍,本地 harness 不需要)、`Skill*`(opencode 原生发现 .claude/skills/ 已工作)、`Uploads`/`ViewImage`/`Title`(harness 无 UI)。**砍得对。**
 - **可能值得补**:`MemoryMiddleware`(记忆自动注入,deer-flow #22)、token 感知摘要触发。
 
-### 4.2 工具:13 个 MCP,统一「薄工具 + skill 编排」路线
+### 4.2 工具:14 个 MCP,统一「薄工具 + skill 编排」路线
 
-[mcp_memory.py](../../src/hyperion/tools/mcp_memory.py) 13 工具全薄封装:
-- **代码情报**(6):`search_codebase`/`call_chain`/`repo_map`/`blast_radius`/`cross_version_diff`/`merge_eval`
+[mcp_memory.py](../../src/hyperion/tools/mcp_memory.py) 14 工具全薄封装:
+- **代码情报**(7):`search_codebase`/`call_chain`/`repo_map`/`repo_overview`/`blast_radius`/`cross_version_diff`/`merge_eval`
 - **记忆**(2):`memory_recall`/`memory_memorize`
 - **硬门 + 落盘**(5):`validate_patch`/`export_patch`/`export_report`/`fetch_patch`/`ensure_repo`
 
-复杂编排(7 步 backport / 3 阶段 compare)放 skill 不放工具。✅ 对齐踩坑#2 + LangChain「tool selection RAG 在 >20 工具才有意义」(现 13 个,YAGNI)。
+复杂编排(7 步 backport / 3 阶段 compare / 4 阶段 onboarding)放 skill 不放工具。✅ 对齐踩坑#2 + LangChain「tool selection RAG 在 >20 工具才有意义」(现 14 个,YAGNI)。
 
 ---
 
@@ -184,11 +184,12 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 > **已砍/不做**(R4/R5 或 YAGNI):Docker 沙箱、前端、多租户鉴权、artifacts 单建、工具选择 RAG(才 13 工具)、跨 codebase 联合图(各版图独立,语义配对靠 agent)。
 > 以下 3 个**落在三支柱内 + 有前沿背书**。
 
-### [ ] 🥈 功能 1:代码 onboarding 导览 skill(填单仓调研空白)
+### [x] 🥈 功能 1:代码 onboarding 导览 skill(填单仓调研空白)✅ 2026-08-13
 
 - **现状**:5 skill(backport/bug-rca/patch-review/upstream-merge/compare)全 bug/补丁/对比导向,**无一「给新 contributor 讲清单 codebase 架构」纯调研型**。compare 是跨版本,非单仓入门。
-- **做法**:**0 新工具**,串 `repo_map`(俯瞰骨架)+ `architecture_overview`/`hub_nodes`/`communities`(CRG)+ `call_chain`(从入口展开)+ `memory_recall`(历史调研事实)→ 落盘导览报告。
-- **前沿对标**:Augment Code 2025「broad context first → focused analysis → dependency traversal」分层检索律;Code Researcher(ICLR 2026)。
+- **做法(路线修正)**:原写「0 新工具」列了 `architecture_overview`/`hub_nodes`/`communities`,但**这三个是 CodeGraph 已实现的方法([code_graph.py:568-593](../../src/hyperion/services/code_index/code_graph.py#L568-L593)),不是 MCP 工具**(原「0 新工具」前提错,规范作者把底层方法误当现成工具)。用户拍板:**加第 14 个薄工具 `repo_overview`** wrap 这三个 + `bridge_nodes`(同 analysis.py 家族,~0 额外代码)。onboarding 是第一个真需「模块/耦合」视角的 skill(bug-RCA/compare 要的是具体调用链不是模块布局)。**这是生产级正确划分** —— `repo_map`=符号层(PageRank 最重要的函数)、`repo_overview`=架构层(社区/模块边界+枢纽+瓶颈),分层检索。
+- **前沿对标**:Augment Code 2025「broad context first → focused analysis → dependency traversal」分层检索律;Code Researcher(ICLR 2026);theroadtoenterprise 2026-05 六阶段 onboarding 循环 **map→stack→patterns→trace journey→spot→document**(phase1「先看项目形状再读码」= repo_overview+repo_map;phase4「trace one real journey end-to-end」= call_chain+read)。
+- **落地**:1 薄工具 `repo_overview`(聚合 architecture_overview/communities/hub_nodes/bridge_nodes 四方法一次返,纯图查询无 LLM,图驱动防幻觉)+ 1 `onboarding` skill + 1 `hyperion-onboarding` agent block(steps 24,read-only)。镜像 compare:**memorize 读码即记**(架构是纯读码事实不需等用户验证,同 compare 区别于 bug/补丁型)+ **recall-first 短路**(命中同 codebase 同主题导览事实直接复用出报告,「下次秒答」)+ 核心难点「挑哪条旅程是语义判断」(默认 hub_nodes 排第一,用户指定优先)。2 单测(图未建降级 / 假图聚合+格式化+top_n 透传)+ 全 mcp_tools 25 绿。详见 [onboarding-handoff](../../.claude/memory/onboarding-skill-handoff.md)。
 - **YAGNI**:落「①代码情报 + ③skill」,纯读不编译。✅
 - **形态**:镜像 compare/upstream-merge(单 `SKILL.md` + opencode agent block,read-only 权限)。
 

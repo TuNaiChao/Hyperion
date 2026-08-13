@@ -438,6 +438,64 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                 f" {result.get('n_symbols', 0)} symbols / {result.get('n_files', 0)} files"
                 f"{' (truncated by budget)' if result.get('truncated') else ''}\n{body[:8000]}")
 
+    # ── ⑤e repo_overview:单仓架构总览(社区/模块边界 + hub/bridge 节点 + 耦合告警)──
+    # onboarding 导览 skill 的主数据源。三个工具三种俯瞰,互补不打架:
+    #   repo_overview = 卫星图看「城市怎么分区」(社区/模块边界 + 哪个路口是枢纽 hub
+    #                   + 哪个是咽喉 bridge + 哪两区耦合太紧该报警);
+    #   repo_map      = 看全城「最重要的 50 家店」(PageRank 排名符号);
+    #   call_chain    = 手电筒照一条路(一个符号的调用上下文)。
+    # 全是纯图查询(无 LLM),图驱动防幻觉 —— 讲「这仓分几大模块」靠社区检测,不是模型瞎编。
+    @mcp.tool()
+    async def repo_overview(top_n: int = 15, codebase: str | None = None) -> str:
+        """Single-repo architectural overview: module boundaries + hub/bridge nodes + coupling warnings.
+
+        Wraps four CodeGraph methods in one call (pure graph queries, no LLM): communities (Leiden
+        module boundaries), hub_nodes (highest in+out degree — most-depended-on cores), bridge_nodes
+        (highest betweenness — architectural chokepoints), and architecture_overview (cross-community
+        coupling edges + high-coupling >10-edge warnings). Returns them as sections of one dict so a
+        newcomer-tour agent gets the whole structural snapshot in one tool call.
+
+        Use this to answer "what does this codebase look like architecturally" / "what are the core
+        modules and hubs" — the phase-1 structural view of an onboarding tour. Distinct from repo_map
+        (PageRank symbol tree, which functions matter) and call_chain (one symbol's neighborhood):
+        repo_overview is the module-coupling / community-layout view (how the modules are divided).
+        top_n:    how many hub_nodes / bridge_nodes to return (default 15 each).
+        codebase: override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a 'not built' hint otherwise.
+        """
+        try:
+            from hyperion.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"repo_overview 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            arch = cg.architecture_overview()         # {communities, cross_community_edges, warnings}
+            # communities 复用 arch 已经取好的(architecture_overview 内部已调 get_communities,省一次调用)
+            communities = arch.get("communities", [])
+            hubs = cg.hub_nodes(top_n=top_n)          # 被依赖最多的核心枢纽
+            bridges = cg.bridge_nodes(top_n=top_n)    # 架构瓶颈/咽喉(betweenness 最高)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run hyperion index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算仓库架构总览失败({target}): {e}"
+        import json
+        result = {
+            "codebase": target,
+            "communities": communities,
+            "hub_nodes": hubs,
+            "bridge_nodes": bridges,
+            "cross_community_edges": arch.get("cross_community_edges", []),
+            "warnings": arch.get("warnings", []),     # 高耦合(>10 边)社区对,list[str]
+        }
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        n_comm = len(communities)
+        n_warn = len(result["warnings"])
+        return (f"repo-overview(codebase={target}, top_n={top_n}):"
+                f" {n_comm} communities / {len(hubs)} hubs / {len(bridges)} bridges"
+                f"{f' / {n_warn} 高耦合告警' if n_warn else ''}\n{body[:8000]}")
+
     # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
     # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
     @mcp.tool()

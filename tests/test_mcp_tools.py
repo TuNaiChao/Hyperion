@@ -154,6 +154,55 @@ def test_repo_map_success_via_fake_graph(monkeypatch):
     assert "f.c::main" in out  # body(json)含 top_symbols
     assert seen["map_tokens"] == 512  # map_tokens 透传到 repo_map
 
+# ════════════════════════ repo_overview 工具(#14,onboarding skill 主数据源)════════════════════════
+
+def test_repo_overview_not_built():
+    """图未建(或 CRG 后端未装)→ 优雅返回提示串,绝不漏 traceback(策略同 repo_map)。"""
+    mcp = build_server()
+    out = _call(mcp, "repo_overview", {"codebase": "nonexistent_xyz_repo_42"})
+    assert "Traceback" not in out, out
+    # 三种友好提示之一:图未建 / 后端未装 / 失败
+    assert any(k in out for k in ("未建", "不可用", "失败")), out
+
+
+def test_repo_overview_success_via_fake_graph(monkeypatch):
+    """happy path:假图三方法返固定 dict → 工具聚合+格式化 header + body;top_n 透传到 hub/bridge。
+
+    monkeypatch CodeGraph.open 返假图(不靠真图,hermetic):直测工具壳的「四方法聚合成一个 dict」
+    + header 格式化(communities/hubs/bridges/告警计数)+ top_n 透传。注意:工具用 arch['communities']
+    取社区(architecture_overview 内部已调 get_communities),故假图不单写 communities() 方法。
+    warnings 用 list[str] 匹配真实 CRG(communities.py:1079-1082 拼 "High coupling ..." 串)。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    seen: dict = {}
+
+    class _FakeGraph:
+        def architecture_overview(self):
+            return {"communities": [{"id": 0, "name": "core", "members": ["main"], "cohesion": 0.8},
+                                    {"id": 1, "name": "util", "members": ["helper"], "cohesion": 0.7}],
+                    "cross_community_edges": [{"source_community": 0, "target_community": 1}],
+                    "warnings": ["High coupling (12 edges) between 'core' and 'util'"]}
+
+        def hub_nodes(self, *, top_n: int = 15):
+            seen["top_n"] = top_n
+            return [{"name": "main", "qualified_name": "f.c::main", "kind": "function",
+                     "file": "f.c", "in_degree": 5, "out_degree": 3, "total_degree": 8, "community_id": 0}]
+
+        def bridge_nodes(self, *, top_n: int = 15):
+            return [{"name": "bridge_x", "qualified_name": "g.c::bridge_x",
+                     "betweenness": 0.9, "community_id": 0}]
+
+    monkeypatch.setattr(cg_mod.CodeGraph, "open", lambda target: _FakeGraph())
+    mcp = build_server()
+    out = _call(mcp, "repo_overview", {"top_n": 8, "codebase": "fake_cb"})
+    assert "Traceback" not in out, out
+    assert "2 communities / 1 hubs / 1 bridges" in out, out       # header 计数
+    assert "1 高耦合告警" in out, out                              # warnings 非空 → 告警计数
+    assert "f.c::main" in out                                     # body(json)含 hub
+    assert seen["top_n"] == 8                                     # top_n 透传到 hub_nodes
+
+
 
 # ════════════════════════ export_patch 工具 ════════════════════════
 
