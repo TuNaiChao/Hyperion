@@ -150,7 +150,15 @@ def memorize_items(
         if it.confidence == 0.0:
             it.confidence = _init_confidence(it.source_tier)
         _link_related(it, store, scope)
-        to_upsert.append(_merge_on_remention(it, store, scope, step))
+        merged = _merge_on_remention(it, store, scope, step)
+        # 纠正链:新条声明了 corrects → 回填被纠正旧条的 corrected_by(检索降权用)。
+        # corrects 是 transit 指令(agent 说「我纠正了这些旧条」),写入时消费掉,不入库。
+        for target_id in getattr(merged, "corrects", None) or []:
+            try:
+                store.mark_corrected(target_id, corrected_by=merged.id)
+            except Exception:  # noqa: BLE001 - 目标不存在/写失败不阻断 memorize(纠正链是降权不是硬门)
+                logger.warning("memory.memorize: mark_corrected 失败(target=%s): 可能目标不存在", target_id)
+        to_upsert.append(merged)
     return store.upsert(to_upsert)
 
 

@@ -19,7 +19,7 @@ allowed-tools:
 - **只读不改代码,也默认不改记忆库** —— 你不 edit 源码(不 edit / 不 git apply);对记忆库你也**只看不动**(体检 = 出体检卡 + 建议,**不自动删 stale、不自动改 confidence**)。改记忆库是人的活(对齐「未经验证不 memorize / invalidate 谨慎」)。和 onboarding/compare 一样是 read-only,且更严——连记忆库都只读不写。
 - **体检默认不 memorize** —— 体检本身**不产生新知识**(只是把已有记忆摊开看),所以**默认不 memorize**。**唯一例外**:体检中发现记忆库有**未决矛盾**(两条都 active、confidence 都高、但结论冲突)—— 这是关于记忆库本身的新观察,可 memorize 一条 `codebase_fact`「记忆库存矛盾:...」并标**需人工裁决**(你不确定谁对,只记录"这里有冲突待裁")。除此之外不记。
 
-**核心难点**:体检不是「列个清单」就完——得从 dump 出来的条目里**读出健康信号**,这是**语义判断**(没有确定性工具能"自动给记忆打健康分")。四类信号要靠你逐条读出来:① **溯源弱**——高 confidence 却没 evidence(file:line)也没 commit_sha(结论很自信但追不到代码,该补锚点);② **待巩固**——低 confidence 却高 access_count(被反复召回却不自信,可能值得 consolidate 升级);③ **已过期**——invalid_at 已设 / 被 superseded_by 取代(标了 STALE,占位但不该再用);④ **未决矛盾**——两条都 active、都高 confidence、结论却冲突(记忆库自相打架,要人裁)。`memory_dump` 只摊数据,**读信号靠你**。
+**核心难点**:体检不是「列个清单」就完——得从 dump 出来的条目里**读出健康信号**,这是**语义判断**(没有确定性工具能"自动给记忆打健康分")。四类信号要靠你逐条读出来:① **溯源弱**——高 confidence 却没 evidence(file:line)也没 commit_sha(结论很自信但追不到代码,该补锚点);② **待巩固**——低 confidence 却高 access_count(被反复召回却不自信,可能值得 consolidate 升级);③ **已过期/被纠正**——invalid_at 已设 / 被 superseded_by 取代 / 被 corrected_by 纠正(标了 STALE 或 CORRECTED,占位但不该再用);④ **未决矛盾**——两条都 active、都高 confidence、结论却冲突(记忆库自相打架,要人裁)。`memory_dump` 只摊数据,**读信号靠你**。
 
 ## 运行模式
 
@@ -32,8 +32,12 @@ allowed-tools:
    - **待巩固**:低 conf(如 <0.4)但 `hits` 高(被反复用)。→ 建议:考虑 consolidate 升级成 mental_model(或确认是否该降权)。
    - **已过期**:`STALE` 标记(invalid_at / superseded_by)。→ 建议:人裁是否物理清理 / 确认取代链完整。
    - **未决矛盾**:两条都 active、都高 conf、结论冲突(如「X 函数是线程安全」vs「X 函数非线程安全」)。→ 建议:人裁;**这是唯一可 memorize 的情形**(记一条「记忆库存矛盾,需裁决」)。
+     - **先判能不能闭环**:发现矛盾后,先读双方的 summary/detail 找有没有一方**显式说「纠正/推翻/更正」另一方**(如 summary 含「纠正先前…误诊」)。如果能判定谁对(corrector 明确)→ **不记「需裁决」**,而是调 `memory_memorize(kind=codebase_fact, corrects=[旧条id], summary="...", codebase=...)` 写纠正关系(旧条自动被标 `corrected_by` + 检索降权)。只有**真正无法裁定**的矛盾才留「需裁决」。
 4. **出体检卡**(见下格式):总数 + 按 kind 分布表 + 四类健康信号(各几条 + 举例 summary + file:line)+ 建议。
-5. **仅发现未决矛盾才 memorize**:step 3 发现「未决矛盾」→ `memorize(kind=codebase_fact, summary="记忆库存矛盾:<A vs B>", codebase=<codebase>, confidence=<你的把握>)`,标**需人工裁决**。无矛盾 → **不记**(体检不产新知识,不污染库)。
+5. **仅发现未决矛盾才 memorize**:step 3 发现矛盾 → 先判能不能闭环(见上)。
+   - **能闭环**(一方明确纠正另一方)→ `memory_memorize(corrects=[旧条id])` 写纠正关系,旧条降权 → 矛盾已解,不记「需裁决」。
+   - **不能闭环**(真正无法裁定)→ `memorize(kind=codebase_fact, summary="记忆库存矛盾:<A vs B>", codebase=<codebase>, confidence=<你的把握>)`,标**需人工裁决**。
+   - 无矛盾 → **不记**(体检不产新知识,不污染库)。
 
 ## 工具(按需调)
 
@@ -42,12 +46,12 @@ allowed-tools:
 | `hyperion_memory_dump(kind?, include_invalid?, codebase?)` | **step 1 主数据源** | 一次返全量,每条带溯源卡(conf/tier/evidence/sha/STALE/hits)。体检的入口,必调 |
 | `hyperion_memory_recall(query, codebase?)` | step 3 查特定主题补充 | dump 只给 summary,某条你想看细节(detail/root_cause)→ recall 拉。或核对「这两条是否真矛盾」时按主题召全 |
 | `read` / `grep` / `glob` / `hyperion_search_codebase` | step 3 核验引用代码 | **必要时**才核:某条溯源弱但你怀疑它指向的代码早改了 → read/search_codebase 核 file:line 还在不在(防「记忆指向不存在的代码」)。不必每条都核(省 token) |
-| `hyperion_memory_memorize(...)` | step 5(仅发现未决矛盾) | kind=codebase_fact,标「需人工裁决」;**无矛盾不记** |
+| `hyperion_memory_memorize(...)` | step 5(仅发现矛盾) | 能闭环 → `corrects=[旧id]` 写纠正关系;不能闭环 → kind=codebase_fact 标「需人工裁决」;**无矛盾不记** |
 
 ## 硬约束
 
 - **只读不改代码,默认不改记忆库** —— 不 edit 源码;对记忆库只看不动(不自动删 stale / 不自动改 confidence / 不自动 consolidate)。体检出的是**建议**,动手是人的活。比 onboarding/compare 更严:连记忆库都只读。
-- **体检默认不 memorize** —— 体检不产新知识(只摊开已有记忆看),默认不记。**唯一例外**:发现未决矛盾(两条都 active + 高 conf + 结论冲突)→ 可记一条「存矛盾,需裁决」。其它情况不记。
+- **体检默认不 memorize** —— 体检不产新知识(只摊开已有记忆看),默认不记。**例外**:发现矛盾时能闭环(一方显式纠正另一方)→ `memory_memorize(corrects=[旧id])` 标纠正关系;不能闭环 → 记一条「存矛盾,需裁决」。无矛盾不记。
 - **健康信号是语义判断** —— 没有确定性工具能自动给记忆打健康分;memory_dump 只摊数据,四类信号(溯源弱/待巩固/已过期/未决矛盾)靠你逐条读出来。这是本 skill 的核心价值。
 - **溯源弱 ≠ 错** —— 高 conf 无 evidence/sha 只代表"该补锚点",不代表结论错;别在体检里推翻结论(推翻要读码/验证,是别的 skill 的活)。体检只标「信号 + 建议」。
 - **核验 file:line 是「必要时」不是「每条」** —— 大多数记忆指向真代码,只有溯源弱且你怀疑代码已变时才 read/search_codebase 核;每条都核是浪费 token。
@@ -67,8 +71,9 @@ allowed-tools:
   ② 待巩固(低 conf 高 hits): K 条
     - <summary>  conf=X.XX hits=N  → 建议考虑 consolidate / 确认降权
     ...
-  ③ 已过期(STALE): K 条
+  ③ 已过期/被纠正(STALE/CORRECTED): K 条
     - <summary>  STALE(invalid/superseded)  → 建议人裁清理
+    - <summary>  CORRECTED(by xxxxxxxx)  → 已闭环(纠正者已标记),检索已降权
     ...
   ④ 未决矛盾(都 active 高 conf 结论冲突): K 组
     - A: <summary>  vs  B: <summary>  → 建议人裁(已 memorize 标需裁决)
@@ -89,4 +94,4 @@ memorize: 仅记了「存矛盾」(若适用);否则无(体检不产新知识)
 - **只列清单不读信号** —— step 3 要从 dump 里读出四类健康信号,不是把条目罗列一遍就完。那只是 dump 的复读机,没价值。
 - **溯源弱就推翻结论** —— 高 conf 无 evidence 只代表"该补锚点",不代表结论错;别在体检里判对错(那是 bug-rca/compare 读码验证的活)。体检只标信号。
 - **每条都核 file:line** —— 大多数记忆指向真代码,只有溯源弱且怀疑代码已变才核;每条核是浪费 token。
-- **无矛盾也 memorize** —— 体检默认不记(不产新知识);只有发现未决矛盾才记一条「需裁决」。乱记污染库。
+- **无矛盾也 memorize** —— 体检默认不记(不产新知识);发现矛盾时能闭环→标 corrects,不能闭环→记「需裁决」。无矛盾不记。乱记污染库。

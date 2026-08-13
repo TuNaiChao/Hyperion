@@ -48,7 +48,7 @@ _KI_FIELD_LIST = [
     "id", "kind", "repo", "owner", "codebase", "summary", "detail", "symptom", "root_cause", "fix_patch",
     "blast_radius_files", "kind_detail", "commit_sha", "evidence", "source", "source_tier", "confidence",
     "access_count", "last_recalled", "valid_at", "invalid_at", "created_at", "related", "tags",
-    "superseded_by", "embedding", "updated_at",
+    "superseded_by", "corrected_by", "embedding", "updated_at",
 ]
 _KI_COLS = ", ".join(_KI_FIELD_LIST)
 
@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     related            TEXT NOT NULL DEFAULT '[]',  -- JSON [ki_id]
     tags               TEXT NOT NULL DEFAULT '[]',  -- JSON [str]
     superseded_by      TEXT,               -- 被哪条取代(NULL=当前版本)
+    corrected_by       TEXT,               -- 被哪条纠正(NULL=未被纠正;不影响 active,检索降权用)
     embedding          BLOB,               -- float32 向量(NULL=没算)
     updated_at         TEXT NOT NULL
 );
@@ -180,6 +181,7 @@ def _ki_to_row(ki: KnowledgeItem) -> dict[str, Any]:
         "related": json.dumps(ki.related, ensure_ascii=False),
         "tags": json.dumps(ki.tags, ensure_ascii=False),
         "superseded_by": ki.superseded_by,
+        "corrected_by": ki.corrected_by,
         "embedding": _vec_to_blob(ki.embedding),
         "updated_at": _utcnow_iso(),
     }
@@ -214,6 +216,7 @@ def _row_to_ki(row: sqlite3.Row | dict[str, Any]) -> KnowledgeItem:
         related=json.loads(g("related") or "[]"),
         tags=json.loads(g("tags") or "[]"),
         superseded_by=g("superseded_by"),
+        corrected_by=g("corrected_by"),
         embedding=_blob_to_vec(g("embedding")),
     )
 
@@ -265,7 +268,7 @@ class MemoryStore:
     VALUES (@id,@kind,@repo,@owner,@codebase,@summary,@detail,@symptom,@root_cause,@fix_patch,
             @blast_radius_files,@kind_detail,@commit_sha,@evidence,@source,@source_tier,@confidence,
             @access_count,@last_recalled,@valid_at,@invalid_at,@created_at,@related,@tags,
-            @superseded_by,@embedding,@updated_at)
+            @superseded_by,@corrected_by,@embedding,@updated_at)
     ON CONFLICT(id) DO UPDATE SET
         kind=excluded.kind, repo=excluded.repo, summary=excluded.summary, detail=excluded.detail,
         symptom=excluded.symptom, root_cause=excluded.root_cause, fix_patch=excluded.fix_patch,
@@ -275,6 +278,7 @@ class MemoryStore:
         access_count=excluded.access_count, last_recalled=excluded.last_recalled,
         valid_at=excluded.valid_at, invalid_at=excluded.invalid_at,
         related=excluded.related, tags=excluded.tags, superseded_by=excluded.superseded_by,
+        corrected_by=excluded.corrected_by,
         embedding=excluded.embedding, updated_at=excluded.updated_at
     """  # created_at/owner/codebase 不在 SET —— upsert 保持原创建时间与租户身份
 
@@ -298,6 +302,11 @@ class MemoryStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(_SCHEMA)
         self._conn.execute("INSERT OR IGNORE INTO ki_meta(key,value) VALUES ('schema_version', ?)", (str(_SCHEMA_VERSION),))
+        # ── 轻量迁移:给已建的老库补 corrected_by 列(2026-08-13 纠正链)──
+        # CREATE TABLE IF NOT EXISTS 不改已建表结构 → 手动 ALTER 补列。幂等:列在就不加(PRAGMA table_info 查)。
+        existing_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(knowledge_items)")}
+        if "corrected_by" not in existing_cols:
+            self._conn.execute("ALTER TABLE knowledge_items ADD COLUMN corrected_by TEXT")
 
         # ── sqlite-vec 加载(建议 A:向量 ANN 加速)──
         # 绝不崩:加载/建表失败 → _vec_ok=False → search_vector 走纯 loop(记忆是核心,向量加速是优化)。
@@ -439,6 +448,20 @@ class MemoryStore:
                 "UPDATE knowledge_items SET invalid_at=?, superseded_by=COALESCE(?, superseded_by), updated_at=? "
                 "WHERE id=? AND invalid_at IS NULL",
                 (ts, superseded_by, _utcnow_iso(), item_id),
+            )
+        return cur.rowcount > 0
+
+    def mark_corrected(self, item_id: str, *, corrected_by: str) -> bool:
+        """标记一条 KI 被另一条纠正(corrected_by = 纠正者 id)。
+
+        与 set_invalid 的区别:不设 invalid_at(条目仍 active,仍可检索/体检可见),
+        只标纠正关系让检索侧降权(recall 的 _apply_decay_confidence 对 corrected_by 非空的条目额外降权)。
+        幂等:已设过 corrected_by 的条目不再覆盖(WHERE corrected_by IS NULL)。
+        """
+        with self._wl:
+            cur = self._conn.execute(
+                "UPDATE knowledge_items SET corrected_by=?, updated_at=? WHERE id=? AND corrected_by IS NULL",
+                (corrected_by, _utcnow_iso(), item_id),
             )
         return cur.rowcount > 0
 

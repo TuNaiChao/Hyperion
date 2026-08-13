@@ -299,6 +299,7 @@ class _FakeMemSvc:
         self.recall_scopes: list = []
         self.search_scopes: list = []
         self.memorize_scopes: list = []
+        self.memorize_items: list = []              # 记录传入的 KI(验 corrects 等字段透传)
         self.list_items_calls: list = []          # memory_dump 用(记录每次调用的 scope/kind/include_invalid)
         self.list_items_return: list = []         # 注入返回值(默认空 → 工具走空提示分支)
 
@@ -312,6 +313,7 @@ class _FakeMemSvc:
 
     async def memorize(self, items, scope):  # noqa: ANN001
         self.memorize_scopes.append(scope)
+        self.memorize_items.extend(items)
         return len(items)
 
     async def list_items(self, scope, *, kind=None, include_invalid=False):  # noqa: ANN001 —— memory_dump 用
@@ -359,6 +361,29 @@ def test_memory_memorize_per_call_codebase(monkeypatch):
     assert "codebase=nonexistent_xyz_cb_42" in out, out
     assert fake.memorize_scopes, "memorize 没被调"
     assert fake.memorize_scopes[-1].codebase == "nonexistent_xyz_cb_42"
+
+
+def test_memory_memorize_with_corrects(monkeypatch):
+    """memory_memorize 传 corrects → KI 带 corrects 字段(纠正在场)+ 返回串回显 corrects=N。
+
+    验纠正链入口:agent 显式声明「这条纠正了哪些旧条目」→ 工具把 corrects 填进 KI →
+    memorize_items 写入时自动回填旧条的 corrected_by(这步在 native store 层测,见 test_memory_native)。
+    本测验工具透传;不碰真 db(假 svc 记录传入的 KI)。
+    """
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_memorize", {
+        "kind": "bug_lesson",
+        "summary": "真因覆盖竞态(纠正先前误诊)",
+        "root_cause": "scan-only 覆盖竞态",
+        "corrects": ["abc123def4567890", "def4567890123456"],
+    })
+    assert "corrects=2" in out, out                             # 返回串回显纠正了 2 条
+    assert fake.memorize_items, "memorize 没被调"
+    ki = fake.memorize_items[-1]
+    assert "abc123def4567890" in ki.corrects                     # corrects 透传到 KI
+    assert len(ki.corrects) == 2
 
 
 # ════════════════════════ memory_dump 工具(第 15;记忆库体检入口)═════════════════════════

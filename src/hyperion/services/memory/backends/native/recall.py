@@ -24,6 +24,7 @@ from hyperion.services.memory.schema import KnowledgeItem, RecallHit, Scope
 logger = logging.getLogger(__name__)
 
 RRF_K = 60  # RRF 常数(Cormack 2009;与 code_index retrieval 一致)
+CORRECTED_PENALTY = 0.3  # 被纠正条目(corrected_by 非空)的检索降权因子(0.3 = 分数砍到 30%)
 
 
 # ── KI → RecallHit(memory 路)──
@@ -41,6 +42,7 @@ def _ki_to_hit(ki: KnowledgeItem, score: float) -> RecallHit:
         valid_at=ki.valid_at,
         created_at=ki.created_at,
         superseded_by=ki.superseded_by,
+        corrected_by=ki.corrected_by,
         item_id=ki.id,
     )
 
@@ -82,6 +84,9 @@ def _apply_decay_confidence(hits: list[RecallHit], halflife_days: float, now: da
             age_days = max(0.0, (now - h.valid_at).total_seconds() / 86400.0)
             weight *= math.exp(-age_days / max(halflife_days, 1e-6))
         weight *= 0.7 + 0.3 * (h.confidence or 0.0)
+        # 被纠正条目(corrected_by 非空)额外降权:仍可见作参考,但排在纠正者后面。
+        if h.corrected_by:
+            weight *= CORRECTED_PENALTY
         h.score *= weight
 
 

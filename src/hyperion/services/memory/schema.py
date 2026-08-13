@@ -169,6 +169,17 @@ class KnowledgeItem(BaseModel):
     tags: list[str] = Field(default_factory=list)  # 自由标签(如 "type:root-cause")
     superseded_by: str | None = None  # 被哪条 id 取代(None=当前版本)
 
+    # —— 纠正链(2026-08-13 补「纠正关系」闭环)——
+    # corrects:新条(corrector)说「我纠正了哪些旧条」—— transit 字段,写入时消费掉(回填旧条
+    #         的 corrected_by),不入库(查询/检索/体检读的是旧条上的 corrected_by 反向链,不是这个)。
+    # corrected_by:旧条(corrected)上「我被哪条纠正了」—— 持久化(检索降权 + 体检可见)。
+    #   与 superseded_by 的区别:superseded_by 绑定 active(设了 = 从 active 视图消失);
+    #   corrected_by 不影响 active(被纠正 ≠ 失效,条目仍可检索/体检可见,只是检索降权)。
+    #   场景:bug 根因被推翻(A 派"abort-failure"是错的,B 派"scan-only 竞态"纠正它)→
+    #         B.corrects=[A.id],写入时自动回填 A.corrected_by=B.id → recall 时 A 被 0.3× 降权排后面。
+    corrects: list[str] = Field(default_factory=list)  # 写入时指令:我纠正了这些旧条(transit,不入库)
+    corrected_by: str | None = None  # 被哪条 id 纠正(None=未被纠正;持久化,检索降权用)
+
     # —— 向量(native 后端写入时算;recall 走 cosine)——
     embedding: list[float] | None = None
 
@@ -210,6 +221,7 @@ class RecallHit(BaseModel):
     valid_at: datetime | None = None
     created_at: datetime | None = None  # 写入时间(让消费方判新旧、偏好最新;对标 mem0 v3 时序排序)
     superseded_by: str | None = None  # 非空 = 这是被取代的旧版本(R3.5+ 仍可召回作参考;手动 invalidate 走 invalid_at 不在此列)
+    corrected_by: str | None = None  # 非空 = 这条被另一条纠正了(检索降权;仍可见作参考,不同于 superseded_by)
     item_id: str | None = None  # 命中的 KI id(memory 路;code/structural 路为 None)
     # code/structural 路的定位字段(memory 路用 evidence)
     file: str | None = None
@@ -230,5 +242,6 @@ class RecallHit(BaseModel):
         # R3.5+(2026-08-06):显写入日期 + 旧版本标记,让模型判新鲜度、偏好最新(对标 mem0 v3 时序排序)。
         dt = f"  {self.created_at:%Y-%m-%d}" if self.created_at else ""
         old = "  (旧版本)" if self.superseded_by else ""
+        corrected = "  (已被纠正)" if self.corrected_by else ""
         tag = f"[{self.source}]" if self.source != "memory" else ""
-        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}".rstrip()
+        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}{corrected}".rstrip()

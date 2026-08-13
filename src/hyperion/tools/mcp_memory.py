@@ -83,6 +83,9 @@ def _render_audit_card(it) -> str:
         stale = f"  STALE(invalid {it.invalid_at:%Y-%m-%d})"
     elif it.superseded_by:
         stale = f"  STALE(被 {it.superseded_by[:8]} 取代)"
+    # 被纠正(不是失效/取代,但结论已被另一条推翻)→ 标 CORRECTED,体检时看出「这条别再用,看纠正者」
+    if not stale and getattr(it, "corrected_by", None):
+        stale = f"  CORRECTED(by {it.corrected_by[:8]})"
     # 记录时间 + 被召回次数:created_at 看新旧,access_count 看利用率(低置信却高 access = 待巩固)
     dt = f"  {it.created_at:%Y-%m-%d}" if it.created_at else ""
     acc = f"  hits={it.access_count}" if it.access_count else ""
@@ -177,6 +180,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                               blast_radius_files: list[str] | None = None,
                               commit_sha: str | None = None,
                               tags: list[str] | None = None,
+                              corrects: list[str] | None = None,
                               codebase: str | None = None) -> str:
         """Write one knowledge item into Hyperion's long-term memory (cross-session reuse).
 
@@ -188,6 +192,11 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         (confidence bump) instead of duplicating. Pair with blast_radius_files + commit_sha + tags
         (e.g. ["patch_insight"]) so the lesson is searchable and provenance-traceable. Put your
         verdict (intent / correctness / merge recommendation) in summary + root_cause.
+        corrects: list of knowledge-item IDs that THIS item corrects/supersedes. Use when your new
+              finding explicitly overturns a prior root-cause or conclusion — the old items stay
+              (append-only preserved for audit) but get a ``corrected_by`` backlink and are demoted
+              at retrieval time (recall scores them 0.3× lower). Pass the IDs you saw in
+              ``memory_recall`` or ``memory_dump`` output. Leave empty for ordinary facts/lessons.
         codebase: override which codebase's memory to write into (default = this server's codebase).
               Pass when the lesson belongs to a different repo than the server's default; the item is
               scoped (id namespaced + filtered) by this codebase, so it won't pollute others.
@@ -199,6 +208,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         active_scope = Scope(owner="default", codebase=active_repo)
         blast_radius_files = blast_radius_files or []
         tags = tags or []
+        corrects = corrects or []
         # 给了 fix_patch → id 按补丁内容算(对齐 ingest.py:415),同补丁重复 memorize 走合并而非新增。
         kid = make_id(active_scope, kind, fix_patch) if fix_patch else ""
 
@@ -208,11 +218,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             symptom=symptom, fix_patch=fix_patch,
             blast_radius_files=list(dict.fromkeys(blast_radius_files)),
             commit_sha=commit_sha, tags=tags,
+            corrects=list(dict.fromkeys(corrects)),
             evidence=([Evidence(file=file, line=line)] if file else []),
             source="mcp", source_tier=SourceTier.delegate,
         )
         n = await svc.memorize([item], active_scope)
-        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added)"
+        extra = f" corrects={len(corrects)}" if corrects else ""
+        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added){extra}"
 
     # ── ②b memory_dump:把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)──
     # recall 是「按 query 相关性挑几条」(得先知道问啥);memory_dump 是「一次把全量摊开看」——

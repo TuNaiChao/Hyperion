@@ -119,6 +119,54 @@ def test_memorize_conflict_appends_both(store, scope):
     assert store.count(scope) == 2                                 # 两条并存(追加,非取代)
 
 
+def test_memorize_corrects_marks_old(store, scope):
+    """纠正链(2026-08-13):写新 KI 带 corrects=[旧id] → 旧条 corrected_by 回填 + 仍 active(不失效)。
+
+    核心区分:纠正 ≠ 失效。旧条不设 invalid_at(仍可检索/体检可见),只标 corrected_by(检索降权)。
+    对齐只追加原则:旧条物理不变(不 supersede),只加反向标记。
+    """
+    old = _ki("结论A radio work 阻塞(误诊)", scope=scope, symptom="扫描挂起", root_cause="旧结论abort失败")
+    memorize_items([old], store=store)
+    # 新条声明纠正 old
+    new = _ki("结论B 真因覆盖竞态(纠正A)", scope=scope, symptom="扫描挂起", root_cause="新结论scan覆盖")
+    new.corrects = [old.id]
+    memorize_items([new], store=store)
+
+    refreshed_old = store.get(old.id)
+    assert refreshed_old.corrected_by == new.id    # 回填了反向标记
+    assert refreshed_old.active is True             # 仍 active(纠正 ≠ 失效,不设 invalid_at)
+    assert refreshed_old.superseded_by is None      # 不走 supersede(对齐只追加)
+    assert refreshed_old.invalid_at is None         # 不失效
+    # corrects 是 transit 字段,不入库(查/检索/体检读的是旧条的 corrected_by,不是 corrects)
+    refreshed_new = store.get(new.id)
+    assert refreshed_new.corrected_by is None       # 新条没被纠正
+
+
+def test_recall_demotes_corrected(store, scope):
+    """被纠正条目(corrected_by 非空)在 recall 中被 0.3× 降权 → 排在纠正者后面(但仍可见)。
+
+    场景:两条同主题同 embedding(检索分数一样),但旧条被标记 corrected_by → recall 排序时新条在前。
+    """
+    old = _ki("根因A(误诊) radio work 阻塞", scope=scope, symptom="扫描挂起",
+              root_cause="旧", embedding=[0.1, 0.9, 0.0, 0.5, 0.3, 0.2, 0.1, 0.0])
+    memorize_items([old], store=store)
+    new = _ki("根因B(纠正A) radio work 竞态", scope=scope, symptom="扫描挂起",
+              root_cause="新", embedding=[0.1, 0.9, 0.0, 0.5, 0.3, 0.2, 0.1, 0.0])
+    new.corrects = [old.id]
+    memorize_items([new], store=store)
+
+    class FakeEmb:
+        def embed_query(self, q):
+            return np.asarray([0.1, 0.9, 0.0, 0.5, 0.3, 0.2, 0.1, 0.0], dtype=np.float32)
+
+    hits = recall("radio work", scope, store=store, embedder=FakeEmb(), reranker=None, top_k=5)
+    assert len(hits) == 2                           # 两条都召回(被纠正条仍可见,不过滤)
+    # 纠正者(new)应排第一(分数高),被纠正者(old)排第二(降权后)
+    assert hits[0].item_id == new.id
+    assert hits[1].item_id == old.id
+    assert hits[1].corrected_by == new.id           # RecallHit 透传了 corrected_by
+
+
 # ── recall 多路 RRF + 衰减 ──────────────────────────────────────
 
 def test_rrf_fuse_prefers_multi_voice_hits():
