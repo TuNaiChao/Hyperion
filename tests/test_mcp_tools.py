@@ -203,6 +203,56 @@ def test_repo_overview_success_via_fake_graph(monkeypatch):
     assert seen["top_n"] == 8                                     # top_n 透传到 hub_nodes
 
 
+def test_repo_overview_large_repo_caps_communities_and_keeps_hubs(monkeypatch):
+    """大仓(社区爆量)治截断:onboarding e2e 暴露 wpa 746 社区撑满 8000 截断 → hub/bridge 取不到。
+
+    3 个硬要求:① 社区只留 max_communities 个最大的(header 仍诚实报真实总数);② members 压成
+    member_count + 样本(不堆全量 qn);③ hub/bridge/warnings 排在 communities 前 —— 即便末尾社区被
+    截断,架构最关键的枢纽/咽喉/告警也不丢;④ 截断有显式 note(诚实信号,不静默丢)。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    # 50 个社区,每个塞 100 个 member qn → 模拟大仓 bulky communities(不压会爆截断)。
+    # 用长 name + 长 description 让即便压成 member_count+5样本后,30 个社区仍超 12000 → 触发截断路径。
+    many_communities = [
+        {"id": i, "name": f"module_{i}_very_long_name_for_bloat",
+         "size": 100 - i, "cohesion": 0.5,
+         "description": f"detailed module description {i} padded out to be long " * 6,
+         "members": [f"f.c::symbol_{i}_{j}" for j in range(100)]}
+        for i in range(50)
+    ]
+
+    class _FakeGraph:
+        def architecture_overview(self):
+            return {"communities": many_communities,
+                    "cross_community_edges": [{"source_community": 0, "target_community": 1}] * 100,
+                    "warnings": ["High coupling (12 edges) between 'module_0' and 'module_1'"]}
+
+        def hub_nodes(self, *, top_n: int = 15):
+            return [{"name": "main", "qualified_name": "f.c::main", "total_degree": 8}]
+
+        def bridge_nodes(self, *, top_n: int = 15):
+            return [{"name": "bridge_x", "qualified_name": "g.c::bridge_x", "betweenness": 0.9}]
+
+    monkeypatch.setattr(cg_mod.CodeGraph, "open", lambda target: _FakeGraph())
+    mcp = build_server()
+    # max_communities=30:50 个社区取前 30 个,每个长 name+description → 压成 member_count+样本后仍超 12000。
+    out = _call(mcp, "repo_overview", {"max_communities": 30, "codebase": "big_cb"})
+    assert "Traceback" not in out, out
+
+    # ① header 诚实报真实总数 50(不受 max_communities 影响),标「本调用含 30 / 共 50」。
+    assert "50 communities" in out and "本调用含 30 / 共 50" in out, out
+    # ② body 里社区被 cap 到 30(50 取前 30 个);members 压成 member_count + 样本(不堆全量 qn)。
+    assert '"member_count": 100' in out, out
+    assert "sample_members" in out, out
+    # ③ hub/bridge 在 body 的 "communities" 键前(关键:即便末尾截断,枢纽/咽喉不丢)。
+    # 注:header 里有 "communities" 字样(如 "50 communities"),只比较 body 里的键 "communities":
+    assert out.index("f.c::main") < out.index('"communities"'), out
+    # ④ 截断有显式 note(30 社区×长描述超 12000 → 触发;诚实给补取路径,不静默丢)。
+    assert "[截断" in out, out
+    assert "加大 max_communities" in out, out   # note 指向重调 repo_overview 加大上限(无 communities 专用工具)
+
+
 
 # ════════════════════════ export_patch 工具 ════════════════════════
 
@@ -384,6 +434,50 @@ def test_memory_memorize_with_corrects(monkeypatch):
     ki = fake.memorize_items[-1]
     assert "abc123def4567890" in ki.corrects                     # corrects 透传到 KI
     assert len(ki.corrects) == 2
+
+
+def test_memory_memorize_multi_evidence(monkeypatch):
+    """memory_memorize 传 evidence(多锚点 list[dict])→ KI.evidence 多条 + 去重 + 旧 file/line 合并。
+
+    治 onboarding e2e 暴露的缺口:架构级事实涉及多 file:line(入口+派发表+事件回调),但旧工具只接单
+    file/line → onboarding 记的架构事实 evidence=[] 空(SKILL step7 写 evidence=[<file:line+片段>] 形状,
+    工具却收不下)。现加 evidence 参数:list[dict] 每条 {file,line?,snippet?},去重,与旧 file/line 合并。
+    """
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_memorize", {
+        "kind": "codebase_fact", "summary": "wpa 连接主流程架构",
+        "kind_detail": "architecture",
+        "confidence": 0.85,
+        "evidence": [
+            {"file": "wpa_supplicant.c", "line": 1931, "snippet": "wpa_supplicant_associate"},
+            {"file": "driver_nl80211.c", "line": 5000, "snippet": "wpa_drv_associate"},
+            # 重复锚点(同 file+line)→ 去重,不进两次。
+            {"file": "wpa_supplicant.c", "line": 1931, "snippet": "dup"},
+            # 缺 file 的脏条目 → 跳过(不崩)。
+            {"line": 99},
+            # line 是字符串数字 → 解析成 int。
+            {"file": "events.c", "line": "3000"},
+        ],
+        # 旧单锚点参数仍可用,且与 evidence 合并(向后兼容)。
+        "file": "ctrl_iface.c", "line": 100,
+    })
+    assert "memorized id=" in out, out
+    assert fake.memorize_items, "memorize 没被调"
+    ki = fake.memorize_items[-1]
+    # 4 条:evidence 里 3 个合法去重后(wpa:1931/drv:5000/events:3000)+ 旧 file/line(ctrl:100)。
+    locs = [(e.file, e.line) for e in ki.evidence]
+    assert ("wpa_supplicant.c", 1931) in locs
+    assert ("driver_nl80211.c", 5000) in locs
+    assert ("events.c", 3000) in locs            # 字符串 line 解析成 int
+    assert ("ctrl_iface.c", 100) in locs         # 旧 file/line 合并进来
+    assert len(ki.evidence) == 4                 # 去重后 4 条(同锚点不重复)
+    # snippet 透传。
+    assert any(e.snippet == "wpa_supplicant_associate" for e in ki.evidence)
+    # kind_detail/confidence 透传(onboarding 要记 architecture 级事实 + 显式置信度)。
+    assert ki.kind_detail == "architecture"
+    assert abs(ki.confidence - 0.85) < 1e-6
 
 
 # ════════════════════════ memory_dump 工具(第 15;记忆库体检入口)═════════════════════════

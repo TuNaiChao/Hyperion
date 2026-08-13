@@ -177,6 +177,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     @mcp.tool()
     async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson"], summary: str,
                               file: str | None = None, line: int | None = None,
+                              evidence: list[dict] | None = None,
                               root_cause: str = "",
                               fix_patch: str = "",
                               symptom: str = "",
@@ -184,6 +185,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                               commit_sha: str | None = None,
                               tags: list[str] | None = None,
                               corrects: list[str] | None = None,
+                              kind_detail: Literal["module", "symbol", "architecture"] | None = None,
+                              confidence: float | None = None,
                               codebase: str | None = None) -> str:
         """Write one knowledge item into Hyperion's long-term memory (cross-session reuse).
 
@@ -195,6 +198,18 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         (confidence bump) instead of duplicating. Pair with blast_radius_files + commit_sha + tags
         (e.g. ["patch_insight"]) so the lesson is searchable and provenance-traceable. Put your
         verdict (intent / correctness / merge recommendation) in summary + root_cause.
+        evidence: list of provenance anchors, each ``{"file": <path>, "line": <int?>, "snippet": <str?>}``.
+              Use this when a fact spans MULTIPLE file:line locations (e.g. an architecture fact that
+              references the entry function, the dispatch table, and an event handler). The legacy
+              ``file``+``line`` params cover the single-anchor case and are merged in if also passed;
+              prefer ``evidence`` for architecture/codebase-fact memories and leave file/line for the
+              single-anchor bug-lesson case.
+        kind_detail: finer classification for codebase_fact — module | symbol | architecture. Use
+              ``architecture`` for onboarding-tour / structural facts (so they surface as the
+              architecture layer, not the default module). Ignored for bug_lesson.
+        confidence: 0..1 override of the initial confidence (otherwise derived from source_tier:
+              delegate = 0.5). Set only when you have a real reason to weigh this above/below the
+              delegate default (e.g. a fact you inferred vs one you read directly).
         corrects: list of knowledge-item IDs that THIS item corrects/supersedes. Use when your new
               finding explicitly overturns a prior root-cause or conclusion — the old items stay
               (append-only preserved for audit) but get a ``corrected_by`` backlink and are demoted
@@ -215,14 +230,35 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         # 给了 fix_patch → id 按补丁内容算(对齐 ingest.py:415),同补丁重复 memorize 走合并而非新增。
         kid = make_id(active_scope, kind, fix_patch) if fix_patch else ""
 
+        # evidence 合并:新 evidence(多锚点,list[dict])+ 旧 file/line(单锚点,向后兼容)。
+        # 去重:同一 (file,line) 只留一条(架构事实常在 evidence 里重复列同一个入口)。
+        ev_list: list[Evidence] = []
+        seen_loc: set[tuple[str, int | None]] = set()
+        for e in (evidence or []):
+            if not isinstance(e, dict) or not e.get("file"):
+                continue
+            ef = str(e["file"])
+            el = e.get("line")
+            el = int(el) if isinstance(el, (int, str)) and str(el).strip().lstrip("-").isdigit() else None
+            if (ef, el) in seen_loc:
+                continue
+            seen_loc.add((ef, el))
+            ev_list.append(Evidence(file=ef, line=el, snippet=str(e.get("snippet") or "")))
+        if file and (file, line) not in seen_loc:
+            ev_list.append(Evidence(file=file, line=line))
+
         item = KnowledgeItem(
             id=kid,
             kind=kind, repo=active_repo, scope=active_scope, summary=summary, root_cause=root_cause,
             symptom=symptom, fix_patch=fix_patch,
+            # kind_detail 仅 codebase_fact 有意义(bug_lesson 不用);None → 用 schema 默认(module)。
+            kind_detail=kind_detail if (kind == "codebase_fact" and kind_detail) else "module",
             blast_radius_files=list(dict.fromkeys(blast_radius_files)),
             commit_sha=commit_sha, tags=tags,
             corrects=list(dict.fromkeys(corrects)),
-            evidence=([Evidence(file=file, line=line)] if file else []),
+            evidence=ev_list,
+            # confidence 显式给(0..1)才覆盖;None → schema 按 source_tier 算默认(delegate=0.5)。
+            confidence=confidence if confidence is not None else 0.5,
             source="mcp", source_tier=SourceTier.delegate,
         )
         n = await svc.memorize([item], active_scope)
@@ -544,7 +580,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     #   call_chain    = 手电筒照一条路(一个符号的调用上下文)。
     # 全是纯图查询(无 LLM),图驱动防幻觉 —— 讲「这仓分几大模块」靠社区检测,不是模型瞎编。
     @mcp.tool()
-    async def repo_overview(top_n: int = 15, codebase: str | None = None) -> str:
+    async def repo_overview(
+        top_n: int = 15, max_communities: int = 30, codebase: str | None = None
+    ) -> str:
         """Single-repo architectural overview: module boundaries + hub/bridge nodes + coupling warnings.
 
         Wraps four CodeGraph methods in one call (pure graph queries, no LLM): communities (Leiden
@@ -557,8 +595,16 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         modules and hubs" — the phase-1 structural view of an onboarding tour. Distinct from repo_map
         (PageRank symbol tree, which functions matter) and call_chain (one symbol's neighborhood):
         repo_overview is the module-coupling / community-layout view (how the modules are divided).
-        top_n:    how many hub_nodes / bridge_nodes to return (default 15 each).
-        codebase: override which codebase's graph (default = this server's codebase).
+
+        Output ordering matters: hubs / bridges / warnings / cross-edges come FIRST, communities LAST.
+        Communities are the bulkiest (each carries its member list) and the least individually
+        important, so they sit at the truncation edge. On a large repo (hundreds of communities) only
+        the largest `max_communities` are summarized (size + a few sample members, not the full member
+        list) so the hubs/bridges that onboarding actually needs never get crowded out.
+        top_n:           how many hub_nodes / bridge_nodes to return (default 15 each).
+        max_communities: cap on how many communities to include, largest-first (default 30).
+                         The header still reports the true total community count.
+        codebase:        override which codebase's graph (default = this server's codebase).
         Needs the codebase graph built; returns a 'not built' hint otherwise.
         """
         try:
@@ -579,20 +625,61 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         except Exception as e:  # noqa: BLE001
             return f"算仓库架构总览失败({target}): {e}"
         import json
+
+        n_total_comm = len(communities)   # 真实社区总数(不受 max_communities 影响,header 诚实报)
+        # —— 大仓瘦身:社区是最 bulky 的(每个带 member 列表),也是单条最不重要的。
+        # 只留最大的 max_communities 个,且把 members 压成 count + 几个样本(不堆全量 qn)。
+        communities_sorted = sorted(
+            communities, key=lambda c: c.get("size", len(c.get("members", []))), reverse=True
+        )
+        comm_capped = communities_sorted[:max_communities]
+        communities_trimmed = [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "level": c.get("level"),
+                "cohesion": c.get("cohesion"),
+                "size": c.get("size", len(c.get("members", []))),
+                "dominant_language": c.get("dominant_language", ""),
+                "description": c.get("description", ""),
+                # 不堆全量 member(大社区几十上百个 qn 撑爆截断)→ 只给 count + 前 5 个样本。
+                "member_count": len(c.get("members", [])),
+                "sample_members": c.get("members", [])[:5],
+            }
+            for c in comm_capped
+        ]
+        # 跨社区边也可能上百上千条 → 截 top 20(按出现顺序,CRG 已统计);warnings 本就少不动。
+        cross_edges = arch.get("cross_community_edges", [])[:20]
+        warnings = arch.get("warnings", [])          # 高耦合(>10 边)社区对,list[str]
+
+        # —— body 顺序:hub/bridge/warning/cross-edge 在前,communities 在末。
+        # 这样即便末尾 communities 被截断,架构最关键的「核心枢纽/咽喉/耦合告警」也不会丢
+        # (onboarding e2e 暴露:旧版 communities 撑满截断 → hub/bridge 取不到被迫绕路)。
         result = {
             "codebase": target,
-            "communities": communities,
             "hub_nodes": hubs,
             "bridge_nodes": bridges,
-            "cross_community_edges": arch.get("cross_community_edges", []),
-            "warnings": arch.get("warnings", []),     # 高耦合(>10 边)社区对,list[str]
+            "warnings": warnings,
+            "cross_community_edges": cross_edges,
+            "communities": communities_trimmed,
         }
         body = json.dumps(result, ensure_ascii=False, default=str)
-        n_comm = len(communities)
-        n_warn = len(result["warnings"])
+
+        # 诚实截断(治静默丢):超长才截,且明说截在哪、怎么补取。
+        LIMIT = 12000
+        truncated = len(body) > LIMIT
+        if truncated:
+            # 末尾是 communities,截断丢的是社区清单(最不重要),给出补取路径。
+            # 没有 communities 专用 MCP 工具 —— 指向调大 max_communities 重取 repo_overview。
+            note = (f"\n[截断:返回超 {LIMIT} 字符,末尾 communities 可能不全;共 {n_total_comm} 社区,"
+                    f"本调用含 {len(communities_trimmed)}。要更多社区:重调 repo_overview 加大 max_communities]")
+            body = body[:LIMIT - len(note)] + note
+
+        comm_suffix = f"(本调用含 {len(communities_trimmed)} / 共 {n_total_comm})" if n_total_comm > len(communities_trimmed) else ""
         return (f"repo-overview(codebase={target}, top_n={top_n}):"
-                f" {n_comm} communities / {len(hubs)} hubs / {len(bridges)} bridges"
-                f"{f' / {n_warn} 高耦合告警' if n_warn else ''}\n{body[:8000]}")
+                f" {n_total_comm} communities{(' ' + comm_suffix) if comm_suffix else ''}"
+                f" / {len(hubs)} hubs / {len(bridges)} bridges"
+                f"{f' / {len(warnings)} 高耦合告警' if warnings else ''}\n{body}")
 
     # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
     # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
