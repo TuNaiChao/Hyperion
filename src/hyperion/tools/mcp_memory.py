@@ -220,7 +220,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 包 MemoryService.list_items(已是契约,0 新服务代码),每条渲染成带溯源的体检卡(_render_audit_card)。
     @mcp.tool()
     async def memory_dump(kind: str | None = None, include_invalid: bool = False,
-                          codebase: str | None = None) -> str:
+                          codebase: str | None = None,
+                          limit: int = 60, offset: int = 0) -> str:
         """Dump (browse/audit) Hyperion's long-term memory for a codebase — every knowledge item with
         its confidence + provenance + bi-temporal status. NOT a relevance search.
 
@@ -235,6 +236,10 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         kind:            optional filter — codebase_fact | bug_lesson | mental_model (omit = all).
         include_invalid: also show soft-deleted / superseded items (default False = active only).
         codebase:        override which codebase's memory to dump (default = this server's codebase).
+        limit/offset:    pagination — the dump returns at most ``limit`` items starting at ``offset``
+                  (default first 60). A health-check needs the WHOLE picture, so if there are more
+                  items (header says "showing 1-60 of N, more → memory_dump(offset=60)"), PAGE THROUGH
+                  the rest by bumping offset rather than auditing an incomplete slice.
         """
         active_repo = codebase or repo
         active_scope = Scope(owner="default", codebase=active_repo)
@@ -243,11 +248,20 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             tag = f", kind={kind}" if kind else ""
             inv = ", include_invalid" if include_invalid else ""
             return f"No memory for codebase={active_repo}{tag}{inv}."
+        total = len(items)
+        # 分页:体检要全量,但单次返回过大撑爆上下文。默认 60 条/页,agent 按需翻页(offset += limit)。
+        page = items[offset:offset + limit]
         tag = f", kind={kind}" if kind else ""
-        out = [f"Memory dump: {len(items)} items (codebase={active_repo}{tag}"
-               f"{', +invalid' if include_invalid else ''}):"]
-        out += [_render_audit_card(it) for it in items]
-        return "\n".join(out)[:8000]
+        header = (f"Memory dump: {total} items (codebase={active_repo}{tag}"
+                  f"{', +invalid' if include_invalid else ''})")
+        # 还有下一页 → 显式提示翻页(诚实信号,不静默截断:体检漏看一半会误判健康度)。
+        if total > offset + limit:
+            header += (f"  [showing {offset + 1}-{offset + len(page)} of {total},"
+                       f" more → memory_dump(offset={offset + limit})]")
+        elif offset > 0:
+            header += f"  [showing {offset + 1}-{offset + len(page)} of {total}]"
+        out = [header] + [_render_audit_card(it) for it in page]
+        return "\n".join(out)[:12000]
 
     # ── ③ search_codebase:语义+符号检索(防幻觉:只回索引里真实存在的符号)──────
     @mcp.tool()

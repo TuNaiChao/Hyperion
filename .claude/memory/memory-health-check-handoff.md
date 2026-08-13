@@ -76,17 +76,23 @@ header 行:`Memory dump: N items (codebase=X[, kind=K][, +invalid])`。每行一
 |---|---|---|---|
 | `test_memory_dump_empty` | 假 svc 返 []→空提示分支 | 无 Traceback + 回显 codebase + list_items 被调 + scope codebase 对 | ✅ |
 | `test_memory_dump_renders_audit_cards` | 假 svc 注入 2 KI(高 conf 带证据/sha + 低 conf 无证据)→ 溯源卡渲染 | "2 items" + 两 summary + conf=0.90/0.20 + tier=delegate/tool + sha=abcdef12 + lib/sdp.c:1222 + @无证据 | ✅ |
-| 全 mcp_tools 回归 | 25 旧 + 2 新 | 全绿 | ✅ 27 passed |
+| `test_memory_dump_pagination` | 假 svc 注入 65 KI(>默认 limit=60)→ 翻页提示 + offset 翻页拿余 | 第一页"65 items / showing 1-60 of 65 / offset=60" + 第二页"showing 61-65"无 more | ✅ |
+| 全 mcp_tools 回归 | 25 旧 + 3 新 | 全绿 | ✅ 28 passed |
 | lint | mcp_memory.py + test_mcp_tools.py | ruff 绿 | ✅ |
 
-**不跑编译/真模型/opencode e2e**(用户自验铁律)。opencode e2e 真机跑是用户的事,本交接**不预填「全绿」** —— 待用户真机跑完再补。
+**opencode e2e 真机全绿(2026-08-13,本会话自跑)**:`hyperion-memory-health` 自驱审 wpa(48 条记忆含 invalid),模型 deepseek-v4-flash-0731。`memory_dump(codebase=wpa, include_invalid=true)` 全量 → 逐条读溯源卡 → 出完整体检卡(四类信号带条数+严重度+优先级 + 总量/kind 分布表)。**最有价值发现**:agent 真发现了一组**未决矛盾**——同一「P2P scan radio work 泄漏」bug 存两派打架根因(A 派 abort-failure 4 条 vs B 派 scan-only 覆盖竞态 3 条,都 active+delegate+conf 0.50-0.65),且自核验两派锚点代码真存在(`example/demo1/wpa/`),最终 `memorize` 1 条「未决矛盾待裁决」卡(tags `conflict_pending_adjudication`,id `aaed2af44904d7ab`)—— **DB raw 查证非幻觉(真落盘)**,正是 skill 设计的唯一 memorize 例外。守边界:体检全程只读(没改记忆/代码),唯一写入就是这条矛盾卡。tool 调用统计:dump 5 / recall 13 / memorize 1 / glob+grep 11。
+
+### e2e 暴露 + 修掉的 1 个真问题:memory_dump `[:8000]` 截断
+
+**现象**:wpa 全量 48 条渲染后 16760 字符,旧 `[:8000]` 静默截断吞掉一半(24 条)。agent 体检时发现 dump 声称 30 条 codebase_fact 但只显示 25 条 → 烧了 **13 次 memory_recall 按主题补捞**被截断吞掉的条目,体检卡迟迟出不来。**根因**:体检的核心价值是「看全量」,`[:8000]` 是从检索工具(repo_map/repo_overview)抄来的 token 预算约束,对体检工具是错的 —— 体检漏看一半会误判健康度(尤其可能漏掉未决矛盾的另一半)。**修法**:① 加 `limit=60`/`offset=0` 分页(单次不撑爆上下文,但能翻页拿全);② 超页时 header 显式提示 `showing 1-60 of N, more → memory_dump(offset=60)`(诚实信号,不静默截断,对齐 repo_map 的 truncated 信号);③ 截断上限 8000→12000(单页放宽);④ SKILL step1 加「翻页提醒」(看到 more 提示务必 bump offset 拿完)。e2e 后补 `test_memory_dump_pagination` 单测(65 条验翻页提示 + offset 拿余)。**这是「实现→e2e→修」闭环,非预判**:分页没在初版加是因为当时没 e2e 数据证明截断是问题(48 条的记忆库是真机才有),e2e 坐实后才修(避免过度设计,踩坑 [[avoid-overengineering]])。
+
 
 ## 待 commit 文件
 
-- `src/hyperion/tools/mcp_memory.py`(+ helper `_render_audit_card` + 工具 #15 memory_dump)
-- `.claude/skills/memory-health-check/SKILL.md`(新)
+- `src/hyperion/tools/mcp_memory.py`(+ helper `_render_audit_card` + 工具 #15 memory_dump;e2e 后 +limit/offset 分页)
+- `.claude/skills/memory-health-check/SKILL.md`(新;e2e 后 +step1 翻页提醒)
 - `config/opencode_hyperion.json`(+ hyperion-memory-health agent block,经 symlink 自动到 opencode.json)
-- `tests/test_mcp_tools.py`(+ 2 测 + `_FakeMemSvc.list_items`)
+- `tests/test_mcp_tools.py`(+ 3 测 + `_FakeMemSvc.list_items`)
 - `docs/设计/architecture-review-2026-08-12.md`(§六 功能2 `[ ]`→`[x]` + §4.2 「14→15 个」+ 记忆 2→3)
 - `CLAUDE.md`(L38/L87/L99 tool count + L102 新 backlog 段)
 - handoff memory + MEMORY.md

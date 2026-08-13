@@ -25,7 +25,7 @@ allowed-tools:
 
 > **先 dump,逐条读,聚信号**。和调研型 skill(onboarding/compare)的「先 recall」不同——体检的第一步是**把全量摊开**(`memory_dump`),不是按 query 挑几条。因为你审的是「整个库长啥样」,不是「某主题命中啥」。
 
-1. **确认 codebase + 体检范围**:问清 codebase 名(如 `bluez`)+ 范围——整体审 / 只审某 kind(codebase_fact / bug_lesson / mental_model)/ 要不要连失效条目一起审(`include_invalid=True`)。然后 `memory_dump(kind=<可选>, include_invalid=<可选>, codebase=<codebase>)` 一次拉全量摊开。
+1. **确认 codebase + 体检范围**:问清 codebase 名(如 `bluez`)+ 范围——整体审 / 只审某 kind(codebase_fact / bug_lesson / mental_model)/ 要不要连失效条目一起审(`include_invalid=True`)。然后 `memory_dump(kind=<可选>, include_invalid=<可选>, codebase=<codebase>)` 一次拉全量摊开。**注意翻页**:`memory_dump` 默认每页 60 条,header 若提示 `[showing 1-60 of N, more → memory_dump(offset=60)]` 说明没拿全——**体检要审全量,务必 bump offset 翻页直到拿完**(漏看一半会误判健康度,尤其可能漏掉未决矛盾的另一半)。
 2. **逐条读溯源卡**:对 dump 返回的每张卡,看四个维度——`conf`(置信度)/ `tier`(来源档:delegate/stated 最可信,tool 最低)/ `@file:line` 或 `@无证据`(溯源锚点)/ `sha`(commit 溯源)/ `STALE`(是否失效或被取代)/ `hits`(被召回次数)。把可疑的(高 conf 无溯源 / 低 conf 高 hits / STALE / 互相打架)挑出来。
 3. **聚健康信号**(你的核心推理活):把挑出的可疑条目归成四类——
    - **溯源弱**:高 conf(如 ≥0.7)但 `@无证据` 且无 `sha`。→ 建议:补 evidence/commit_sha 再信。

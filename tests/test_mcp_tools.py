@@ -417,6 +417,36 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     assert "@无证据" in out, out                              # 溯源弱信号(无 evidence 的条目标出)
 
 
+def test_memory_dump_pagination(monkeypatch):
+    """memory_dump 超 limit → 翻页提示「showing X-Y of N, more → offset=」;offset 翻页拿后续。
+
+    e2e 暴露:体检要全量,旧 [:8000] 截断静默吞一半条目逼 agent recall 补捞。改 limit/offset
+    分页 + 显式翻页提示(诚实信号)。本测:65 条(>默认 limit=60)→ 第一页提示 more + offset=60;
+    offset=60 第二页拿余下 5 条,header 仍带总数 65。
+    """
+    from hyperion.services.memory.schema import KnowledgeItem, Scope
+    scope = Scope(owner="default", codebase="big")
+    items = [KnowledgeItem(kind="codebase_fact", repo="big", scope=scope,
+                           summary=f"fact-{i:03d}", confidence=0.5) for i in range(65)]
+    fake = _FakeMemSvc()
+    fake.list_items_return = items
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    # 第一页:总数 65,提示还有更多 + 下次 offset=60
+    p1 = _call(mcp, "memory_dump", {"codebase": "big"})
+    assert "65 items" in p1, p1
+    assert "showing 1-60 of 65" in p1, p1
+    assert "offset=60" in p1, p1              # 翻页提示
+    assert "fact-000" in p1 and "fact-059" in p1   # 第一页内容
+    assert "fact-064" not in p1               # 第二页的没出现在第一页
+    # 第二页:offset=60 拿余下 5 条,无 more 提示(拿完了)
+    p2 = _call(mcp, "memory_dump", {"codebase": "big", "offset": 60})
+    assert "65 items" in p2, p2               # header 仍带总数
+    assert "showing 61-65 of 65" in p2, p2
+    assert "more" not in p2.lower() or "offset=" not in p2  # 拿完无翻页提示
+    assert "fact-060" in p2 and "fact-064" in p2
+
+
 # ════════════════════════ cross_version_diff 工具 ═════════════════════════
 
 def test_cross_version_diff_bad_ref(tmp_path):
