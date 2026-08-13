@@ -440,6 +440,10 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     assert "sha=abcdef12" in out, out                         # commit_sha 截断 8 位
     assert "lib/sdp.c:1222" in out, out                       # evidence file:line
     assert "@无证据" in out, out                              # 溯源弱信号(无 evidence 的条目标出)
+    # id 渲染(截断 8 位):体检/纠正链要用 —— memory_memorize(corrects=[...]) 要传 dump 里看到的 id,
+    # 不渲染 id = 闭环走不通(e2e 暴露:agent 拿不到被纠正条目 id 被逼 grep SQLite)。
+    assert f"id={item_hi.id[:8]}" in out, out
+    assert f"id={item_lo.id[:8]}" in out, out
 
 
 def test_memory_dump_pagination(monkeypatch):

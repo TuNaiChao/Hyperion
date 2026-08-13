@@ -244,4 +244,7 @@ class RecallHit(BaseModel):
         old = "  (旧版本)" if self.superseded_by else ""
         corrected = "  (已被纠正)" if self.corrected_by else ""
         tag = f"[{self.source}]" if self.source != "memory" else ""
-        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}{corrected}".rstrip()
+        # memory 路带 item_id 时输出(截断 8 位)—— 纠正链要用:memory_memorize(corrects=[...]) 要传
+        # 「在 recall 输出里看到的 id」。code/structural 路 item_id=None,不渲染(避免 id=None 噪声)。
+        kid = f"  id={self.item_id[:8]}" if self.item_id else ""
+        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}{corrected}{kid}".rstrip()

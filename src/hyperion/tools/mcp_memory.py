@@ -89,7 +89,10 @@ def _render_audit_card(it) -> str:
     # 记录时间 + 被召回次数:created_at 看新旧,access_count 看利用率(低置信却高 access = 待巩固)
     dt = f"  {it.created_at:%Y-%m-%d}" if it.created_at else ""
     acc = f"  hits={it.access_count}" if it.access_count else ""
-    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{stale}".rstrip()
+    # 条目 id(截断 8 位):体检/纠正链要用它 —— memory_memorize(corrects=[...]) 要传「在 dump 输出里看到的 id」,
+    # 不渲染 id = 闭环走不通(agent 拿不到被纠正条目 id,被逼去 grep SQLite)。与 sha/CORRECTED 同款对称。
+    kid = f"  id={it.id[:8]}" if it.id else ""
+    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{kid}{stale}".rstrip()
 
 
 def _retrieval_bundle():

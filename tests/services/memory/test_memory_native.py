@@ -142,6 +142,45 @@ def test_memorize_corrects_marks_old(store, scope):
     assert refreshed_new.corrected_by is None       # 新条没被纠正
 
 
+def test_memorize_corrects_accepts_id_prefix(store, scope):
+    """纠正链前缀解析(e2e 暴露的真 bug):dump/recall 渲染 id 截断 8 位,agent 传 8 位前缀;
+    DB 里却是 16 位完整 id → 旧精确 WHERE id=? 匹配失败,corrected_by 静默不回填。
+
+    _resolve_id 把 8 位前缀解析回 16 位:mark_corrected/set_invalid 都接受前缀。
+    前缀歧义(>1 条同名前缀)→ 拒绝不改(宁漏不错)。
+    """
+    old = _ki("误诊结论(待纠正)", scope=scope, root_cause="旧")
+    memorize_items([old], store=store)
+    assert len(old.id) == 16  # DB id 是 16 位
+    short = old.id[:8]        # dump 里 agent 看到的 8 位
+
+    # agent 传 8 位前缀 → 应解析成功,旧条标 corrected_by
+    new = _ki("纠正结论", scope=scope, root_cause="新")
+    new.corrects = [short]
+    memorize_items([new], store=store)
+    assert store.get(old.id).corrected_by == new.id  # 前缀解析成功 → 回填了
+
+    # set_invalid 也接受前缀(CLI memory invalidate 同路径)
+    other = _ki("另一条待失效", scope=scope, root_cause="x")
+    memorize_items([other], store=store)
+    assert store.set_invalid(other.id[:8]) is True
+    assert store.get(other.id).invalid_at is not None
+
+    # 前缀歧义(两条同 8 位前缀)→ mark_corrected 拒绝不改(宁漏不错)。
+    # 直接 SQL 造两条同前缀 id 的行(绕开 memorize 的 content-addressed 重算)。
+    base = "deadbeefdeadbeef"  # 16 位
+    _cols = ("id,kind,repo,owner,codebase,summary,confidence,source_tier,"
+             "valid_at,created_at,updated_at")
+    for kid, sname in [(base, "歧义甲"), (base[:8] + "cafef00d", "歧义乙")]:
+        store._conn.execute(
+            f"INSERT OR REPLACE INTO knowledge_items({_cols}) "
+            f"VALUES(?, 'bug_lesson','wpa','default','wpa',?,0.5,'delegate','2026-01-01','2026-01-01','2026-01-01')",
+            (kid, sname),
+        )
+    store._conn.commit()
+    assert store.mark_corrected(base[:8], corrected_by=new.id) is False  # 歧义 → 拒绝(宁漏不错)
+
+
 def test_recall_demotes_corrected(store, scope):
     """被纠正条目(corrected_by 非空)在 recall 中被 0.3× 降权 → 排在纠正者后面(但仍可见)。
 
@@ -177,6 +216,20 @@ def test_rrf_fuse_prefers_multi_voice_hits():
     ])
     assert fused[0].item_id == "abc"           # 跨路一致 → 第一
     assert fused[0].score > fused[1].score
+
+
+def test_recall_hit_render_includes_item_id_for_memory_path():
+    """memory 路 RecallHit 带 item_id → render() 输出 id=xxxxxxxx(纠正链要用)。
+
+    code/structural 路 item_id=None → 不输出(避免 id=None 噪声)。e2e 暴露:memory_memorize
+    (corrects=[...]) docstring 承诺「传 recall 输出里看到的 id」,但 render 不输出 id = 闭环走不通。
+    """
+    # memory 路带 id → 渲染
+    h_mem = RecallHit(summary="旧误诊", score=0.5, source="memory", item_id="b448561affff")
+    assert "id=b448561a" in h_mem.render(), h_mem.render()
+    # code/structural 路 item_id=None → 不渲染 id(避免 id=None)
+    h_code = RecallHit(summary="某代码块", score=0.5, source="code", file="a.c", line_start=10)
+    assert "id=" not in h_code.render(), h_code.render()
 
 
 def test_recall_fuses_bm25_and_vector(store, scope):

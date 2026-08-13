@@ -1,14 +1,14 @@
 ---
 name: pitfall-log
-description: "踩坑记录文档(docs/踩坑记录.md)位置 —— 项目走过的弯路汇总;设计前先查、踩坑后往上加"
+description: "踩坑记录文档(docs/archive/踩坑记录.md)位置 —— 项目走过的弯路汇总(#1-#20);设计前先查、踩坑后往上加"
 metadata:
   node_type: memory
   type: reference
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-10T06:39:59.014Z
+  modified: 2026-08-13T08:53:13.962Z
 ---
 
-`docs/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。
+`docs/archive/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。当前 #1–#20。
 
 **何时查 / 何时写**:① 设计新模块前先翻一遍(避免重复踩已知坑);② 做了设计反转 / 删了已建代码 / 用户指出过度设计 / 调研推翻既有方案 时,往上加一条(模板在文档末尾)。
 
@@ -43,5 +43,13 @@ metadata:
 **#15(2026-08)**:validate_patch 对 agent 传参 marshalling 脆弱。e2e 报"补丁第 71 行损坏"但补丁内容对;逐字比对入参发现**唯一差别:agent 把末尾换行 rstrip 掉了**(git apply 对末行无换行敏感 → "patch corrupt")。教训:**接收 agent 字符串的工具入口必须容错 marshalling**(末尾换行/CRLF/围栏)—— normalize(LF + 补末尾 `\n`),别假设 agent verbatim 传;"工具报错"先怀疑传参 marshalling 再怀疑工具/补丁。现状:validate.py + build.py 入口 normalize + 2 新单测,e2e 复测 validate 通过。详见 docs/踩坑记录.md #15。
 
 **#16(2026-08)**:只读鉴定 skill 要 `bash:deny`。patch-review 设了 edit:deny 仍被 agent 用 **bash `git apply`** 把补丁偷偷贴进 demo 仓(edit:deny 不管 bash;bash 能 git apply/checkout/sed 改文件)。后果:工作树脏 + 后续 validate_patch 全失败(补丁已贴)+ agent 在 apply 失败下仍 memorize 错结论(踩坑#12 症状)。教训:只读 skill(鉴定/review/调研)**bash:deny**(不只 edit:deny);改代码的 skill(bug-rca)才给 bash,按 skill 是否改代码分 bash 权限。现状:patch-review bash:deny+edit:deny,e2e 复测 demo 仓干净。详见 docs/踩坑记录.md #16。
+
+**#17(2026-08)**:opencode 配置两处真理源无同步 —— 加 agent 没生效,改 symlink 单源。backport skill 落地后 `opencode agent list` 看不到 `hyperion-backport`,且 cwd 根 `opencode.json` 还引用已撤的 `hyperion_filter_logs`(幽灵工具)。根因:opencode 从 **cwd 根** `opencode.json` 读(不从 `config/` 读,加载路径没核清),模板放 `config/opencode_hyperion.json`,**两文件都在 git 无同步机制** → 改模板不动实际加载文件必漂移(架构上就允许漂移,比"忘改"更深)。应急 `cp` 后根治:cwd 根 `opencode.json` 改 **symlink → 模板**(git mode 120000),单源真理,透链生效。教训:**配置只有一个真理源**(多源+手工同步必漂移);**设计配置加载前先核"实际从哪读"**(同 #4 cwd/#10 加载路径通病);symlink 跨机注意 Windows 默认不解。现状:symlink 根治(commit `75ab78a`),两关验证全绿。详见 [[opencode-config-drift]] + docs/踩坑记录.md #17。
+
+**#18(2026-08)**:recall 命中但 agent 不短路 —— 召回层工作了,注入层写成流水线把它浪费了。compare skill 价值闭环("首次调研→记→下次 recall 命中→零重跑秒答")热路径实测**没短路**:recall 第一步命中(两 codebase 各召回完整对比事实 1245/894 字符),但 agent 仍整轮重跑(read×22+search×4,42 工具 vs 冷路径 44),还重复 memorize×2。agent 自述"记忆已命中但按流程需重跑验证"。根因 = **注入层 gap**(召回层 ≠ 注入层):SKILL.md 写成固定 7 步 playbook,agent 当"必走完"流水线,recall 命中后没敢短路(流水线思维残留,同 #12)。修法:SKILL+prompt 加「recall 优先+命中短路」(命中同 codebase 同主题完整事实→直接复用出报告,不 search/read/memorize;短路路径不 memorize)。e4 实测 **42→4 工具/read 22→0/~4min→~40s(7× 提速),质量不降**。教训:**召回层和注入层分开设计,注入层必须有"命中短路"显式指令**(只建召回不写命中怎么办=记忆白召回);**skill 是工具箱+条件分支不是固定流水线**(接 #12);**验证记忆价值闭环要测热路径(记忆已有)不只测冷路径**(本坑就是热路径 e2e 暴露)。详见 [[compare-skill-handoff]] + docs/踩坑记录.md #18。
+
+**#19(2026-08)**:memory_dump 静默截断 —— `[:8000]` 吞掉一半记忆逼 agent 13 次 recall 补捞。memory-health-check e2e(审 wpa 48 条)发现 agent 反复 recall 13 次补捞"看不到"的条目 —— 根因 memory_dump 用 `[:8000]` 字符硬截断,**48 条只显 24 条**,剩一半被**静默吞掉**(无"还有更多"提示)。agent 发现条目数对不上只好逐条 recall 捞。根因:**静默截断=对 agent 撒谎**(让它以为所见即全部,基于不完整数据决策)+ **字符数截断对条目完整性盲**(可能撕裂一条卡)。体检 skill 硬约束是"审全量",静默截断破坏这个前提(漏看一半会误判健康度,尤其漏掉未决矛盾的另一半)。修法:`[:8000]`→`limit/offset` 分页(默认 60/页)+ header 显式提示「showing 1-60 of N, more → memory_dump(offset=60)」(诚实信号)。教训:**工具输出截断必须配诚实信号**(截断要告诉 agent 还有多少+怎么拿,静默截断=撒谎);**按逻辑单元分页不按字符数截断**(记忆按条目,字符截断撕裂单元);**体检/审计类工具的"全量"前提要工具保证**(工具层要支撑 skill 层硬约束不能背叛)。现状:分页+翻页提示(commit `53149d8`),e2e 一轮拿全。详见 [[memory-health-check-handoff]] + docs/踩坑记录.md #19。
+
+**#20(2026-08)**:architecture-review 草稿判断被实证推翻 —— 建议 C/D 误判短板 + A 校正方向。一份 review 草稿给 runtime/memory 提 4 条建议(A sqlite-vec/B 摘要 token/C 历史兜底/D 巩固自转),落地时**逐条调研实证**发现 2 条(C/D)"短板描述"是**草稿阶段误判**:D 草稿说"consolidate 无人调"但 CLI 早 wire(cli.py:276)+ recall 早 bump(recall.py:186),真缺口只是"recall 后自动触发"(自转);C 草稿说"历史 synopsis 不二次压缩是短板"但 deer-flow 生产级也不二次压(~3K<fallback 20K)、累积靠摘要(=建议 B),真缺口是补 `wrap_model_call` 钩子。A 方向需校正:sqlite-vec vec0 **默认 L2 非 cosine**,记忆是 cosine 语义,建表须显式 `distance_metric=cosine`+跳零向量。**4 条全落地但全经校正,没一条照草稿原样实现是对的。** 根因:**review 草稿=读码印象非实证**(没 grep 调用点/没读对标实现);**"现象"被夸大成"短板"**(缺一个触发点 ≠ 整功能没人用)。教训:**review/设计草稿每条判断落地前必须实证复核**(grep+读对标+探针,读码印象会漏会错);**区分现象和短板**;**对标实现是检验"真短板"的硬尺**(deer-flow 也没做=YAGNI,同 #2);**换库先核默认行为**(同 #6)。现状:4 条全落地经校正(commits `1ea8153`/`505a6a6`)。详见 [[suggestion-a-sqlite-vec-ann-handoff]]/[[suggestion-c-tool-output-wrap-model-handoff]]/[[suggestion-d-memory-consolidation-handoff]] + docs/踩坑记录.md #20。
 
 **互补文档**:[docs/设计演变史.md](../../设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。

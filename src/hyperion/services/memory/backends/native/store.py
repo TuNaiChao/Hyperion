@@ -429,6 +429,28 @@ class MemoryStore:
         except Exception as e:  # noqa: BLE001 - vec0 写失败降级,主表事务继续 COMMIT
             logger.warning("memory store: vec0 双写失败,降级(下次 search 走 loop): %s", e)
 
+    def _resolve_id(self, item_id: str) -> str | None:
+        """把 agent 传来的 id 解析成 DB 里的完整 16 位 id。
+
+        背景:dump/recall 的溯源卡渲染 id 截断成 8 位(防刷屏),agent 据此调
+        mark_corrected/corrects 或 memory invalidate 时传的是 8 位前缀;DB 里却是 16 位。
+        精确匹配失败 → 先按前缀解析:恰好 1 条前缀命中 → 用它的完整 id;0 条或 >1 条(歧义)→ 返回 None。
+        内部调用方(bump_access/consolidate)传的是完整 id,精确匹配直接中,不走前缀。
+        """
+        if not item_id:
+            return None
+        # 快路:精确匹配(DB id 是 16 位;内部调用方传完整 id 直接中)。
+        exists = self._conn.execute("SELECT 1 FROM knowledge_items WHERE id=? LIMIT 1", (item_id,)).fetchone()
+        if exists:
+            return item_id
+        # 慢路:前缀匹配(agent 传 dump 里看到的 8 位 id)。前缀歧义(>1 条)→ 拒绝,宁漏不错。
+        rows = self._conn.execute(
+            "SELECT id FROM knowledge_items WHERE id LIKE ? || '%' LIMIT 2", (item_id,)
+        ).fetchall()
+        if len(rows) == 1:
+            return rows[0]["id"] if isinstance(rows[0], dict) else rows[0][0]
+        return None
+
     def bump_access(self, item_id: str) -> None:
         """被召回命中:access_count+1, last_recalled=now(升级 mental_model 的依据)。
 
@@ -441,13 +463,19 @@ class MemoryStore:
             )
 
     def set_invalid(self, item_id: str, *, superseded_by: str | None = None, invalid_at: datetime | None = None) -> bool:
-        """bi-temporal 软删:设 invalid_at(+可选 superseded_by)。返回是否真的改了。"""
+        """bi-temporal 软删:设 invalid_at(+可选 superseded_by)。返回是否真的改了。
+
+        item_id 接受完整 id 或 dump 里看到的 8 位前缀(经 _resolve_id 解析);前缀歧义(>1 条)→ 不改。
+        """
         ts = (invalid_at or datetime.now(UTC)).isoformat()
         with self._wl:
+            full = self._resolve_id(item_id)
+            if full is None:
+                return False
             cur = self._conn.execute(
                 "UPDATE knowledge_items SET invalid_at=?, superseded_by=COALESCE(?, superseded_by), updated_at=? "
                 "WHERE id=? AND invalid_at IS NULL",
-                (ts, superseded_by, _utcnow_iso(), item_id),
+                (ts, superseded_by, _utcnow_iso(), full),
             )
         return cur.rowcount > 0
 
@@ -457,11 +485,16 @@ class MemoryStore:
         与 set_invalid 的区别:不设 invalid_at(条目仍 active,仍可检索/体检可见),
         只标纠正关系让检索侧降权(recall 的 _apply_decay_confidence 对 corrected_by 非空的条目额外降权)。
         幂等:已设过 corrected_by 的条目不再覆盖(WHERE corrected_by IS NULL)。
+
+        item_id 接受完整 id 或 dump 里看到的 8 位前缀(经 _resolve_id 解析);前缀歧义(>1 条)→ 不改。
         """
         with self._wl:
+            full = self._resolve_id(item_id)
+            if full is None:
+                return False
             cur = self._conn.execute(
                 "UPDATE knowledge_items SET corrected_by=?, updated_at=? WHERE id=? AND corrected_by IS NULL",
-                (corrected_by, _utcnow_iso(), item_id),
+                (corrected_by, _utcnow_iso(), full),
             )
         return cur.rowcount > 0
 
