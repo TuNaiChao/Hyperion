@@ -384,6 +384,11 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
     verdict_chain: list[str] = []
     loop_iters = 0  # 实际 loop 轮数(供 report)
     prompt = state.get("prompt", "")
+    # 记住"最近一次非空补丁"——改动是累积的(loop 不 reset),每轮 diff = worktree 相对 base 的累积态。
+    # 若末轮 delegate 把改动 net-zero 改回 base(或末轮没动手),末轮 observe 会空,导致 patch 被覆盖成
+    # 空串、前几轮的有效补丁丢失(verified=False 假阴性)。记 best_patch 供循环后回退救回(见循环末)。
+    best_patch = ""
+    best_round = -1
 
     for i in range(k2):
         loop_iters += 1
@@ -395,6 +400,9 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
         )
         # 观察补丁(git diff,不信任 delegate 吐的 diff)+ 执行硬门控(validate_patch Tier0,非 LLM)
         patch = _observe_patch(code_dir)
+        # 记最新非空补丁(累积态,对 base 可 apply):末轮 net-zero 时用它回退,免丢有效产物。
+        if patch:
+            best_patch, best_round = patch, i
         v = (
             validate_patch(patch, forward_dir=repo_root, reverse_dir=code_dir)
             if patch else {"verified": False, "forward_method": "empty", "log": "patch 为空"}
@@ -420,6 +428,15 @@ async def node_delegate_repair_loop(state: BugRcaState) -> dict:
             "基于上面的反馈继续修这个 bug(用 edit 改 code/),改完按 schema 返回(含 verdict/falsification):\n"
             + str(schema)
         )
+
+    # 末轮 observe 空、但前面轮次有过非空补丁 → 回退到最近的有效累积态并重验。
+    # 救假阴性:delegate 末轮把改动 net-zero 改回 base(或末轮没动手)时,有效的前轮补丁不该被覆盖丢失。
+    # 诚实信号:回退后如实报重验结果(过就 verified=True,不过就 verified=False),不谎报。
+    if not patch and best_patch:
+        patch = best_patch
+        v = validate_patch(best_patch, forward_dir=repo_root, reverse_dir=code_dir)
+        verified = bool(v.get("verified"))
+        validate_log = (v.get("log", "") + f" [回退自第 {best_round} 轮;末轮观察到空补丁]").strip()
 
     return {
         "patch": patch,

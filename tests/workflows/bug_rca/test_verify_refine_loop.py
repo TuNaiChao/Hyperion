@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from hyperion.tools.delegate import CodingAgentDelegate, DelegateResult, DelegateStatus
 from hyperion.workflows.bug_rca import nodes
 from hyperion.workflows.bug_rca.nodes import (
@@ -185,3 +187,47 @@ def test_repair_max_loop_exhausted(monkeypatch):
     assert out["repair_loops"] == 2
     assert out["patch"] == "P2"
     assert len(d.calls) == 2  # 没 fan-out
+
+
+def test_observe_empty_short_circuits(monkeypatch):
+    """observe 全程返空 → 不调 validate_patch(空短路),patch="" verified=False。
+
+    锁住 nodes.py 的 `if patch else {empty}` 分支(此前零覆盖)。validate 给个会 fail
+    的 sentinel,确认空 patch 没被喂进 validate_patch(防重构误把空串送进去)。
+    """
+    d = _ScriptedDelegate([_rep("needs_fix"), _rep("needs_fix")])
+    _patch_delegate(monkeypatch, d)
+    _cfg(monkeypatch, max_repair=2)
+    monkeypatch.setattr(nodes, "_observe_patch", lambda code_dir: "")  # 全程空
+    monkeypatch.setattr(
+        "hyperion.services.workspace.validate.validate_patch",
+        lambda **k: pytest.fail("空 patch 不该喂进 validate_patch"),
+    )
+    out = asyncio.run(node_delegate_repair_loop(_state(prompt="修它", output_schema=REPAIR_SCHEMA)))
+    assert out["verified"] is False
+    assert out["patch"] == ""  # 全程没产出有效补丁,非假阴性
+    assert out["validate_log"] == "patch 为空"
+
+
+def test_observe_empty_falls_back_to_best(monkeypatch):
+    """末轮 observe 空但前轮有非空补丁 → 回退到 best_patch 重验,救假阴性。
+
+    场景(校正后真因):delegate 末轮把改动 net-zero 改回 base → 末轮 diff 空 →
+    若直接覆盖会丢掉 iter0 的有效补丁(P1)。回退到 P1 重验,过则 verified=True。
+    """
+    d = _ScriptedDelegate([_rep("needs_fix"), _rep("needs_fix")])
+    _patch_delegate(monkeypatch, d)
+    _cfg(monkeypatch, max_repair=2)
+    # iter0 observe="P1"(非空→记 best);iter1 observe=""(末轮 net-zero)。
+    _patch_observe_validate(
+        monkeypatch,
+        ["P1", ""],
+        # [0] = iter0 的 P1 validate(没过→继续);[1] = 循环后回退 P1 的重验(过→救回)。
+        [{"verified": False, "forward_method": "failed", "log": "首轮没过"},
+         {"verified": True, "forward_method": "strict", "log": "ok"}],
+    )
+    out = asyncio.run(node_delegate_repair_loop(_state(prompt="修它", output_schema=REPAIR_SCHEMA)))
+    assert out["patch"] == "P1"  # 回退救回,没被末轮空覆盖
+    assert out["verified"] is True  # 回退重验过
+    assert "回退自第 0 轮" in out["validate_log"]  # 诚实标注来源
+    assert "末轮观察到空补丁" in out["validate_log"]

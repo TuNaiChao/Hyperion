@@ -76,8 +76,14 @@ N=1 解释的"同 bug recall 偏负 vs 类似 bug recall 增益"——N=2 后**�
 
 - **recall 保留**(无害:两轮都没让它判错根因,补丁质量持平甚至略优——类级中央修复两轮都选了);但**不再宣称"提速"**。
 - **B(P1 自动 query)降级**:recall→定位 这条链的价值**未达"值得专建"的门槛**(N=2 没稳定兑现增益)。做 B 的依据从"证实有增益"降为"无害 + 有时帮 + 自动 query 本身有其他好处(定位后才有的 problem_summary 当 query)"。**真要做 B 前应先 N=3-5 定性**,别据 N=1 单轮就上。
-- **局限**:① **N=2/臂仍小**——glm-5.2 非确定性 + verify-refine 多轮随机性大;要稳需 N≥5。② verified=False 假阴性暴露 **workspace_changes 观察 patch 有捕空 bug**(delegate 换策略中间态空 → 报告误判 patch 为空)——这是**真 bug**,值得单独排(踩坑#15 延伸:不只 LF marshalling,还有观察时机)。③ 仍只测 1 个类似 bug(Candidate A)。
+- **局限**:① **N=2/臂仍小**——glm-5.2 非确定性 + verify-refine 多轮随机性大;要稳需 N≥5。② verified=False 假阴性暴露 **workspace_changes 观察 patch 有捕空 bug** —— ✅ **2026-08-13 已修**(见下方「捕空 bug 修复」段)。③ 仍只测 1 个类似 bug(Candidate A)。
 - **不改产品代码**(纯验证)。Candidate A 本身是真实 wpa bug,两轮四臂都判对根因、补丁可单独提。
+
+## ✅ 捕空 bug 修复(2026-08-13)
+
+局限 ② 的「verified=False 假阴性」已修。**⚠️ 机制校正(踩坑#20 同款 —— 原诊断「delegate 换策略中间态 reset 竞态」被实证推翻)**:Explore 三证证伪了 reset 竞态 —— ① `hyperion-repair` delegate `bash: deny`(config:40)跑不了 `git reset`;② `delegate.run()` 同步落盘(await EOF + `proc.wait()`,无 async 竞态);③ HEAD 全 loop 恒定(workspace base commit,diff 已锚 base)。**校正后真因 = repair loop 每轮覆盖 patch**(nodes.py:397 `patch = _observe_patch(code_dir)` 在 for 内):改动累积,每轮 diff = worktree-vs-base 累积态;末轮 delegate 把改动 net-zero 改回 base(或末轮没动手)→ 末轮 diff 空 → `patch` 被覆盖成 "" → **前几轮有效补丁丢了** → 假阴性。
+
+**修法 = 保留最佳补丁回退**(`node_delegate_repair_loop`):循环内记 `best_patch`/`best_round`(最新非空累积态);循环后若末轮空但 best_patch 非空 → 回退 best_patch 并重验(validate_patch),`validate_log` 追加「[回退自第 N 轮;末轮观察到空补丁]」。诚实信号(回退后如实报重验结果,不谎报 verified)。全程空 → 维持原判(真没产出,非假阴性)。**2 新测**(空短路 sentinel 验空 patch 不喂 validate / 空回退验救回假阴性)+ 原 3 测不破,全量 256 绿。详见 [plan](.claude/plans/crystalline-dazzling-ladybug.md)。
 
 ## 价值命题修正(2026-08-12 设计复核,详见 [[memory-design-review-2026-08-12]])
 
