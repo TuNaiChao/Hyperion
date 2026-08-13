@@ -388,3 +388,15 @@ metadata:
     - 现状(MVP,2026-08-11):逐 commit apply 检查用 `git apply --recount --check`(strict 一步)对**当前 worktree**。故 SKILL 硬性要求调用前 `checkout fork_ref` + worktree 干净,否则三态失真;且不能并发(共享一个 worktree)。
     - 升级:`git merge-tree --write-tree <fork_ref> <upstream_commit>`(git 2.38+)在内存里对两个 ref 做 three-way merge,**不 touch worktree** —— 无需 checkout、可并发、对脏 worktree 安全。`--name-only` 出冲突文件清单 → `applies_cleanly` 判定更准。
     - 优先级:低(MVP strict 检查 + SKILL 的 checkout 约束已能用);触发条件 = 需并发扫多仓 / 或 fork_ref 不能 checkout(HEAD detached 场景)。关联 [[upstream-merge-handoff]]。
+
+61. ✅ **已成(2026-08-12)** 摘要触发改 token 感知(architecture-review §五 建议 B)— `src/hyperion/platform/runtime/factory.py`。
+    - 现状(旧):`SummarizationMiddleware(model, trigger=("messages",50), keep=("messages",20))` —— 按消息条数触发,50 条大消息(塞 diff)过晚压、50 条小消息过早压;消息数 ≠ token 数。
+    - 已落地:`trigger=("tokens", 32000)`(对齐 deer-flow `config.example.yaml:1563` 生产默认)+ 新 `SummarizationConfig` dataclass(enabled/trigger_tokens/keep_messages)。langchain 1.3.14 原生支持 token trigger,**直接生产级**(零自写子类,踩坑#2)。实测 `("fraction",F)` 排除:三模型 ChatOpenAI profile=None,用 fraction 构造 raise ValueError 让 agent 崩。不进 config.yaml(token_budget/tool_output yaml 未 wire,对齐 turn_budget 先例)。2 单测 + 全 runtime 26 绿。详见 [[suggestion-b-token-summarization-handoff]]。
+
+62. ✅ **已成(2026-08-13)** 记忆巩固自转(architecture-review §五 建议 D)— `src/hyperion/services/memory/backends/native/service.py`。
+    - 现状(旧):`consolidate()` + `hyperion memory consolidate` CLI + recall bump 都已实现且 work(e2e 实测 GREEN),但 recall 不顺手 consolidate,得手动敲 CLI。
+    - 已落地:`NativeMemoryService.recall` 命中 memory 路条目时 `asyncio.create_task` fire-and-forget 跑 `_safe_consolidate`(对标 Cognee self-improving)。`NativeMemoryConfig.auto_consolidate: bool = True` 开关,复用 `promote_access_count` 阈值。不挂 search()(bump=False 无信号)。**更正 architecture-review「无人调」误判**:CLI 早 wire + recall 早 bump,真缺口只是自转。3 单测(e2e 全链 + 自转 + disabled)+ 全记忆 37 绿。详见 [[suggestion-d-memory-consolidation-handoff]]。
+
+63. ✅ **已成(2026-08-13)** 补 wrap_model_call 兜底历史漏网大消息(architecture-review §五 建议 C)— `src/hyperion/platform/runtime/middlewares/tool_output.py`。
+    - 现状(旧):`wrap_tool_call` 只处理新工具结果;历史 ToolMessage 漏网大消息(断点续跑/改阈值/旧 checkpoint)无人兜底。原 TODO 推 R3.2。
+    - 已落地:`_budget_content`/`_patch_tool_message` 加 `externalize: bool = True` 参数(历史路径 False → 跳外化只走 fallback head+tail);新 `_is_over_fallback` + `_patch_model_messages`(抄 deer-flow:539-565 预扫描模式,无超阈值返 None 不重建 list);`ToolOutputBudgetMiddleware` 加 `wrap_model_call`/`awrap_model_call`(抄 loop_detection:233-238 `request.override`)。**不改 factory 装配**(中间件已在链)。3 单测(截断漏网大消息 / 不外化无磁盘文件 / 干净历史返 None)+ 全 runtime 29 绿。**校正 architecture-review 短板 2 误判**:原「synopsis 不二次压缩」表述错 —— deer-flow 生产级也不二次压 synopsis(靠摘要治累积 = 建议 B);真缺口是 wrap_model_call 兜底钩子。详见 [[suggestion-c-tool-output-wrap-model-handoff]]。

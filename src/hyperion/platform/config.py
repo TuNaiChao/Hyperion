@@ -124,6 +124,7 @@ class NativeMemoryConfig(BaseModel):
     recall_top_k: int = 5  # recall 默认返回条数
     decay_halflife_days: float = 180.0  # 衰减半衰期(天):exp(-age/halflife);Weibull 留 backlog
     promote_access_count: int = 3  # 被召回≥N 次 → 升级 mental_model(Letta 3+ 规则)
+    auto_consolidate: bool = True  # recall 命中达标条目 → 后台异步 consolidate 自转(对标 Cognee self-improving;见 service.recall)
     merge_step: float = 0.3  # 重提时 Bayes 置信度累加步长(mnemopi veracity)
 
 

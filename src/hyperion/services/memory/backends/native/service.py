@@ -12,6 +12,7 @@ from_config(cfg) 按 config.memory 构造全部依赖:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -120,13 +121,28 @@ class NativeMemoryService(MemoryService):
         return memorize_items(items, store=self._store, embedder=self._embedder, step=self._ncfg.merge_step)
 
     async def recall(self, query: str, scope: Scope, *, top_k: int | None = None) -> list[RecallHit]:
-        return _recall(
+        hits = _recall(
             query, scope, store=self._store, repo=scope.codebase,
             top_k=top_k or self._ncfg.recall_top_k,
             embedder=self._embedder, reranker=self._reranker,
             code_bundle=self._code_bundle, structural=self._structural,
             halflife_days=self._ncfg.decay_halflife_days,
         )
+        # 自转(建议 D):命中了 memory 路条目(有 item_id,刚被 bump 过 access_count)→ 后台异步跑一次 consolidate。
+        # consolidate 自己判 access_count 达不达标(没达标 promoted=0,只扫表不改,微秒级)。fire-and-forget 不拖慢 recall。
+        # 不挂 search():search 明确 bump=False(无 access_count 信号,挂了空跑)。
+        if self._ncfg.auto_consolidate and any(h.item_id for h in hits):
+            asyncio.create_task(self._safe_consolidate(scope))
+        return hits
+
+    async def _safe_consolidate(self, scope: Scope) -> None:
+        """后台巩固(fire-and-forget):失败只记日志,绝不影响 recall 主流程(consolidate 是优化,不是 recall 契约)。"""
+        try:
+            stats = await self.consolidate(scope)
+            if stats.get("promoted"):
+                logger.info("memory auto-consolidate(%s): 升级 %d 条 mental_model", scope.codebase, stats["promoted"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("memory auto-consolidate 失败(不影响 recall): %s", e)
 
     # ── tier-2 ──
 

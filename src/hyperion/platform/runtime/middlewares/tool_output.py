@@ -10,8 +10,12 @@
   对标 deer-flow ToolOutputBudgetMiddleware,Hyperion 简化:无 sandbox 虚拟路径映射,直接写本地目录。
   设计见 docs/设计/runtime-harness-design.md §4.3。
 
-  ⚠️ R3.0 范围:只做「新工具结果」的预算(wrap_tool_call)。「历史 ToolMessage 截断」
-  (wrap_model_call:已在外部化的旧结果在后续轮次仍占位的再压缩)推到 R3.2 深度调研长循环时再补。
+  两条钩子(对齐 deer-flow):
+    - wrap_tool_call:处理「新工具结果」—— 超阈值外化磁盘 + synopsis 摘要(主路径)。
+    - wrap_model_call(建议 C 补):每轮兜底「漏网的大 ToolMessage」—— 断点续跑 / 改过阈值
+      / 从旧 checkpoint 恢复时,历史里可能混进未经 wrap_tool_call 处理的大消息,这里每轮扫一遍,
+      超 fallback_max_chars 的做 head+tail 截断(不外化:已外化的 synopsis 不重复处理)。
+      synopsis(~3K)< fallback_max_chars(20K)→ 不二次压(累积靠摘要中间件整体吃掉,见建议 B)。
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, override
 
 from langchain.agents.middleware import AgentMiddleware
+from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ModelResponse
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
@@ -169,13 +174,27 @@ def _build_fallback(content: str, *, tool_name: str, max_chars: int, head_chars:
     return f"{head}\n... [truncated {omitted} chars; disk externalization unavailable; full {total} chars]\n{tail}"
 
 
-def _budget_content(content: str, *, tool_name: str, tool_call_id: str, config: ToolOutputBudgetConfig) -> str | None:
-    """对 content 施加预算。返回替换文本,或 None(无需改)。"""
+def _budget_content(
+    content: str,
+    *,
+    tool_name: str,
+    tool_call_id: str,
+    config: ToolOutputBudgetConfig,
+    externalize: bool = True,
+) -> str | None:
+    """对 content 施加预算。返回替换文本,或 None(无需改)。
+
+    externalize=True(新工具结果主路径):超 externalize_min_chars → 外化磁盘 + synopsis。
+    externalize=False(历史漏网兜底,wrap_model_call 调):跳过外化,只做 fallback head+tail 截断。
+      为什么历史路径不外化:历史里已有的 ToolMessage 要么是已外化过的 synopsis(~3K,远低于
+      fallback_max_chars,该保留不动),要么是漏网的大消息(断点续跑/改过阈值)——后者只需截断,
+      重新外化会再写一份磁盘文件 + 生成第二份 synopsis,冗余且 synopsis 累积靠摘要中间件治理(建议 B)。
+    """
     # 没超任何阈值 → 不动
     if len(content) <= config.externalize_min_chars and len(content) <= config.fallback_max_chars:
         return None
-    # 1) 优先:外化到磁盘 + synopsis 摘要
-    if len(content) > config.externalize_min_chars:
+    # 1) 优先:外化到磁盘 + synopsis 摘要(历史路径 externalize=False 跳过)
+    if externalize and len(content) > config.externalize_min_chars:
         vpath = _externalize(
             content,
             tool_name=tool_name,
@@ -192,7 +211,7 @@ def _budget_content(content: str, *, tool_name: str, tool_call_id: str, config: 
                 tail_chars=config.preview_tail_chars,
             )
         logger.warning("Externalize failed for %s; falling back to head+tail", tool_name)
-    # 2) 降级:head + tail 硬截断
+    # 2) 降级:head + tail 硬截断(历史路径走这里:漏网大消息兜底,synopsis 不动)
     if len(content) > config.fallback_max_chars:
         logger.warning("Fallback-truncating %s output: %d → %d max", tool_name, len(content), config.fallback_max_chars)
         return _build_fallback(
@@ -205,15 +224,25 @@ def _budget_content(content: str, *, tool_name: str, tool_call_id: str, config: 
     return None
 
 
-def _patch_tool_message(msg: ToolMessage, config: ToolOutputBudgetConfig) -> ToolMessage:
-    """对单条 ToolMessage 施加预算;无改动返回原对象(避免多余 copy)。"""
+def _patch_tool_message(
+    msg: ToolMessage,
+    config: ToolOutputBudgetConfig,
+    *,
+    externalize: bool = True,
+) -> ToolMessage:
+    """对单条 ToolMessage 施加预算;无改动返回原对象(避免多余 copy)。
+
+    externalize 透传给 _budget_content:历史兜底路径(wrap_model_call 调)传 False。
+    """
     tool_name = msg.name or "unknown"
     if tool_name in config.exempt_tools:
         return msg
     text = _message_text(msg.content)
     if text is None:  # 非文本(图片等)不动
         return msg
-    replacement = _budget_content(text, tool_name=tool_name, tool_call_id=msg.tool_call_id or "", config=config)
+    replacement = _budget_content(
+        text, tool_name=tool_name, tool_call_id=msg.tool_call_id or "", config=config, externalize=externalize
+    )
     if replacement is None:
         return msg
     update: dict[str, Any] = {"content": replacement}
@@ -222,6 +251,45 @@ def _patch_tool_message(msg: ToolMessage, config: ToolOutputBudgetConfig) -> Too
     if getattr(msg, "additional_kwargs", None):
         update["additional_kwargs"] = dict(msg.additional_kwargs)
     return msg.model_copy(update=update)
+
+
+def _is_over_fallback(msg: ToolMessage, config: ToolOutputBudgetConfig) -> bool:
+    """预扫描判据:这条 ToolMessage 是否超 fallback_max_chars(需历史兜底截断)。
+
+    历史路径只兜底「漏网的大消息」(>fallback_max_chars);已外化的 synopsis(~3K)不碰。
+    非文本/豁免工具 → False(不在历史兜底范围)。
+    """
+    if not isinstance(msg, ToolMessage):
+        return False
+    if (msg.name or "unknown") in config.exempt_tools:
+        return False
+    text = _message_text(msg.content)
+    if text is None:
+        return False
+    return len(text) > config.fallback_max_chars
+
+
+def _patch_model_messages(messages: list[Any], config: ToolOutputBudgetConfig) -> list[Any] | None:
+    """模型调用前扫历史 ToolMessage:有超 fallback_max_chars 的才兜底截断(不外化)。
+
+    抄 deer-flow _patch_model_messages 的预扫描模式(无超阈值 → 直接返 None 不重建 list):
+    synopsis(~3K)< fallback_max_chars(20K)→ 不动(累积靠摘要中间件治,见建议 B;不二次压);
+    只有漏网的大消息(>20K)才 fallback 截断。
+    返 None = 无需改(不重建 list);有改才返新 list。
+    """
+    if not any(isinstance(m, ToolMessage) and _is_over_fallback(m, config) for m in messages):
+        return None
+    updated: list[Any] = []
+    changed = False
+    for m in messages:
+        if isinstance(m, ToolMessage):
+            patched = _patch_tool_message(m, config, externalize=False)
+            if patched is not m:
+                changed = True
+            updated.append(patched)
+        else:
+            updated.append(m)
+    return updated if changed else None
 
 
 def _patch_result(result: ToolMessage | Command, config: ToolOutputBudgetConfig) -> ToolMessage | Command:
@@ -278,3 +346,39 @@ class ToolOutputBudgetMiddleware(AgentMiddleware):
         outputs_dir = _resolve_outputs_dir(request, self._config)
         cfg = replace(self._config, outputs_dir=outputs_dir) if outputs_dir != self._config.outputs_dir else self._config
         return await asyncio.to_thread(_patch_result, result, cfg)
+
+    # ── 历史兜底(建议 C):每轮扫历史 ToolMessage,兜底漏网的大消息 ──
+
+    @override
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelCallResult:
+        """模型调用前:扫历史 ToolMessage,超 fallback_max_chars 的兜底截断(不外化)。
+
+        价值(对齐 deer-flow):断点续跑 / 改过阈值 / 从旧 checkpoint 恢复时,历史里可能混进未经
+        wrap_tool_call 处理的大消息,这里每轮扫一遍兜底。synopsis(~3K)不碰(靠摘要治累积)。
+        无超阈值 → 不重建 messages(预扫描返 None)。
+        """
+        if self._config.enabled:
+            messages = getattr(request, "messages", None)
+            if isinstance(messages, list):
+                patched = _patch_model_messages(messages, self._config)
+                if patched is not None:
+                    request = request.override(messages=patched)
+        return handler(request)
+
+    @override
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelCallResult:
+        if self._config.enabled:
+            messages = getattr(request, "messages", None)
+            if isinstance(messages, list):
+                patched = _patch_model_messages(messages, self._config)
+                if patched is not None:
+                    request = request.override(messages=patched)
+        return await handler(request)

@@ -12,10 +12,13 @@ from typing import Literal
 import numpy as np
 import pytest
 
+from hyperion.platform.config import NativeMemoryConfig
 from hyperion.services.memory.backends.native.consolidate import consolidate
 from hyperion.services.memory.backends.native.memorize import memorize_items
 from hyperion.services.memory.backends.native.recall import _rrf_fuse, recall
+from hyperion.services.memory.backends.native.service import NativeMemoryService
 from hyperion.services.memory.backends.native.store import MemoryStore
+from hyperion.services.memory.backends.native.structural import NoopStructuralBackend
 from hyperion.services.memory.schema import Evidence, KnowledgeItem, RecallHit, Scope, SourceTier
 
 
@@ -152,3 +155,81 @@ def test_consolidate_promotes_mental_model(store, scope):
     stats = consolidate(scope, store=store, promote_access_count=3)
     assert stats["promoted"] == 1
     assert store.get(a.id).kind == "mental_model"
+
+
+# ── 建议 D:recall → bump → consolidate 全链 e2e + 自转 ────────────
+
+def test_recall_bump_consolidate_e2e(store, scope):
+    """e2e 锁住「真实 recall 链」:recall(默认 bump=True)→ access_count 涨 → consolidate promote。
+
+    区别于 test_consolidate_promotes_mental_model(那个用 store.bump_access 手动模拟 bump,
+    没走真实 recall→bump 链)。这里用真实 recall() 函数,锁整条链不被回归破坏。
+    """
+    a = _ki("sdp_extract_seqtype 整数溢出未校验 size", scope=scope)
+    memorize_items([a], store=store)
+
+    # recall 3 次(默认 bump=True → 每次命中 store.bump_access → access_count+1)
+    for _ in range(3):
+        hits = recall("sdp 整数溢出", scope, store=store, embedder=None, reranker=None, top_k=3)
+        assert hits and hits[0].item_id == a.id
+
+    # recall 真的把 access_count 从 0 bump 到 3 了(consolidate 升级的前置)
+    assert store.get(a.id).access_count >= 3
+
+    # consolidate → 该条升级 mental_model
+    stats = consolidate(scope, store=store, promote_access_count=3)
+    assert stats["promoted"] == 1
+    assert store.get(a.id).kind == "mental_model"
+
+
+def _native_service(store, *, auto_consolidate: bool = True) -> NativeMemoryService:
+    """造一个 store-only 的 NativeMemoryService(embedder/reranker/code/structural/model 全空,只测 consolidate 自转)。"""
+    cfg = NativeMemoryConfig(auto_consolidate=auto_consolidate)
+    return NativeMemoryService(
+        store=store, embedder=None, reranker=None, code_bundle=None,
+        structural=NoopStructuralBackend(), model=None, native_cfg=cfg,
+    )
+
+
+def test_service_recall_auto_consolidates(store, scope):
+    """建议 D 自转:recall 命中达标条目 → 后台 task 自动 consolidate → 条目升级 mental_model(无需手动敲 CLI)。
+
+    关键:全程在同一个 asyncio.run 里跑 —— create_task 的后台 task 绑在事件循环上,
+    循环结束就被丢弃。所以用单个 async 函数串起 3 次 recall + drain,让后台 task 有机会跑完。
+    summary 带英文标识符(BM25 对英文 token 友好;纯中文短查询踩 §3.2 短板 2 的 FTS5 分词弱)。
+    """
+    import asyncio
+
+    a = _ki("bt_connect 连接流程建立 ATT 链路", scope=scope)
+    memorize_items([a], store=store)
+    svc = _native_service(store, auto_consolidate=True)
+
+    async def _run():
+        for _ in range(3):
+            await svc.recall("bt_connect ATT", scope, top_k=3)
+        await asyncio.sleep(0.05)   # 让最后一次 recall create_task 的后台 consolidate 跑完
+
+    asyncio.run(_run())
+
+    assert store.get(a.id).kind == "mental_model"          # 自转升级了,没手动调 consolidate
+    assert store.get(a.id).access_count >= 3
+
+
+def test_service_recall_auto_consolidate_disabled(store, scope):
+    """auto_consolidate=False → recall 不触发后台 consolidate(扩展口:想纯手动时关掉)。"""
+    import asyncio
+
+    a = _ki("gatt_discover 服务发现流程", scope=scope)
+    memorize_items([a], store=store)
+    svc = _native_service(store, auto_consolidate=False)
+
+    async def _run():
+        for _ in range(3):
+            await svc.recall("gatt_discover", scope, top_k=3)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_run())
+
+    # access_count 涨了(recall 仍 bump),但没自动 consolidate → kind 不变
+    assert store.get(a.id).access_count >= 3
+    assert store.get(a.id).kind == "bug_lesson"            # 没被 promote

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from langchain.agents import create_agent
@@ -28,12 +29,34 @@ from hyperion.platform.runtime.middlewares.turn_budget import TurnBudgetConfig, 
 from hyperion.platform.runtime.state import HyperionState
 
 
+@dataclass
+class SummarizationConfig:
+    """摘要触发的配置(token 感知,对标 deer-flow config.example.yaml:1563 trigger=tokens:32000)。
+
+    面向小白:Lead agent(深度调研那种长 agent)聊到几十轮,历史消息会越来越长、把模型上下文窗口撑爆。
+    SummarizationMiddleware 会在「该压的时候」把旧消息压成一段摘要,腾出空间。**这个 dataclass 只管「何时压、压完留多少」**。
+
+    - trigger_tokens:历史累计 token 估算 ≥ 此值就压(不是按消息条数——50 条可能才几千 token 白压一次,
+      也可能已爆窗口;按真实 token 量才准)。用 `("tokens", N)` 而非 `("fraction",F)`:实测 Hyperion 的
+      ChatOpenAI 模型 profile=None,fraction 构造会直接 raise ValueError(见 summarization.py 末尾校验)。
+    - keep_messages:压完保留最近 N 条(给模型连续性);langchain 默认 20,实测够用。
+
+    对齐 deer-flow 生产默认(32000 token)+ Anthropic「留 5% 余量」精神。不进 config.yaml:token_budget/tool_output
+    的 yaml 配当前都没 wire 进 build_default_middlewares,进 yaml = 造死配置(对齐 turn_budget 先例,代码内传参)。
+    """
+
+    enabled: bool = True  # False → 不挂 SummarizationMiddleware(冒烟/测试想禁摘要的扩展口)
+    trigger_tokens: int = 32_000  # token 数 ≥ 此值 → 触发摘要(deer-flow 生产默认)
+    keep_messages: int = 20  # 压缩后保留最近 N 条(langchain 默认 20)
+
+
 def build_default_middlewares(
     model: BaseChatModel | None = None,
     *,
     token_budget: TokenBudgetConfig | None = None,
     tool_output: ToolOutputBudgetConfig | None = None,
     turn_budget: TurnBudgetConfig | None = None,
+    summarization: SummarizationConfig | None = None,
 ) -> list[AgentMiddleware]:
     """R3.0 默认中间件链(顺序敏感)。
 
@@ -52,7 +75,7 @@ def build_default_middlewares(
         7. DynamicContext           (R3.2:注入日期 + 记忆 recall 作 system-reminder)
         8. Skill*                   (若引入 skills:Activation → ToolPolicy)
         9. DurableContext           (R3.2:summary/delegations 投影成隐藏 HumanMessage)
-       10. Summarization            ← R3.2 已有(langchain 直用;没给 model 则跳过)
+       10. Summarization            ← R3.2 已有 + 建议 B token 感知触发(trigger=tokens:32000,对标 deer-flow;没给 model 则跳过)
        11. Memory(auto-inject)      (Hyperion 自建挂 MemoryService;**不抄** deer-flow MemoryMiddleware)
        12. LoopDetection            ← R3.2 已有(单层 hash 最小版;pull-by-need:频次层/stop_reason)
        13. TurnBudget               ← R3.2.x P1 已有(轮数闸:warn@N-1 + strip@N;管"每轮换工具的良性探索")
@@ -64,8 +87,18 @@ def build_default_middlewares(
         ToolOutputBudgetMiddleware(tool_output) if tool_output else ToolOutputBudgetMiddleware(),
     ]
     if model is not None:
-        # SummarizationMiddleware 要模型来压历史;没给 model 就跳过(冒烟 / 测试)
-        chain.append(SummarizationMiddleware(model, trigger=("messages", 50), keep=("messages", 20)))
+        # SummarizationMiddleware 要模型来压历史;没给 model 就跳过(冒烟 / 测试)。
+        sc = summarization or SummarizationConfig()
+        if sc.enabled:
+            # token 感知触发(对标 deer-flow tokens:32000):按真实 token 量压,不按消息条数——
+            # 50 条可能才几千 token 白压,也可能已爆窗口。见 SummarizationConfig docstring。
+            chain.append(
+                SummarizationMiddleware(
+                    model,
+                    trigger=("tokens", sc.trigger_tokens),
+                    keep=("messages", sc.keep_messages),
+                )
+            )
     chain.append(LoopDetectionMiddleware())
     # TurnBudget(轮数闸):默认宽 max_turns=50;research 子 agent 显式传紧配置(见 _research.py)
     chain.append(TurnBudgetMiddleware(turn_budget) if turn_budget else TurnBudgetMiddleware())
