@@ -221,6 +221,15 @@ deer-flow 另外 30 个(`InputSanitization`/`Sandbox`/`Authorization`/`ReadBefor
 
 ## 附录:完成日志(挨个做时记这)
 
+> 五/六两节 7 项全 `[x]`(功能 3 图边强化标 `[ ]` 长期低优,不在本轮)。commit 日期取 git 提交日(2026-08-13);memory 侧旁出的 correction-link + e2e 验证一并记(非 review 条目但同轮收尾)。
+
 | 日期 | 项目 | commit | 备注 |
 |---|---|---|---|
-| | | | |
+| 2026-08-13 | 建议 A:记忆向量 sqlite-vec ANN | `1ea8153` | 渐进式双路径(count>500 KNN 否则 loop);5 单测 + 全记忆 42 绿 |
+| 2026-08-13 | 建议 B:摘要 token 触发 | `505a6a6` | `trigger=("tokens",32000)`;实测 fraction 排除(三模型 profile=None 构造 raise);2 单测 + runtime 26 绿 |
+| 2026-08-13 | 建议 C:wrap_model_call 历史兜底 | `505a6a6` | 补 `wrap_model_call` 钩子(校正「二次压缩」误判);3 单测 + runtime 29 绿 |
+| 2026-08-13 | 建议 D:记忆巩固自转 | `505a6a6` | recall 命中 memory 路 fire-and-forget consolidate(更正「无人调」误判:CLI 早 wire + recall 早 bump);3 单测 + 记忆 37 绿 |
+| 2026-08-13 | 功能 1:onboarding 架构导览 skill | `071acca` | 第 14 MCP 工具 `repo_overview`(原「0 工具」spec-drift 修正);2 单测 + mcp_tools 25 绿;e2e 真机全绿(11 步/26 工具) |
+| 2026-08-13 | 功能 2:记忆体检 skill | `942474f` | 第 15 MCP 工具 `memory_dump`(包已有契约的 list_items);3 单测 + mcp_tools 28 绿;e2e 真机全绿(审 wpa 48 条,抓真未决矛盾) |
+| 2026-08-13 | (旁出)correction-link 纠正关系闭环 | `4b5dca0` | memory-health e2e 暴露两派打架根因 → 补 `corrects`/`corrected_by` 双字段;2+1 单测 |
+| 2026-08-13 | (旁出)correction-link 2 连锁 bug 修复 | `5fe2a99` | e2e 抓 bug(id 不渲染 + 前缀不匹配);真 DB 重放 corrected_by 0→4;50 测绿 |
