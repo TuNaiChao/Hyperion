@@ -64,3 +64,29 @@ metadata:
 - 用户笔记不另建 skill/工具(同 domain_knowledge kind + CLI/skill 覆盖;克制规则在文档不在代码)。
 
 关联 [[onboarding-skill-handoff]] [[compare-skill-handoff]](镜像 skill 模板:recall-first 短路 + 读码即记边界) [[pitfall-log]](#11 误诊→领域知识 recall 当证伪依据;#2 别重造 opencode 已会的;#13 skill 受众是模型) [[opencode-mcp-wiring]](websearch/webfetch 内置工具 permission key)。
+
+## ✅ opencode 真机 e2e 全绿(2026-08-13 晚,本会话自跑)
+
+**任务**:调研 WPA2 4-way handshake 流程 → 记 domain_knowledge(wpa codebase)。`opencode run --agent hyperion-domain-research`(Hyperion 根启动 + `.env` 灌环境 + 给 hostap 绝对路径 `/home/tnc/src/hostap`)。13 步 / 20 工具调用,exit 0。
+
+**工具调用序列(SKILL 理想行为全到位)**:
+- `websearch` ×3(撒网找权威源)+ `webfetch` ×2(精读 Stanford seclab 论文 + CERT-EU KRACK 公告)—— **opencode 1.18 内置 web 工具真能在 agent 里调起来(本特性最大未知已证)**。
+- `read` ×7 + `grep` ×3 + `glob` ×1(第三重交叉验证:hostap 真源码核 handshake 函数,5 个函数 + `wpa_pmk_to_ptk("Pairwise key expansion")` + KEK AES-UNWRAP + tptk 注释 + ANonce 校验全对得上)。
+- `hyperion_*` ×3(memory_recall 探底 + memory_memorize + export_report)。
+
+**全验证点(DB raw 查证非幻觉)**:
+1. ✅ **domain_knowledge 写入真 DB**(id `2f2205d8abbd7f09`)—— 单测用 mock,这是 6 接触点第一次过真 SQLite。
+2. ✅ **source_url 真持久化**(`https://seclab.stanford.edu/pcl/mc/papers/fp09-he.pdf`)—— store.py round-trip 正常,新列 migration 自动建上(首次 MCP server 启动幂等 ALTER)。
+3. ✅ **source_tier=imported**(网调分层对,有 source_url → imported,不是 delegate/stated)。
+4. ✅ **kind_detail=domain**(透传成功,没被默认成 module)。
+5. ✅ **confidence=0.9**(agent 据 ≥4 独立权威源一致给的高把握)。
+6. ✅ **报告落盘** `data/bug_rca/hostap-rca.md`(79 行,每条结论附 source URL)。
+7. ✅ **recall 闭环(核心价值)**:`hyperion memory recall "4-way handshake EAPOL-Key PTK" --repo wpa` 第一条就召回这条 domain_knowledge(id=2f2205d8,conf=0.90),**且和代码命中混在一起**(process_4_of_4/wpa_derive_ptk)—— 正是治踩坑#11 的机制:bug-RCA 查 handshake 问题时协议语义自动进上下文当证伪依据。recall.py kind-agnostic 0 改,实测验证。
+8. ✅ **边界守对**:只读不改代码 + 调研即记(没等用户验证)+ 多源交叉(Stanford/CERT-EU/802.11i/CS161 四源一致)。
+
+**agent 两个聪明的真行为**(非 bug):
+- recall 命中了 wpa 整体架构导览但缺 4-way handshake 细节 → 正确判「主题对不上」走完整重跑(SKILL 的短路 vs 重跑分流生效)。
+- webfetch 遇两个 PDF 是二进制读不了 → 改用 websearch 对权威源正文覆盖 + 源码三重验证补齐(优雅降级,没卡死)。
+- 用户问的 "ANCE/SCE" 主动纠正成标准术语 **ANonce/SNonce**(没盲从用户笔误)。
+
+**结论**:domain-research skill 真机 e2e 全绿,8 skill 全有 e2e。domain_knowledge 记忆特性从 schema → 持久化 → recall → skill 全链闭合。
