@@ -480,6 +480,62 @@ def test_memory_memorize_multi_evidence(monkeypatch):
     assert abs(ki.confidence - 0.85) < 1e-6
 
 
+def test_memory_memorize_domain_knowledge_with_url(monkeypatch):
+    """domain_knowledge + source_url(网调)→ KI 带 source_url + source_tier=imported + kind_detail=domain。
+
+    验领域知识溯源分层:网调来的协议知识(source_url 非空)落 imported 档(外部导入,weight 0.6),
+    区别于用户笔记(stated)和委托 agent 产出(delegate)。这是 domain-research skill 的核心入口。
+    """
+    from hyperion.services.memory.schema import SourceTier
+
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_memorize", {
+        "kind": "domain_knowledge",
+        "summary": "蓝牙 L2CAP 支持面向连接和面向无连接两种信道",
+        "kind_detail": "domain",
+        "source_url": "https://www.bluetooth.com/specifications/specs/core-54/",
+        "confidence": 0.85,
+        "codebase": "bluez",
+    })
+    assert "memorized id=" in out, out
+    assert "kind=domain_knowledge" in out, out
+    assert "source_url=https://www.bluetooth.com/specifications/specs/core-54/" in out, out
+    assert fake.memorize_items, "memorize 没被调"
+    ki = fake.memorize_items[-1]
+    assert ki.kind == "domain_knowledge"
+    assert ki.kind_detail == "domain"                       # domain_knowledge 的 kind_detail 透传(不再被默认成 module)
+    assert ki.source_url == "https://www.bluetooth.com/specifications/specs/core-54/"
+    assert ki.source_tier == SourceTier.imported            # 有 source_url → imported(网调分层)
+
+
+def test_memory_memorize_domain_knowledge_user_note(monkeypatch):
+    """domain_knowledge 无 source_url(用户笔记)→ source_tier=stated + source_url=None。
+
+    验用户笔记路径:用户直接给的技术笔记(非网调)落 stated 档(人陈述,weight 1.0),
+    source_url 留空。和网调(imported)区分,体现溯源分层。
+    """
+    from hyperion.services.memory.schema import SourceTier
+
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_memorize", {
+        "kind": "domain_knowledge",
+        "summary": "wpa 4-way handshake: PMK 派生 PTK,前两步 ANCE/ANCE+MIC 握手",
+        "codebase": "wpa",
+    })
+    assert "memorized id=" in out, out
+    assert "kind=domain_knowledge" in out, out
+    assert "source_url=" not in out, out                    # 无 source_url 时返回串不回显
+    ki = fake.memorize_items[-1]
+    assert ki.kind == "domain_knowledge"
+    assert ki.source_url is None                            # 用户笔记无网调 URL
+    assert ki.source_tier == SourceTier.stated              # 无 source_url → stated(用户笔记分层)
+    assert ki.kind_detail == "module"                       # 不传 kind_detail → 默认 module(domain_knowledge 允许)
+
+
 # ════════════════════════ memory_dump 工具(第 15;记忆库体检入口)═════════════════════════
 
 def test_memory_dump_empty(monkeypatch):

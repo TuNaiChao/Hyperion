@@ -175,7 +175,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ② memory_memorize:写一条记忆(报告/补丁走 workflow 自动记,这是 ad-hoc 入口)──
     @mcp.tool()
-    async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson"], summary: str,
+    async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson", "domain_knowledge"], summary: str,
                               file: str | None = None, line: int | None = None,
                               evidence: list[dict] | None = None,
                               root_cause: str = "",
@@ -185,13 +185,18 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                               commit_sha: str | None = None,
                               tags: list[str] | None = None,
                               corrects: list[str] | None = None,
-                              kind_detail: Literal["module", "symbol", "architecture"] | None = None,
+                              kind_detail: Literal["module", "symbol", "architecture", "domain"] | None = None,
                               confidence: float | None = None,
+                              source_url: str | None = None,
                               codebase: str | None = None) -> str:
         """Write one knowledge item into Hyperion's long-term memory (cross-session reuse).
 
-        kind: codebase_fact | bug_lesson. Prefer letting the bug_rca/patch_review flow auto-memorize;
-        use this only for ad-hoc facts/lessons a delegate discovers on-site.
+        kind: codebase_fact | bug_lesson | domain_knowledge. Prefer letting the bug_rca/patch_review
+        flow auto-memorize; use this only for ad-hoc facts/lessons a delegate discovers on-site.
+        domain_knowledge = domain/project knowledge (protocol semantics, wpa layer responsibilities) —
+        the semantic-memory layer, distinct from codebase-fact (code-anchored) and bug-lesson
+        (episode). It joins recall like any other kind (refutes misdiagnosis), but does NOT
+        auto-promote to mental_model (domain knowledge is evergreen, not a "graduating" rule).
 
         For a patch/PR analysis (kind=bug_lesson): pass fix_patch (the unified diff). The item is then
         content-addressed by the PATCH text (not the summary), so re-memorizing the same patch MERGES
@@ -204,9 +209,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
               ``file``+``line`` params cover the single-anchor case and are merged in if also passed;
               prefer ``evidence`` for architecture/codebase-fact memories and leave file/line for the
               single-anchor bug-lesson case.
-        kind_detail: finer classification for codebase_fact — module | symbol | architecture. Use
-              ``architecture`` for onboarding-tour / structural facts (so they surface as the
-              architecture layer, not the default module). Ignored for bug_lesson.
+        kind_detail: finer classification for codebase_fact / domain_knowledge —
+              module | symbol | architecture | domain. Use ``architecture`` for onboarding-tour /
+              structural facts; use ``domain`` for domain_knowledge. Ignored for bug_lesson.
+        source_url: external provenance URL for domain_knowledge (the web source you researched the
+              protocol/domain fact from). When set, the item's source_tier is ``imported`` (web-sourced);
+              when unset, ``stated`` (a user's own technical note). Ignored for bug_lesson/codebase_fact
+              (their provenance is commit_sha + evidence file:line, code-anchored).
         confidence: 0..1 override of the initial confidence (otherwise derived from source_tier:
               delegate = 0.5). Set only when you have a real reason to weigh this above/below the
               delegate default (e.g. a fact you inferred vs one you read directly).
@@ -251,19 +260,25 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             id=kid,
             kind=kind, repo=active_repo, scope=active_scope, summary=summary, root_cause=root_cause,
             symptom=symptom, fix_patch=fix_patch,
-            # kind_detail 仅 codebase_fact 有意义(bug_lesson 不用);None → 用 schema 默认(module)。
-            kind_detail=kind_detail if (kind == "codebase_fact" and kind_detail) else "module",
+            # kind_detail codebase_fact/domain_knowledge 有意义(bug_lesson 不用);None → schema 默认(module)。
+            kind_detail=kind_detail if (kind in ("codebase_fact", "domain_knowledge") and kind_detail) else "module",
             blast_radius_files=list(dict.fromkeys(blast_radius_files)),
             commit_sha=commit_sha, tags=tags,
             corrects=list(dict.fromkeys(corrects)),
             evidence=ev_list,
+            source_url=source_url,
             # confidence 显式给(0..1)才覆盖;None → schema 按 source_tier 算默认(delegate=0.5)。
             confidence=confidence if confidence is not None else 0.5,
-            source="mcp", source_tier=SourceTier.delegate,
+            # source_tier 分层:domain_knowledge 按 source_url 有无分(网调=imported / 用户笔记=stated);
+            # bug/codebase_fact 维持 delegate(委托 agent 产出,最可信)。
+            source="mcp",
+            source_tier=(SourceTier.imported if source_url else SourceTier.stated)
+            if kind == "domain_knowledge" else SourceTier.delegate,
         )
         n = await svc.memorize([item], active_scope)
         extra = f" corrects={len(corrects)}" if corrects else ""
-        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added){extra}"
+        url_extra = f" source_url={source_url}" if source_url else ""
+        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added){extra}{url_extra}"
 
     # ── ②b memory_dump:把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)──
     # recall 是「按 query 相关性挑几条」(得先知道问啥);memory_dump 是「一次把全量摊开看」——

@@ -21,11 +21,16 @@ logger = logging.getLogger(__name__)
 
 
 def consolidate(scope: Scope, *, store: MemoryStore, promote_access_count: int = 3) -> dict[str, int]:
-    """巩固 pass:扫 active 项,达标的升级 mental_model。返回统计 {scanned, promoted}。"""
+    """巩固 pass:扫 active 项,达标的升级 mental_model。返回统计 {scanned, promoted}。
+
+    domain_knowledge 不参与升级 —— 它是语义层常理(协议/领域知识,evergreen),不像 bug 教训
+    会反复出现后"毕业"成程序性规则(mental_model = "若 X 则 Y")。领域知识被召回了多次也还是
+    领域知识,不该变 kind。
+    """
     stats = {"scanned": 0, "promoted": 0}
     for it in store.list_items(scope):
         stats["scanned"] += 1
-        if it.kind != "mental_model" and it.access_count >= promote_access_count:
+        if it.kind not in ("mental_model", "domain_knowledge") and it.access_count >= promote_access_count:
             store.set_kind(it.id, "mental_model")
             stats["promoted"] += 1
     logger.info("memory.consolidate(%s): 扫 %d,升级 %d", scope.codebase, stats["scanned"], stats["promoted"])

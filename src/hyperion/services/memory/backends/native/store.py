@@ -48,7 +48,7 @@ _KI_FIELD_LIST = [
     "id", "kind", "repo", "owner", "codebase", "summary", "detail", "symptom", "root_cause", "fix_patch",
     "blast_radius_files", "kind_detail", "commit_sha", "evidence", "source", "source_tier", "confidence",
     "access_count", "last_recalled", "valid_at", "invalid_at", "created_at", "related", "tags",
-    "superseded_by", "corrected_by", "embedding", "updated_at",
+    "superseded_by", "corrected_by", "source_url", "embedding", "updated_at",
 ]
 _KI_COLS = ", ".join(_KI_FIELD_LIST)
 
@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     tags               TEXT NOT NULL DEFAULT '[]',  -- JSON [str]
     superseded_by      TEXT,               -- 被哪条取代(NULL=当前版本)
     corrected_by       TEXT,               -- 被哪条纠正(NULL=未被纠正;不影响 active,检索降权用)
+    source_url         TEXT,               -- 外部溯源 URL(domain_knowledge 网调知识锚主源;bug/codebase 通常 NULL)
     embedding          BLOB,               -- float32 向量(NULL=没算)
     updated_at         TEXT NOT NULL
 );
@@ -182,6 +183,7 @@ def _ki_to_row(ki: KnowledgeItem) -> dict[str, Any]:
         "tags": json.dumps(ki.tags, ensure_ascii=False),
         "superseded_by": ki.superseded_by,
         "corrected_by": ki.corrected_by,
+        "source_url": ki.source_url,
         "embedding": _vec_to_blob(ki.embedding),
         "updated_at": _utcnow_iso(),
     }
@@ -217,6 +219,7 @@ def _row_to_ki(row: sqlite3.Row | dict[str, Any]) -> KnowledgeItem:
         tags=json.loads(g("tags") or "[]"),
         superseded_by=g("superseded_by"),
         corrected_by=g("corrected_by"),
+        source_url=g("source_url"),
         embedding=_blob_to_vec(g("embedding")),
     )
 
@@ -268,7 +271,7 @@ class MemoryStore:
     VALUES (@id,@kind,@repo,@owner,@codebase,@summary,@detail,@symptom,@root_cause,@fix_patch,
             @blast_radius_files,@kind_detail,@commit_sha,@evidence,@source,@source_tier,@confidence,
             @access_count,@last_recalled,@valid_at,@invalid_at,@created_at,@related,@tags,
-            @superseded_by,@corrected_by,@embedding,@updated_at)
+            @superseded_by,@corrected_by,@source_url,@embedding,@updated_at)
     ON CONFLICT(id) DO UPDATE SET
         kind=excluded.kind, repo=excluded.repo, summary=excluded.summary, detail=excluded.detail,
         symptom=excluded.symptom, root_cause=excluded.root_cause, fix_patch=excluded.fix_patch,
@@ -278,7 +281,7 @@ class MemoryStore:
         access_count=excluded.access_count, last_recalled=excluded.last_recalled,
         valid_at=excluded.valid_at, invalid_at=excluded.invalid_at,
         related=excluded.related, tags=excluded.tags, superseded_by=excluded.superseded_by,
-        corrected_by=excluded.corrected_by,
+        corrected_by=excluded.corrected_by, source_url=excluded.source_url,
         embedding=excluded.embedding, updated_at=excluded.updated_at
     """  # created_at/owner/codebase 不在 SET —— upsert 保持原创建时间与租户身份
 
@@ -307,6 +310,9 @@ class MemoryStore:
         existing_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(knowledge_items)")}
         if "corrected_by" not in existing_cols:
             self._conn.execute("ALTER TABLE knowledge_items ADD COLUMN corrected_by TEXT")
+        # ── 给老库补 source_url 列(2026-08-13 domain_knowledge 领域知识溯源)──
+        if "source_url" not in existing_cols:
+            self._conn.execute("ALTER TABLE knowledge_items ADD COLUMN source_url TEXT")
 
         # ── sqlite-vec 加载(建议 A:向量 ANN 加速)──
         # 绝不崩:加载/建表失败 → _vec_ok=False → search_vector 走纯 loop(记忆是核心,向量加速是优化)。

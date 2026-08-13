@@ -6,10 +6,15 @@
 "这个库长啥样 / 之前哪些 bug 怎么修的"沉淀成可检索、带溯源、能持续学习的记忆。
 一条记忆就是一个 KnowledgeItem(下面定义)。
 
-三种知识项(用 kind 区分,同一张表存):
-  - codebase_fact :P1 代码仓调研产出 —— "这个模块/符号/架构是干啥的、关键设计"。
-  - bug_lesson    :P2 bug-RCA 产出 —— "这个 bug 根因是啥、怎么修的、影响面多大"。
-  - mental_model  :巩固升级出的"稳定规则" —— 反复出现(被召回≥N 次)的教训固化成规律。
+四类知识项(用 kind 区分,同一张表存):
+  - codebase_fact   :P1 代码仓调研产出 —— "这个模块/符号/架构是干啥的、关键设计"。
+  - bug_lesson      :P2 bug-RCA 产出 —— "这个 bug 根因是啥、怎么修的、影响面多大"。
+  - mental_model    :巩固升级出的"稳定规则" —— 反复出现(被召回≥N 次)的教训固化成规律。
+  - domain_knowledge:领域/项目知识 —— 协议语义、wpa 各层职责这类"领域常理"
+                    (类比 agent memory 的 semantic memory 语义记忆)。和前三类的区别:
+                    ① 锚 source_url 溯源(网调来的)而非 file:line;② 不自动升级 mental_model
+                    (领域常理 evergreen,不像 bug 教训会"毕业"成程序性规则);③ 进 recall 后
+                    给 bug-RCA 多一层证伪依据(治踩坑#11:误诊成显眼日志行时,协议语义能纠偏)。
 
 为什么这么设计(对齐参考实现)
   - bi-temporal(valid_at/invalid_at):借 graphiti —— 矛盾的旧知识"失效"而非"删除",
@@ -125,7 +130,7 @@ def _utcnow() -> datetime:
 
 
 class KnowledgeItem(BaseModel):
-    """一条记忆(知识项)。三类 kind 共用此模型,domain 字段按需填。
+    """一条记忆(知识项)。四类 kind 共用此模型,domain 字段按需填。
 
     生命周期:memorize 写入 → recall 命中(access_count++)→ consolidate 巩固(去重/
     衰减/升级)→ 必要时 invalidate(软删)。永不物理删除(审计可追溯)。
@@ -133,7 +138,7 @@ class KnowledgeItem(BaseModel):
 
     # —— 身份 ——
     id: str = ""  # 稳定 id(空则按 scope+kind+summary 自动算,见 _ensure_id)
-    kind: Literal["codebase_fact", "bug_lesson", "mental_model"]
+    kind: Literal["codebase_fact", "bug_lesson", "mental_model", "domain_knowledge"]
     repo: str  # 代码库标识(如 wpa_supplicant)
     scope: Scope = Field(default_factory=Scope)
     summary: str  # 人读摘要(检索 + 注入提示词用,核心字段)
@@ -145,12 +150,14 @@ class KnowledgeItem(BaseModel):
     root_cause: str = ""  # 根因
     fix_patch: str = ""  # 补丁文本 / 引用
     blast_radius_files: list[str] = Field(default_factory=list)  # 影响面文件
-    # codebase_fact 专用
-    kind_detail: Literal["module", "symbol", "architecture"] = "module"
+    # codebase_fact / domain_knowledge 用
+    kind_detail: Literal["module", "symbol", "architecture", "domain"] = "module"
 
     # —— 溯源 + 证据 ——
     commit_sha: str | None = None  # ★ 溯源到具体 commit(记忆"保质期"锚点)
     evidence: list[Evidence] = Field(default_factory=list)
+    source_url: str | None = None  # 外部溯源 URL(domain_knowledge 用:网调来的协议知识锚主源;
+    #   bug/codebase_fact 通常 None —— 它们的溯源靠 commit_sha + evidence file:line,是代码锚点)。
     source: str = ""  # 产生它的 report_id / workflow 名
     source_tier: SourceTier = SourceTier.unknown
 

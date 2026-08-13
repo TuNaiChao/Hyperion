@@ -249,10 +249,17 @@ def cmd_memory(args) -> int:
             print("错误:直接记一条需要 --summary(或用 --from-report 从报告抽)。", file=sys.stderr)
             return 2
         ev = [Evidence(file=args.file, line=args.line)] if args.file else []
+        # domain_knowledge 的 source_tier 按 source_url 有无分(网调=imported / 用户笔记=stated);
+        # bug/codebase_fact 维持 stated(CLI 直记,人/报告陈述)。
+        if args.kind == "domain_knowledge":
+            cli_tier = SourceTier.imported if args.source_url else SourceTier.stated
+        else:
+            cli_tier = SourceTier.stated
         item = KnowledgeItem(
             kind=args.kind, repo=repo, scope=scope, summary=args.summary,
             root_cause=args.root_cause or "", detail=args.detail or "", evidence=ev,
-            source="cli", source_tier=SourceTier.stated,
+            source_url=args.source_url,
+            source="cli", source_tier=cli_tier,
         )
         n = asyncio.run(svc.memorize([item], scope))
         print(f"已记入(id={item.id}, kind={args.kind}, 合并/新增 {n} 条)。")
@@ -449,12 +456,13 @@ def main(argv: list[str] | None = None) -> int:
     m_recall.add_argument("--top-k", type=int, default=5)
     m_recall.add_argument("--repo", default=None, help="代码库(默认 config.code_index.repo)")
     m_add = sub_memory_sub.add_parser("add", help="记一条(或 --from-report 从报告抽)")
-    m_add.add_argument("--kind", default="bug_lesson", choices=["bug_lesson", "codebase_fact"])
+    m_add.add_argument("--kind", default="bug_lesson", choices=["bug_lesson", "codebase_fact", "domain_knowledge"])
     m_add.add_argument("--summary", default=None, help="一句话摘要(直接记时必填)")
     m_add.add_argument("--root-cause", default="")
     m_add.add_argument("--detail", default="")
     m_add.add_argument("--file", default=None)
     m_add.add_argument("--line", type=int, default=None)
+    m_add.add_argument("--source-url", default=None, help="外部溯源 URL(domain_knowledge 网调知识用)")
     m_add.add_argument("--from-report", default=None, help="从报告文件抽(走 LLM extract)")
     m_add.add_argument("--commit-sha", default=None)
     m_add.add_argument("--repo", default=None)
