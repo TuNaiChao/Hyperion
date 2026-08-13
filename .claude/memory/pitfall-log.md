@@ -1,6 +1,6 @@
 ---
 name: pitfall-log
-description: "踩坑记录文档(docs/archive/踩坑记录.md)位置 —— 项目走过的弯路汇总(#1-#20);设计前先查、踩坑后往上加"
+description: "踩坑记录文档(docs/archive/踩坑记录.md)位置 —— 项目走过的弯路汇总(#1-#21);设计前先查、踩坑后往上加"
 metadata:
   node_type: memory
   type: reference
@@ -8,7 +8,7 @@ metadata:
   modified: 2026-08-13T08:53:13.962Z
 ---
 
-`docs/archive/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。当前 #1–#20。
+`docs/archive/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。当前 #1–#21。
 
 **何时查 / 何时写**:① 设计新模块前先翻一遍(避免重复踩已知坑);② 做了设计反转 / 删了已建代码 / 用户指出过度设计 / 调研推翻既有方案 时,往上加一条(模板在文档末尾)。
 
@@ -51,5 +51,7 @@ metadata:
 **#19(2026-08)**:memory_dump 静默截断 —— `[:8000]` 吞掉一半记忆逼 agent 13 次 recall 补捞。memory-health-check e2e(审 wpa 48 条)发现 agent 反复 recall 13 次补捞"看不到"的条目 —— 根因 memory_dump 用 `[:8000]` 字符硬截断,**48 条只显 24 条**,剩一半被**静默吞掉**(无"还有更多"提示)。agent 发现条目数对不上只好逐条 recall 捞。根因:**静默截断=对 agent 撒谎**(让它以为所见即全部,基于不完整数据决策)+ **字符数截断对条目完整性盲**(可能撕裂一条卡)。体检 skill 硬约束是"审全量",静默截断破坏这个前提(漏看一半会误判健康度,尤其漏掉未决矛盾的另一半)。修法:`[:8000]`→`limit/offset` 分页(默认 60/页)+ header 显式提示「showing 1-60 of N, more → memory_dump(offset=60)」(诚实信号)。教训:**工具输出截断必须配诚实信号**(截断要告诉 agent 还有多少+怎么拿,静默截断=撒谎);**按逻辑单元分页不按字符数截断**(记忆按条目,字符截断撕裂单元);**体检/审计类工具的"全量"前提要工具保证**(工具层要支撑 skill 层硬约束不能背叛)。现状:分页+翻页提示(commit `53149d8`),e2e 一轮拿全。详见 [[memory-health-check-handoff]] + docs/踩坑记录.md #19。
 
 **#20(2026-08)**:architecture-review 草稿判断被实证推翻 —— 建议 C/D 误判短板 + A 校正方向。一份 review 草稿给 runtime/memory 提 4 条建议(A sqlite-vec/B 摘要 token/C 历史兜底/D 巩固自转),落地时**逐条调研实证**发现 2 条(C/D)"短板描述"是**草稿阶段误判**:D 草稿说"consolidate 无人调"但 CLI 早 wire(cli.py:276)+ recall 早 bump(recall.py:186),真缺口只是"recall 后自动触发"(自转);C 草稿说"历史 synopsis 不二次压缩是短板"但 deer-flow 生产级也不二次压(~3K<fallback 20K)、累积靠摘要(=建议 B),真缺口是补 `wrap_model_call` 钩子。A 方向需校正:sqlite-vec vec0 **默认 L2 非 cosine**,记忆是 cosine 语义,建表须显式 `distance_metric=cosine`+跳零向量。**4 条全落地但全经校正,没一条照草稿原样实现是对的。** 根因:**review 草稿=读码印象非实证**(没 grep 调用点/没读对标实现);**"现象"被夸大成"短板"**(缺一个触发点 ≠ 整功能没人用)。教训:**review/设计草稿每条判断落地前必须实证复核**(grep+读对标+探针,读码印象会漏会错);**区分现象和短板**;**对标实现是检验"真短板"的硬尺**(deer-flow 也没做=YAGNI,同 #2);**换库先核默认行为**(同 #6)。现状:4 条全落地经校正(commits `1ea8153`/`505a6a6`)。详见 [[suggestion-a-sqlite-vec-ann-handoff]]/[[suggestion-c-tool-output-wrap-model-handoff]]/[[suggestion-d-memory-consolidation-handoff]] + docs/踩坑记录.md #20。
+
+**#21(2026-08)**:测试仓 git 操作污染主仓 main —— Bash cwd 跨调用持久 + git init/commit 前 pwd 漏核。为跑 upstream-merge e2e 在 `/tmp/upstream_merge_e2e/base` 建测试仓(三分支三文件模拟 fork/upstream),某条 Bash 命令 cwd 漂到 **Hyperion 主仓本身**,`git init`/`commit`/`checkout -b fork` 全跑在 Hyperion → main 顶上压垃圾 commit `804f66e`(塞测试文件 extra.c/util.c + 本不提交的 Python语法.md/todo.md)+ 多个测试 fork 分支。reflog 实证真实历史(6a79586)一点没丢。修(用户确认后):main reset 回 6a79586 → 删 fork → 把 804f66e 唯一有价值的 hyperion-upstream-merge block 抠出干净重加(commit `6f076d2`)→ Python语法.md/todo.md 恢复为 untracked。根因:**Bash 工具 cwd 跨调用持久**(前条 opencode e2e 命令 cd 到 /tmp 启动 —— 但那本身也错,opencode 应在 Hyperion 根启动读 agent+MCP),后续建仓命令没在 git 前 pwd 确认 + mkdir 失败重试 cwd 漂移;**git init/commit 不校验"我在哪个仓"**(在已有仓目录跑不报错);**测试仓建 /tmp 反放大风险**(隔离前提是 cwd 真到那目录,漂了就污染最不该碰的 main)。教训:**Bash 里任何 git init/commit/checkout-b 前 pwd 确认 cwd**;**建测试仓全程用 `git -C <path>` 不 cd**(不 cd 就不漂);**opencode e2e 必须在 Hyperion 根启动 + 给 agent 绝对仓库路径**(踩坑#17,在测试仓启动会 fallback 默认 agent + 工具全不注册,本坑 e2e 第一次就踩这个);**main 上 git reset --hard 是 destructive 需用户确认**(自驱授权不延伸到重置主分支,先 git status 确认 worktree 干净)。关联 #4(MCP cwd 污染)、#17(opencode cwd 根)。现状:主仓已清,详见 docs/踩坑记录.md #21。
 
 **互补文档**:[docs/设计演变史.md](../../设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。
