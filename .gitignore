@@ -45,6 +45,11 @@ mini-swe-agent/
 #   git clone https://github.com/sst/opencode  (R2/R4 委托后端之一:opencode;Go 单二进制,团队分发友好)
 opencode/
 
+# 旧文档归档(docs → docs-bak,2026-08-14):调研/设计/已完成/archive 旧树整体挪到 docs-bak,
+# 新 docs/ 待重组。docs-bak 作只读归档排除出版本库;旧路径链接(CLAUDE.md / .claude/memory/)等
+# 新 docs 框架定下来再统一修,避免改两遍。
+docs-bak/
+
 # OS / editor
 .DS_Store
 .idea/
