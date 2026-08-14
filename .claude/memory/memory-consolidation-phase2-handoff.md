@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-14T05:39:45.113Z
+  modified: 2026-08-14T06:26:42.602Z
 ---
 
 # consolidate Phase 2 交接(B3 + B4,五 pass 收口)
@@ -32,4 +32,4 @@ consolidate 五 pass 收口:① promote mental_model ② 矛盾检测(needs_revi
 ## 相关
 
 - Phase 1(矛盾+去重):[[memory-consolidation-phase1-handoff]]
-- 路线图与偏离记录:docs/memory-module-roadmap.md
+- 路线图与偏离记录原在 docs/memory-module-roadmap.md(**该文件 Phase 3 后已删**;偏离记录要点已并入 docs/memory-module-analysis.md §7)

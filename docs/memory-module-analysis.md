@@ -1,7 +1,6 @@
 # 记忆模块设计分析
 
 > 这是 Hyperion 三大支柱里 P3「记忆与持续学习」的当前实现分析。
-> 配套文档:[记忆模块改进路线图](memory-module-roadmap.md)(建议 + 分阶段实现规划)。
 > 源码真相在 `src/hyperion/services/memory/`,本文档只做"讲清它在干什么、怎么设计的"。
 
 ---
@@ -12,7 +11,7 @@
 
 Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪明的"长期笔记本"**。
 
-**比喻**:把 agent 想象成一个新来的实习生。普通 agent 是「干完活就把笔记撕了」的实习生;Hyperion 的记忆模块是「每干完一件活就往团队共享笔记本里记一条,还带页码和出处,下次遇到类似的能直接翻到」的实习生。而且这本笔记本**会自己整理**:重复的合并、反复出现的教训升级成"规律"、被推翻的旧结论不撕掉但打上「已被纠正」的标签排到后面。
+**比喻**:把 agent 想象成一个新来的实习生。普通 agent 是「干完活就把笔记撕了」的实习生;Hyperion 的记忆模块是「每干完一件活就往团队共享笔记本里记一条,还带页码和出处,下次遇到类似的能直接翻到」的实习生。而且这本笔记本**会自己整理**(consolidate 巩固):重复的合并、反复出现的教训升级成"规律"、互相打架的结论标「待裁决」、补丁已修的标「已合入上游」打折、长期没人翻的标「过期」、被推翻的旧结论不撕掉但打上「已被纠正」的标签排到后面。
 
 记下来的东西分三类来源:
 - **P1 调研**产出的"这个库长啥样、关键模块怎么实现" → 记下来(带源码 commit SHA 溯源)。
@@ -41,7 +40,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 | `repo` / `scope` | 哪个库 / `(owner, codebase)` 谁管的哪个库 | 哪个案件、哪个侦探的笔记本 |
 | `summary` | 人读一句话摘要 | 卡片标题;检索 + 注入模型时最先看到 |
 
-**四类 `kind`**([schema.py:9-17](../src/hyperion/services/memory/schema.py#L9-L17)):
+**四类 `kind`**([schema.py:141](../src/hyperion/services/memory/schema.py#L141)):
 - `codebase_fact` —— 代码事实(这个模块/符号/架构是干啥的)
 - `bug_lesson` —— bug 教训(根因 + 修法 + 影响面)
 - `mental_model` —— 稳定规则(被反复召回 ≥N 次的教训"毕业"成的规律)
@@ -66,7 +65,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ### 可信度章(持续学习信号)
 
-`source_tier`(6 档权重 [schema.py:61](../src/hyperion/services/memory/schema.py#L61)):delegate / stated 1.0(侦探当面查 / 报告明说)> inferred 0.7(推断)> imported 0.6(外部导入)> unknown 0.8(保守)> tool 0.5(工具检索,可能是噪声)。
+`source_tier`(6 档权重 [schema.py:61](../src/hyperion/services/memory/schema.py#L61)):delegate / stated 1.0(侦探当面查 / 报告明说)> unknown 0.8(保守)> inferred 0.7(推断)> imported 0.6(外部导入)> tool 0.5(工具检索,可能是噪声)。
 
 `confidence`(0..1 Bayes 累加)、`access_count`(被召回几次)、`last_recalled`。
 
@@ -83,7 +82,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 ### 纠正章 —— 纠正关系闭环
 
 这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:179-188](../src/hyperion/services/memory/schema.py#L179-L188)):
-- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库)
+- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/hyperion/services/memory/schema.py#L187))
 - `corrected_by` —— 旧条上"我被谁纠正了"(持久化,检索降权 0.3,仍可见作参考)
 
 **为什么不复用 `superseded_by`:** 这是关键设计。superseded_by 绑定 `active`,设了会让旧条从 active 视图**消失**;但"被纠正" ≠ "失效"——被推翻的旧根因仍要能检索到、体检能看到(审计可追溯),只是排到纠正者后面。所以独立 `corrected_by` 解耦。场景:bug 根因被推翻(A 派"abort-failure"是错的,B 派"scan-only 竞态"纠正它)→ B.corrects=[A.id],写入时自动回填 A.corrected_by=B.id → recall 时 A 被降权排后面,但还能看到,讲清思路演变。
@@ -97,7 +96,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 - **tier-2**(管理,默认未实现,后端按需覆盖):`search` / `get` / `list_items` / `memorize_report`
 - **tier-3**(可选钩子):`consolidate`(巩固)、`invalidate`(失效)
 
-**后端可换**([manager.py:106](../src/hyperion/services/memory/manager.py#L106)):丢一个 `backends/<name>/` 文件夹(暴露 `BACKEND_CLASS`)+ 配置 `memory.backend`。v1 只实现 `native`,mem0 / cognee 留接口位(需要时一行配置换上,零锁死)。**拒绝静默回退**——后端名配错必须报错(记忆是持久状态,不能偷偷用别的)。
+**后端可换**([manager.py:109](../src/hyperion/services/memory/manager.py#L109)):丢一个 `backends/<name>/` 文件夹(暴露 `BACKEND_CLASS`)+ 配置 `memory.backend`。v1 只实现 `native`,mem0 / cognee 留接口位(需要时一行配置换上,零锁死)。**拒绝静默回退**——后端名配错必须报错(记忆是持久状态,不能偷偷用别的)。
 
 **比喻**:这是"笔记本的标准接口"——不管后端是自家 SQLite 还是外接 mem0 / cognee,对外都只认"记"和"翻"两个动作。换笔记本品牌不用改上面的代码。
 
@@ -107,13 +106,13 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 3. 怎么新增记忆(写路径 memorize)
 
-入口 `memorize_items`([memorize.py:132](../src/hyperion/services/memory/backends/native/memorize.py#L132)),五步流水线:
+入口 `memorize_items`([memorize.py:159](../src/hyperion/services/memory/backends/native/memorize.py#L159)),五步流水线:
 
 1. **嵌向量** `_embed_items`:给 summary 算 embedding(复用 code_index 的 embedder;off 则只走 BM25)
 2. **连图边** `_link_related`:找同 scope 内 evidence 文件有交集的现有项 → 填 `related`(便宜有用)
 3. **合并 / 冲突** `_merge_on_remention` —— 见第 6 节
 4. **纠正链**:新条若声明 `corrects` → `mark_corrected` 回填旧条 `corrected_by`
-5. **upsert** 入库([store.py:339](../src/hyperion/services/memory/backends/native/store.py#L339))
+5. **upsert** 入库([store.py:417](../src/hyperion/services/memory/backends/native/store.py#L417))
 
 **置信度怎么算**(Bayes 累加,借 mnemopi):新条初始 = tier_weight · 0.5;重提同事实时 `conf += (1-conf)·tier·step`(step=0.3,封顶 1.0)。cur 越接近 1 增量越小(饱和);tier 越可信权重越大。
 
@@ -153,6 +152,10 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **向量检索的渐进式设计**:count(scope) ≤ 500 走 Python 逐行 cosine(小规模更快);> 500 切 sqlite-vec vec0 KNN(C 扩展,快 2-4×)。加载失败降级纯 loop。契约不变,recall 无感。
 
+**BM25 路的中文分词(CJK)**:FTS5 自带的 unicode61 分词器只认空格,中文没空格 → 整句"扫描会阻塞所有站点"被当成**一个**词,搜"扫描"匹配不上,纯中文查询此前只能靠向量路。现在索引侧(入库前)和查询侧(`_fts_query` 前)**同用 jieba 分词**([tokenize.py](../src/hyperion/services/memory/backends/native/tokenize.py)):只切中文段(英文标识符原样保留,不切碎),切完空格连回,两侧切法一致就能对上。代价是 FTS 表从「SQL 触发器自动同步」改成「upsert 时同事务维护」(触发器在 SQL 层调不了 Python 分词);老库打开时自动迁移重灌,分词失败降级回原行为,不崩。
+
+**比喻**:以前中文书脊是一整句话,你报其中两个词找不到书;现在入库时把书脊切成词卡、检索时把你的话也切成词卡,对卡就行。
+
 **比喻**:翻记忆不是"只翻一个抽屉",是**四个侦探同时翻四个档案柜**(关键词柜 / 语义柜 / 代码柜 / 结构图),各翻各的,最后把四份名单合在一起按"多侦探都提名 → 更靠前"排,再按"新旧 + 可信度"微调。这叫**多路召回融合(RRF)**,是检索工程的成熟做法。
 
 ---
@@ -161,7 +164,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **铁律:永不物理删除**(bi-temporal 软删)。这是对的——能回答"这 bug 在 X 时点还在不在",审计可追溯。
 
-- **手动失效** `invalidate` → `set_invalid`([store.py:471](../src/hyperion/services/memory/backends/native/store.py#L471)):设 `invalid_at`(+可选 `superseded_by`)
+- **手动失效** `invalidate` → `set_invalid`([store.py:550](../src/hyperion/services/memory/backends/native/store.py#L550)):设 `invalid_at`(+可选 `superseded_by`)
 - **检索默认只看 active**(`invalid_at IS NULL AND superseded_by IS NULL`)
 - ⚠️ R3.5+ 起召回的 BM25 / vector **不再过滤 superseded_by**——被取代的旧版本能召回作参考,靠 decay 排到后面;只有手动 invalidate(错 fact)才真正隐藏
 
@@ -175,26 +178,44 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **阶段 1(旧设计)**:写时 supersede——同主题不同结论,**新覆盖旧**(旧条设 invalid_at + superseded_by)。研究称这是"最站得住脚的默认"。
 
-**阶段 2(对标 mem0 v3)**:改成**只追加不取代**([memorize.py:109](../src/hyperion/services/memory/backends/native/memorize.py#L109))。同主题不同结论不再盖戳作废,新旧都 active 并存,靠检索侧 decay 排"最新为主、旧作参考"。同 id 重提(同 content_key)仍 Bayes 合并增强。这正是 mem0 v3 的 ADD-only architecture。
+**阶段 2(对标 mem0 v3)**:改成**只追加不取代**([memorize.py:136](../src/hyperion/services/memory/backends/native/memorize.py#L136))。同主题不同结论不再盖戳作废,新旧都 active 并存,靠检索侧 decay 排"最新为主、旧作参考"。同 id 重提(同 content_key)仍 Bayes 合并增强。这正是 mem0 v3 的 ADD-only architecture。
 
 **阶段 3(纠正关系闭环)**:加 `corrects` / `corrected_by`。新条声明"我纠正了谁" → 旧条降权 0.3 仍可见。
 
-**当前最终态** = mem0 v3 的 append-only 写入 + 检索侧时序 / 纠正降权,这是 2026 业界主流。
+**阶段 4(consolidate 显式矛盾检测)**:写入侧仍只追加,但巩固 pass 会主动扫「同主题不同结论」的 active 高置信度对,打 `needs_review` 标签交给人裁(只标不裁——谁对是语义判断,系统不自动选边)。标签供 memory-health-check 体检 skill 聚焦提示。
+
+**当前最终态** = mem0 v3 的 append-only 写入 + 检索侧时序 / 纠正降权 + 巩固侧显式矛盾标记,这是 2026 业界主流。
 
 ### 三个判定的边界(helper 函数)
 
-- `_same_subject`(同主题):bug_lesson 比症状;codebase_fact 比 kind_detail + 首证据文件
+- `_same_subject`(同主题):bug_lesson 优先比 symptom;symptom 任一为空(CLI/MCP 写入常见)回退比**首证据文件 + 行号邻近**(同文件且行号差 ≤5 才算同主题——同文件 ≠ 同 bug,一个 scan.c 里前后脚几十个 bug;同 bug 两派诊断的证据锚点通常收在同一处)。codebase_fact 比 kind_detail + 同样的证据邻近判定。
 - `_same_conclusion`(同结论):bug_lesson 比 root_cause;codebase_fact 比 summary
-- 冲突 = 同 subject 不同 conclusion → 只追加不取代
+- 冲突 = 同 subject 不同 conclusion → 只追加不取代;consolidate 扫到 → 打 needs_review
 
 ---
 
 ## 7. 怎么巩固 / 持续学习(consolidate)
 
-`consolidate`([consolidate.py:23](../src/hyperion/services/memory/backends/native/consolidate.py#L23))——后台 / 手动触发的巩固 pass。目前做**一件事**:
-- **升级 mental_model**:被召回 ≥N 次(access_count)的 codebase_fact / bug_lesson → 升级为"稳定规则"。domain_knowledge 被正确排除(领域常理 evergreen,不像 bug 教训会"毕业")。
+`consolidate`([consolidate.py:60](../src/hyperion/services/memory/backends/native/consolidate.py#L60))——recall 命中后后台自动跑(fire-and-forget)或 CLI 手动触发,五个 pass:
 
-2026 业界共识 consolidation = **keeps / merges / evicts**(留 / 合 / 逐)三件事。目前只做了"升级(留的一种)",merges(语义近邻合并)和 evicts(长期未命中降权)还没做——这是改进的发力点,详见路线图文档。
+| pass | 干什么 | 写入动作 |
+|---|---|---|
+| ① 升级 mental_model | 被召回 ≥N 次(默认 3)的 codebase_fact / bug_lesson "毕业"成稳定规则 | 改 kind;domain_knowledge 排除(领域常理 evergreen 不"毕业") |
+| ② 矛盾检测 | 同主题不同结论的 active 高置信度对 | 打 `needs_review` 标签;**只标不裁**(谁对是语义判断,人裁) |
+| ③ 语义去重候选 | 同 kind 内 embedding cosine ≥0.92 的近邻簇(并查集聚类) | **只报候选不自动合**(误合两个不同 bug 比留重复更糟);domain_knowledge 排除 |
+| ④ 已合入上游 | bug_lesson 的 fix_patch 用 `git apply --check --reverse` 判改动是否已在仓里 | 打 `merged_upstream` 标签 + confidence×0.5;**不 invalidate** |
+| ⑤ 过期 | last_recalled / created_at 超 365 天没人翻 | 打 `stale` 标签;**不降权**(recall 已有 exp 衰减,再降是双杀) |
+
+**两个关键设计决策**(当初规划是另一套,实现时被否,记录防漂移):
+
+- **pass ④ 不 set_invalid,只标 + 打折**。原案"补丁合入 → 失效"被否,理由:① `invalid_at` 的语义是"知识错了",不是"bug 修了"——考古查询("X 时点在不在")要靠这条记录;② reverse-apply 只证"改动在树里",可能是**等价修复**(别人用别的方式修的)→ 留人在环,确认后可手动 invalidate。判定用 reverse-apply 而非 merge_eval 的 patch-id(那是上游两 ref 对比,这里是仓 vs 补丁,问题形状不同)。repo_path 只在显式 consolidate(CLI `--repo-path`)时给——recall 的自动巩固不知道仓在哪,不猜。
+- **pass ⑤ 只标不降权**。recall 打分已有 exp 时间衰减,consolidate 再降 confidence 是同一条被两处扣分(双杀)。标签供体检预警 + 注入时提示"这条很久没人验证过了"。
+
+**计数与幂等语义**:计数 = 当前态(已标的再跑仍计入,统计稳定——体检要的是"总共有几条已合入");写入 = 幂等(标签只加一次、打折只打一次,防 confidence 被反复折到 0)。
+
+**标签互写的坑(e2e 抓过)**:五个 pass 共享同一份条目快照,后跑的 pass 若用旧快照整体覆盖 tags 列,会把先跑 pass 刚打的标签洗掉 → 所有打标签操作统一走 `_add_tag`(写前重读 DB 最新值再合并)。
+
+这套对应 2026 业界共识的 **keeps(①)/ merges(③候选)/ evicts(④⑤软逐)** 三件事,全部落在"只标不删"的软治理上(bi-temporal 铁律:考古与审计永远可回溯)。
 
 ---
 
@@ -212,11 +233,22 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 | 代码锚点溯源(file:line + sha) | **独有** | 无 | 无 | 无 |
 | 记忆 + 代码 + 结构三路融合 | **独有** | 无 | 无 | 无 |
 | 四类记忆 taxonomy | 有(对齐认知科学) | 弱 | 弱 | 部分 |
-| 自动失效(补丁合入 → invalidate) | 待补 | 自动 | Dream prunes | — |
-| 语义近邻去重 | 待补(只精确 content_key) | — | Dream merges | — |
-| 显式矛盾检测 | 待补(靠 decay 隐式) | 强 | Dream resolves | — |
+| 补丁合入上游检测 | 有(reverse-apply 标签+打折) | 自动失效 | Dream prunes | — |
+| 语义近邻去重 | 有(cosine 簇,报候选) | — | Dream merges | — |
+| 显式矛盾检测 | 有(needs_review 标签) | 强 | Dream resolves | — |
+| 治理标签体检(dump 浏览+审计) | **独有**(溯源卡+健康概要) | 无 | 无 | 无 |
+| 中文 BM25(jieba 两侧分词) | 有 | — | — | — |
 | 外部依赖 | SQLite(零外部) | Neo4j(重) | 向量库 | 自管 |
 
-**结论**:基础架构已经是 2026 一线水平(bi-temporal + 纠正链 + 来源加权 + append-only + 四类 taxonomy + 三路融合),且在"代码库 bug-RCA"这个垂直生态位有**通用 agent memory 没有的差异化王牌**(file:line + sha 溯源 + 记忆 / 代码 / 结构同召回)。
+**结论**:基础架构已经是 2026 一线水平(bi-temporal + 纠正链 + 来源加权 + append-only + 四类 taxonomy + 三路融合 + 五 pass 巩固),且在"代码库 bug-RCA"这个垂直生态位有**通用 agent memory 没有的差异化王牌**:① file:line + sha 代码锚点溯源;② 记忆 / 代码 / 结构同召回;③ 带溯源 + 治理标签的可审计团队记忆(Mem0 / Cognee 都没有的记忆体检)。原来的短板(consolidate 太薄)已补齐——keeps / merges / evicts 三件事全落地,且全部是"只标不删"的软治理。
 
-**短板集中在一个**:consolidate 太薄(只升级 mental_model),"持续学习"这个故事目前名不副实。补上"自动失效 + 语义去重 + 显式矛盾检测",再把差异化故事讲出来,记忆模块就能立成突出点。具体怎么补,见[改进路线图](memory-module-roadmap.md)。
+**配套的记忆体检**:`memory_dump` 工具把全库摊开成带溯源的体检卡(confidence / tier / evidence / sha / 双时间轴 / 治理标签),memory-health-check skill 在标签之上语义读健康信号(溯源弱 / 待巩固 / 已过期 / 未决矛盾)——双层结构:确定性工具自动打标,agent 做语义判断。
+
+### 明确不做(YAGNI,防未来跑偏)
+
+调研里看着诱人但对本项目不值的,记下来:
+
+- **迁 Neo4j 知识图(Graphiti 式)**:重依赖;SQLite + sqlite-vec 够用且零外部服务。记忆量级(单库几百到几千条)SQLite 完全 hold 住。
+- **工作记忆 / 情景记忆分层(OpenHands 式随 workflow state)**:随 workflow state 走不另建。
+- **物理删除 / eviction**:bi-temporal 软删是 2026 正确做法,别开倒车。
+- **置信度曲线可视化**:MCP 工具输出是文本,画曲线是展示端的事;标签 + 计数已够体检用。

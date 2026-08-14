@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-14T03:34:59.549Z
+  modified: 2026-08-14T06:27:08.017Z
 ---
 
 **2026-08-14 落地**:记忆模块(P3)做了三件事:① 写全景分析文档 ② Phase 1 consolidate 三 pass 化 ③ e2e 抓真 bug 修复。三个 commit:`112820b`(功能)+ 文档 commit + `713c3e1`(e2e 修复)。
@@ -13,7 +13,7 @@ metadata:
 ## 1. 两篇文档(新风格 [[doc-writing-style]])
 
 - `docs/memory-module-analysis.md`:记忆模块当前实现全景分析。KnowledgeItem 7 组字段(身份/内容/出处/可信度/时间/关系/纠正)、五大生命周期(管/增/删/查/冲突)、2026 业界对照表(Graphiti/Zep/mem0 v3/Letta)。面向小白+比喻(实习生/图书馆索引卡/四侦探翻档案柜),去时间戳噪音+本项目化。
-- `docs/memory-module-roadmap.md`:改进建议(A 放大差异化:代码锚点溯源+三路融合是独有王牌 / B 补短板:consolidate 太薄 / C 明确不做:不迁 Neo4j)+ 分阶段实现规划(Phase 1 已成/2/3)。
+- `docs/memory-module-roadmap.md`:改进建议(A 放大差异化:代码锚点溯源+三路融合是独有王牌 / B 补短板:consolidate 太薄 / C 明确不做:不迁 Neo4j)+ 分阶段实现规划(Phase 1 已成/2/3)。**(此文件在 Phase 3 全收口后已删,长期价值并入 analysis §7/§8)**
 
 **调研坐实(4 轮 WebSearch)**:Graphiti bi-temporal 领先(矛盾处理 63.8%);mem0 v3 ADD-only+Dream consolidation;业界共识 consolidation=keeps/merges/evicts。Hyperion 已是一线水平(bi-temporal+纠正链+来源加权+append-only+四类 taxonomy+三路融合),短板只在 consolidate 太薄。
 
