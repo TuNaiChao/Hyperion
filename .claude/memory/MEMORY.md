@@ -12,7 +12,8 @@
 - [项目文档写作风格](doc-writing-style.md) — 2026-08-14:docs/*.md 面向小白+比喻+去噪音(不带时间戳)+ 本项目化(不说"你")。区别于注释(可带时间戳)+ skill(面向模型)。
 - [新功能自跑 opencode e2e](new-feature-run-opencode-e2e.md) — 2026-08-14:做了新功能我自己跑 opencode e2e(不等用户自验);系统软件编译/复现仍用户自验。
 - [记忆模块分析+Phase1交接](memory-consolidation-phase1-handoff.md) — 2026-08-14:docs/ 记忆分析+路线图(新风格)+ consolidate 三 pass 化(矛盾检测/语义去重,对标 keeps/merges/evicts)+ e2e 抓 symptom 空回退 bug。51 passed。
-- [consolidate Phase2交接](memory-consolidation-phase2-handoff.md) — **2026-08-14 五 pass 收口**:B3 已合入上游(reverse-apply→标签+打折,不 set_invalid)+ B4 过期(只标不降权,防双杀);计数=当前态/写入=幂等。**e2e 抓 2 真 bug 同修**:标签竞写(快照覆盖洗掉 merged_upstream→_add_tag 写前重读)+ 矛盾误报(同文件≠同 bug→行号差≤5 收紧)。274 绿。Phase 3+ 治理展示/CJK 低优。
+- [consolidate Phase2交接](memory-consolidation-phase2-handoff.md) — **2026-08-14 五 pass 收口**:B3 已合入上游(reverse-apply→标签+打折,不 set_invalid)+ B4 过期(只标不降权,防双杀);计数=当前态/写入=幂等。**e2e 抓 2 真 bug 同修**:标签竞写(快照覆盖洗掉 merged_upstream→_add_tag 写前重读)+ 矛盾误报(同文件≠同 bug→行号差≤5 收紧)。274 绿。
+- [记忆 Phase3 交接](memory-phase3-cjk-governance-handoff.md) — **2026-08-14 roadmap 三阶段全收口**:jieba CJK 分词(索引+查询两侧同切,BM25 纯中文路活,embedder=None 也召回)+ FTS standalone 化(触发器调不了 Python 分词;upsert 同事务维护+幂等 migration)+ A2 治理展示(dump 卡 [tags] + header health 聚合 + SKILL 双层读法)。**坑**:executescript 隐式 COMMIT 打断迁移事务;半角标点粘 CJK 词要补空格;e2e 要备份→恢复(search() 零副作用)。278 绿。
 - [Python语法.md 不提交](commit-python-syntax-notes.md) — 永不提交 Python语法.md(个人笔记);commit 用显式路径,别 git add -A。
 - [oh-my-pi 调研与设计演进](oh-my-pi-research-and-design-evolution.md) — 2026-07-27 报告 + v2 更正:三层栈是用户心智模型;记忆改自建 MemoryService。
 - [DeepSeek 结构化产出踩坑](deepseek-structured-output-gotcha.md) — DeepSeek 思考模式不支持 json_schema;改"喂 Schema+直出 JSON+解析"。embedding/rerank 走 DashScope。
