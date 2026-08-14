@@ -72,6 +72,8 @@
 
 **对标**:mem0 Dream 的 "prunes stale";Zep 的自动 fact invalidation。
 
+> **✅ 已成(偏离记录)**:原案"合入 → set_invalid"在实现时被否,落成**只标不删**:打 `merged_upstream` 标签 + confidence×discount(默认 0.5)。理由:① `invalid_at` 语义是"知识错了",不是"bug 修了"——考古查询("X 时点在不在")要靠这条记录;② reverse-apply 只证"改动在树里",可能是等价修复(非本补丁)→ 留人在环,确认后可手动 `invalidate`。判定用 `git apply --check --reverse`(带踩坑 #15 的 LF 归一化),不用 merge_eval 的 patch-id(那是上游两 ref 对比,这里是仓 vs 补丁,问题形状不同)。`repo_path` 只在显式 consolidate(CLI `--repo-path`)时给;recall 自转路径不知道仓在哪,不猜。
+
 ### B4. 长期未命中降权(evict 的一种,非物理删)—— Phase 2
 
 **现状问题**:recall 的 decay 是"检索时按时间衰减打分",但没有"长期没人翻的高置信度条 → 主动降级"的巩固动作。记忆只增不减权重。
@@ -79,6 +81,8 @@
 **要做什么**:`consolidate` 里,对 `last_recalled` 远早于 halflife 且 access_count=0 的高 conf 条目,下调 confidence(或打 `stale` 标签让体检预警)。**不物理删**(bi-temporal 铁律)。
 
 **对标**:SCM 论文的 algorithmic forgetting;mem0 eviction(降级非删除)。
+
+> **✅ 已成(偏离记录)**:落成**只标不降权**——`last_recalled`(或 `created_at`,取较晚)超 `stale_after_days`(默认 365)→ 打 `stale` 标签。原案"下调 confidence"被否:recall 打分已有 exp 时间衰减,consolidate 再降是双杀(同一条被两处扣分)。标签供 memory-health-check 预警 + agent 注入提示"这条很久没人验证过了"。
 
 ---
 
@@ -118,13 +122,13 @@
 
 **验证**:`uv run pytest tests/services/memory/ -q` 全绿 + `uv run ruff check`。不跑真模型(用户自验铁律)。
 
-### Phase 2:自动失效 + 降权(B3 + B4)
+### Phase 2:自动失效 + 降权(B3 + B4)—— ✅ 已成
 
 **目标**:bug_lesson 随补丁生命周期自动失效;长期未命中条目主动降级。
 
 **依赖**:Phase 1 的 consolidate 框架(多 pass 结构)。B3 需要 git / merge_eval 工具协同,触发式(不每次 consolidate 都跑 git,按需或定时)。
 
-**状态**:Phase 1 完成后启动。
+**状态**:✅ 已落地(实现与原案的两处偏离见 B3/B4 小节的"偏离记录";e2e 真 DB + 真 git 仓验证,抓到 2 真 bug 已修)。
 
 ### Phase 3+:治理展示(A2)+ CJK(B/C 类)
 
