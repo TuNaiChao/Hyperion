@@ -46,6 +46,10 @@
 
 ---
 
+> **🔴 1–4 已全落地(2026-08-14,commit 7535527)**:#4 deep_research 建图/开图双 try 降级 + 2 单测;#1+#2 进 bug-rca SKILL 证伪纪律 + agent prompt(多假设清单 + 候选定稿前 `memory_recall(problem_summary)` 定向复核双时点);#3 五工具统一 `_honest_truncate`(超长才截 + note 明说截多少/怎么补取)+ 2 单测。**e2e 真机全绿**(deepseek-v4-flash-0731,24 步):根因与 demo2 金标逐点吻合(handler 覆盖误路由 → p2p_scan_work 泄漏 → 队列堵死);多假设清单明确生效(报告含「候选淘汰记录」,B/C 候选各有时序/证据淘汰);定向复核双重坐实(recall 双时点 09:57 发散 + 09:59:56 定稿前复核,且用先验 1588c403 反向排除双接口候选)。见 [backlog 高优先落地交接](../../.claude/memory/p1p2-high-priority-handoff.md)。
+
+---
+
 ## 🟡 中优先(真实缺口,建议排期)
 
 ### 5. onboarding/compare 产出 AGENTS.md(新功能,对齐 2026 惯例)

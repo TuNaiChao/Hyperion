@@ -43,6 +43,7 @@
 - [2026-08-07 路线复核](harness-route-review-2026-08-07.md) — pivot 后审视:R4/R5 取消 + obsolete 一批;收敛三件事(代码情报/记忆/skill+工具)+ 不编译强化。
 - [2026-08-10 全工具审核后工具集](toolset-after-audit-2026-08-10.md) — 撤 filter_logs/build_check/patch_search + demo @tool 链路;留 9 MCP 工具(6 核心+3 硬门)。
 - [多库地基 per-call codebase 交接](multi-codebase-per-call-handoff.md) — 2026-08-11 路线 #1:把 blast_radius 的 per-call codebase 推广到 memory_recall/memorize/search_codebase。
+- [P1/P2 高优先 4 项落地交接](p1p2-high-priority-handoff.md) — **2026-08-14 落地(commit 7535527)+ e2e 真机全绿**:CRG 建图降级 / bug-rca 双纪律(多假设清单+定向复核 problem_summary)/ 五工具 `_honest_truncate` 诚实截断。e2e:金标逐点吻合+候选淘汰记录+recall 双时点+correction 降权真数据起效;glm-5.2 端点当日不稳换 deepseek-v4-flash;结论查 opencode.db/推流不靠 stdout。
 - [路线#2 call_chain 交接](route2-call-chain-handoff.md) — 2026-08-11 路线 #2,第 10 工具:CodeGraph.call_chain(符号种子+CALLS 边+N 跳 BFS+PageRank)。gotcha:nx.pagerank 走 scipy→写纯 python 降级。
 - [路线#3 cross_version_diff 交接](route3-cross-version-handoff.md) — 2026-08-11 路线 #3,第 11 工具:同仓两 git ref 对比,git 为核图可选。偏离 spec(pivot 后修正):不内置 LLM/单仓两 ref。
 - [路线#4 记忆自动 query P1 交接](route4-auto-query-handoff.md) — 2026-08-11 路线 #4:A1 日志摘要被证伪→转 B(定位后用 problem_summary 当 query 召回历史修法,带安全 nudge)。
