@@ -747,3 +747,108 @@ def test_search_vector_degrades_when_auto_index_off(scope):
     hits = s.search_vector([1.0] * VEC_DIM, scope, limit=2)
     assert len(hits) == 2
     s.close()
+
+
+# ── Phase 3:CJK 分词(FTS standalone + jieba)+ 治理标签展示 ────────────
+
+def test_segment_only_cjk(scope):
+    """tokenize.segment:只切 CJK 段(英文标识符/路径原样),停用词滤掉,jieba 缺席时原样返回。"""
+    from hyperion.services.memory.backends.native import tokenize
+
+    if tokenize.jieba_available():
+        out = tokenize.segment("蓝牙L2CAP面向连接的可靠传输,扫描阻塞所有站点")
+        toks = out.split()
+        assert "蓝牙" in toks and "扫描" in toks and "阻塞" in toks   # 2 字技术词被切出
+        assert "L2CAP" in toks                                        # 英文段不进 jieba,原样保留
+        assert "的" not in toks                                       # 停用词滤掉
+    # jieba 缺席的降级路径:monkeypatch 成 None → 原样返回(不抛)。
+    saved = tokenize._jieba
+    try:
+        tokenize._jieba = None
+        tokenize._jieba_tried = True
+        assert tokenize.segment("扫描阻塞") == "扫描阻塞"
+    finally:
+        tokenize._jieba = saved
+
+
+def test_bm25_chinese_match(store, scope):
+    """CJK 分词端到端:中文 summary 入库(索引侧分词)→ 纯中文查询(查询侧分词)→ BM25 命中。
+
+    这是 Phase 3 的核心验收:unicode61 时代"扫描"匹配不上"扫描会阻塞所有站点"(整段一个
+    token);分词后两侧同切,2 字查询词能命中。embedder 不参与(纯 BM25 路)。
+    """
+    a = _ki("蓝牙扫描会阻塞所有站点扫描", scope=scope)
+    b = _ki("整数溢出未校验导致越界写", scope=scope)
+    memorize_items([a, b], store=store)
+
+    hits = store.search_bm25("扫描 阻塞", scope)
+    assert hits and hits[0][0].id == a.id                     # 查询词命中第一条
+    misses = store.search_bm25("毫不相关的词", scope)
+    assert all(h[0].id != a.id for h in misses) or not misses  # 不相干查询不误命中 a
+
+
+def test_fts_migration_rebuild_and_idempotent(tmp_path):
+    """migration:老库(external-content FTS + 触发器)打开即重建 standalone + 全量重灌,幂等。
+
+    手工造一个老结构库(external-content FTS + 三触发器 + 一条中文数据),用 MemoryStore
+    打开 → 触发 _migrate_fts_standalone:触发器消失、FTS 无 content= 、中文可查、
+    再开一次不重复重灌(ki_meta 标记幂等)。
+    """
+    import sqlite3
+
+    db = tmp_path / "memory.db"
+    old_ddl_fts = (
+        "CREATE VIRTUAL TABLE ki_fts USING fts5(summary, detail, root_cause, "
+        "content='knowledge_items', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2')"
+    )
+    cols = ("id TEXT PRIMARY KEY, kind TEXT NOT NULL, repo TEXT NOT NULL, owner TEXT NOT NULL, "
+            "codebase TEXT NOT NULL, summary TEXT NOT NULL, detail TEXT, symptom TEXT, root_cause TEXT, "
+            "fix_patch TEXT, blast_radius_files TEXT, kind_detail TEXT, commit_sha TEXT, evidence TEXT, "
+            "source TEXT, source_tier TEXT, confidence REAL, access_count INTEGER, last_recalled TEXT, "
+            "valid_at TEXT NOT NULL, invalid_at TEXT, created_at TEXT NOT NULL, related TEXT, tags TEXT, "
+            "superseded_by TEXT, corrected_by TEXT, source_url TEXT, embedding BLOB, updated_at TEXT NOT NULL")
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        f"CREATE TABLE knowledge_items({cols});"
+        + old_ddl_fts
+        + ";CREATE TRIGGER ki_fts_ai AFTER INSERT ON knowledge_items BEGIN "
+        "INSERT INTO ki_fts(rowid, summary, detail, root_cause) "
+        "VALUES (new.rowid, new.summary, new.detail, new.root_cause); END;"
+        "CREATE TABLE ki_meta(key TEXT PRIMARY KEY, value TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO knowledge_items(id, kind, repo, owner, codebase, summary, valid_at, created_at, "
+        "related, tags, updated_at) VALUES ('old1','bug_lesson','r','default','oldcb','扫描会阻塞所有站点',"
+        "'2026-01-01','2026-01-01','[]','[]','2026-01-01')"
+    )
+    conn.execute(
+        "INSERT INTO ki_fts(rowid, summary, detail, root_cause) "
+        "SELECT rowid, summary, detail, root_cause FROM knowledge_items"
+    )
+    conn.commit()
+    conn.close()
+
+    s = MemoryStore(tmp_path)                     # 打开即迁移
+    ddl = s._conn.execute("SELECT sql FROM sqlite_master WHERE name='ki_fts'").fetchone()
+    assert "content=" not in ddl["sql"]                          # 重建为 standalone
+    assert s._conn.execute("SELECT name FROM sqlite_master WHERE name='ki_fts_ai'").fetchone() is None
+    hits = s.search_bm25("扫描 阻塞", Scope(codebase="oldcb"))    # 重灌后中文可查
+    assert hits and hits[0][0].id == "old1"
+    s.close()
+
+    s2 = MemoryStore(tmp_path)                    # 幂等:标记位在 → 不再重灌
+    n = s2._conn.execute("SELECT count(*) AS c FROM ki_fts").fetchone()["c"]
+    assert n == 1
+    s2.close()
+
+
+def test_recall_chinese_bm25_voice(store, scope):
+    """recall 全链(无 embedder):纯中文 query 走 BM25 路也能召回中文记忆(不依赖向量 API)。
+
+    对齐真实场景:embedder=None(离线)时中文查询此前完全失明(unicode61 整段 token),
+    Phase 3 后 BM25 路独立可召回 —— 减少 domain_knowledge 中文知识对向量 API 的依赖。
+    """
+    a = _ki("P2P 扫描进行时会触发闸门,阻塞所有站点扫描", scope=scope)
+    memorize_items([a], store=store)
+    hits = recall("扫描 阻塞", scope, store=store, embedder=None, reranker=None, top_k=3)
+    assert hits and hits[0].item_id == a.id

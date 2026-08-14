@@ -33,6 +33,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from hyperion.services.memory.backends.native.tokenize import segment as _segment
 from hyperion.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
 
 logger = logging.getLogger(__name__)
@@ -99,29 +100,15 @@ CREATE INDEX IF NOT EXISTS idx_ki_scope  ON knowledge_items(owner, codebase);
 CREATE INDEX IF NOT EXISTS idx_ki_active ON knowledge_items(codebase, invalid_at, superseded_by);
 CREATE INDEX IF NOT EXISTS idx_ki_kind   ON knowledge_items(kind);
 
--- FTS5 全文索引(external-content + 触发器同步,借 deermem retrieval / CRG migrations v5)。
--- content='knowledge_items' → FTS 不另存全文,按 rowid 回主表取(省空间,单一数据源)。
+-- FTS5 全文索引(standalone:文本自存,upsert() 在 Python 里同步 —— tokenize.py 的 CJK 分词需要)。
+-- 为什么不再是 external-content + 触发器:触发器在 SQL 层,调不了 Python 分词;standalone 表由
+-- upsert() 同事务 delete-then-insert 维护(文本列只有 upsert 一处写,不会漏同步)。
+-- 存的是分词后的文本(中文段 jieba 切开空格连回)→ unicode61 按空格切 = 一词一 token。
+-- 老库(external-content)在 __init__ migration 里检测并重建,见 _migrate_fts_standalone。
 CREATE VIRTUAL TABLE IF NOT EXISTS ki_fts USING fts5(
     summary, detail, root_cause,
-    content='knowledge_items', content_rowid='rowid',
-    tokenize='unicode61 remove_diacritics 2'   -- ⚠️ 中文分词弱(无空格);向量路补语义,jieba 记 backlog
+    tokenize='unicode61 remove_diacritics 2'
 );
--- 三触发器保持 FTS 与主表一致(显式传 old.*/new.* 值,避 external-content"主表已更新"的坑)。
--- AFTER UPDATE 仅在三个文本列变更时触发 → access_count 自增不会重排 FTS。
-CREATE TRIGGER IF NOT EXISTS ki_fts_ai AFTER INSERT ON knowledge_items BEGIN
-    INSERT INTO ki_fts(rowid, summary, detail, root_cause)
-    VALUES (new.rowid, new.summary, new.detail, new.root_cause);
-END;
-CREATE TRIGGER IF NOT EXISTS ki_fts_ad AFTER DELETE ON knowledge_items BEGIN
-    INSERT INTO ki_fts(ki_fts, rowid, summary, detail, root_cause)
-    VALUES ('delete', old.rowid, old.summary, old.detail, old.root_cause);
-END;
-CREATE TRIGGER IF NOT EXISTS ki_fts_au AFTER UPDATE OF summary, detail, root_cause ON knowledge_items BEGIN
-    INSERT INTO ki_fts(ki_fts, rowid, summary, detail, root_cause)
-    VALUES ('delete', old.rowid, old.summary, old.detail, old.root_cause);
-    INSERT INTO ki_fts(rowid, summary, detail, root_cause)
-    VALUES (new.rowid, new.summary, new.detail, new.root_cause);
-END;
 
 CREATE TABLE IF NOT EXISTS ki_meta(key TEXT PRIMARY KEY, value TEXT);
 """
@@ -225,16 +212,16 @@ def _row_to_ki(row: sqlite3.Row | dict[str, Any]) -> KnowledgeItem:
 
 
 def _fts_query(query: str) -> str:
-    """查询 → FTS5「OR-of-terms」(每个 term 引号转义,避 *, : 被当语法)。
+    """查询 → 分词 → FTS5「OR-of-terms」(每个 term 引号转义,避 *, : 被当语法)。
 
     为什么用 OR 不用短语/AND:BM25 在多路召回里当"撒大网"角色(宽召回,rerank/向量再精筛)。
     OR 不会因为某个 term(尤其 CJK)不匹配而整体返空 —— 漏一个 term 也能把命中的召回来。
 
-    ⚠️ CJK 弱点:unicode61 不切中文(整段汉字当 1 个 token),"扫描" ≠ "阻塞所有站点扫描"。
-    纯中文查询靠【向量路】补语义(Qwen3 embedding 中文强);英文/混合查询 OR 正常召回。
-    jieba 分词 / CJK 逐字切分 记 backlog(提升纯中文的 BM25 召回,减少对向量 API 的依赖)。
+    CJK(Phase 3):查询先过 _segment(中文段 jieba 切开)再 split —— 索引侧(upsert 入
+    standalone FTS)存的就是分词后的文本,两侧同一分词器,"扫描"就能命中"阻塞所有站点扫描"。
+    jieba 没装 → _segment 原样返回,退回 unicode61 行为(英文/混合查询不受影响)。
     """
-    terms = [t for t in (query or "").split() if t]
+    terms = [t for t in _segment(query or "").split() if t]
     if not terms:
         return ""
 
@@ -314,6 +301,11 @@ class MemoryStore:
         if "source_url" not in existing_cols:
             self._conn.execute("ALTER TABLE knowledge_items ADD COLUMN source_url TEXT")
 
+        # ── FTS standalone 化 migration(Phase 3 CJK 分词):老库的 external-content FTS
+        #    (SQL 触发器同步)重建为 standalone(Python 侧 upsert 同步 + jieba 分词)。
+        #    幂等:ki_meta 里 'fts_standalone' 标记位在就跳过;失败不崩(FTS 重建是增强,记忆数据在主表)。
+        self._migrate_fts_standalone()
+
         # ── sqlite-vec 加载(建议 A:向量 ANN 加速)──
         # 绝不崩:加载/建表失败 → _vec_ok=False → search_vector 走纯 loop(记忆是核心,向量加速是优化)。
         self._auto_index = auto_index
@@ -336,11 +328,97 @@ class MemoryStore:
 
     # —— 写 ——
 
+    def _migrate_fts_standalone(self) -> None:
+        """把老库的 external-content FTS(触发器同步)重建为 standalone(Python 同步 + 分词)。
+
+        检测:sqlite_master 里 ki_fts 的建表 SQL 含 'content=' → 是老结构。
+        重建:DROP 触发器 + FTS 表 → 按新 _SCHEMA 重建 → 全量重灌(主表文本过 _segment)。
+        幂等:ki_meta 'fts_standalone'=1 标记(新建库 _SCHEMA 已是 standalone,建表后直接打标)。
+        失败不崩:FTS 是检索增强,记忆数据全在主表;重建失败 → 记 warning,BM25 返空,
+        向量路照常(优雅降级,镜像 sqlite-vec 加载失败的处理)。
+        """
+        marked = self._conn.execute("SELECT value FROM ki_meta WHERE key='fts_standalone'").fetchone()
+        if marked:
+            return
+        try:
+            ddl = self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='ki_fts'"
+            ).fetchone()
+            is_old = ddl is not None and "content=" in (ddl["sql"] or "")
+            if is_old:
+                with self._wl:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        self._conn.execute("DROP TRIGGER IF EXISTS ki_fts_ai")
+                        self._conn.execute("DROP TRIGGER IF EXISTS ki_fts_ad")
+                        self._conn.execute("DROP TRIGGER IF EXISTS ki_fts_au")
+                        self._conn.execute("DROP TABLE ki_fts")
+                        # 重建 standalone ki_fts。不用 executescript(它会隐式 COMMIT 打断外层
+                        # BEGIN IMMEDIATE,把 DROP 和重建拆成两个自提交事务)—— 单条 CREATE 等价。
+                        self._conn.execute(
+                            "CREATE VIRTUAL TABLE IF NOT EXISTS ki_fts USING fts5("
+                            "summary, detail, root_cause, tokenize='unicode61 remove_diacritics 2')"
+                        )
+                        self._conn.execute("COMMIT")
+                    except BaseException:
+                        self._conn.execute("ROLLBACK")
+                        raise
+            # 全量重灌:主表每行文本 → 分词 → 插 standalone FTS(rowid 对齐主表)。
+            with self._wl:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for r in self._conn.execute(
+                        "SELECT rowid, summary, detail, root_cause FROM knowledge_items"
+                    ).fetchall():
+                        self._conn.execute(
+                            "INSERT INTO ki_fts(rowid, summary, detail, root_cause) VALUES (?,?,?,?)",
+                            (r["rowid"], _segment(r["summary"] or ""), _segment(r["detail"] or ""),
+                             _segment(r["root_cause"] or "")),
+                        )
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO ki_meta(key,value) VALUES ('fts_standalone','1')"
+                    )
+                    self._conn.execute("COMMIT")
+                except BaseException:
+                    self._conn.execute("ROLLBACK")
+                    raise
+            if is_old:
+                logger.info("memory store: FTS 已迁移 standalone + CJK 分词重灌")
+        except Exception as e:  # noqa: BLE001 - FTS 重建失败不崩记忆(主表数据完好,BM25 降级)
+            logger.warning("memory store: FTS standalone 迁移失败,BM25 可能返空: %s", e)
+
+    def _fts_sync(self, rows: list[dict[str, Any]]) -> None:
+        """把 upsert 的行同步进 standalone FTS(与主表同事务):文本先分词再入索引。
+
+        delete-then-insert:rowid 按 id 回查主表(ON CONFLICT 原地更新 rowid 稳定,
+        executemany 不返回 rowid → 回查,镜像 _vec_upsert 的映射姿势)。
+        """
+        if not rows:
+            return
+        ids = [r["id"] for r in rows]
+        ph = ",".join("?" * len(ids))
+        rid_by_id = {
+            r["id"]: r["rowid"]
+            for r in self._conn.execute(
+                f"SELECT id, rowid FROM knowledge_items WHERE id IN ({ph})", ids
+            ).fetchall()
+        }
+        for r in rows:
+            rid = rid_by_id.get(r["id"])
+            if rid is None:
+                continue
+            self._conn.execute("DELETE FROM ki_fts WHERE rowid=?", (rid,))
+            self._conn.execute(
+                "INSERT INTO ki_fts(rowid, summary, detail, root_cause) VALUES (?,?,?,?)",
+                (rid, _segment(r["summary"] or ""), _segment(r["detail"] or ""),
+                 _segment(r["root_cause"] or "")),
+            )
+
     def upsert(self, items: list[KnowledgeItem]) -> int:
         """批量 upsert(按 id;存在则更新除 created_at/owner/codebase 外字段)。返回条数。
 
         ON CONFLICT 原地更新 → rowid 稳定 → FTS rowid 映射不乱。整批一个 BEGIN IMMEDIATE 事务。
-        带 embedding 的行同事务双写 vec0 表(建议 A:向量 ANN 加速)。
+        带 embedding 的行同事务双写 vec0 表(建议 A);全部行同事务同步 standalone FTS(Phase 3 CJK)。
         """
         if not items:
             return 0
@@ -350,6 +428,7 @@ class MemoryStore:
             try:
                 self._conn.executemany(self._UPSERT, rows)
                 self._vec_upsert(rows)  # 同事务双写 vec0(失败不阻断主表,降级 loop)
+                self._fts_sync(rows)    # 同事务同步 standalone FTS(分词后文本)
                 self._conn.execute("COMMIT")
             except BaseException:
                 self._conn.execute("ROLLBACK")

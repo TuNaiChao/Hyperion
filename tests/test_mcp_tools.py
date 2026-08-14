@@ -594,6 +594,35 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     # 不渲染 id = 闭环走不通(e2e 暴露:agent 拿不到被纠正条目 id 被逼 grep SQLite)。
     assert f"id={item_hi.id[:8]}" in out, out
     assert f"id={item_lo.id[:8]}" in out, out
+    assert "health:" not in out, out  # 无 tags 的库不输出健康概要行(不添噪音)
+    """Phase 3 A2:治理标签(consolidate 五 pass 的产出)进体检 —— 溯源卡渲染 [tags] + header 健康概要。
+
+    hermetic:假 svc 注入带 tags 的条目(needs_review / merged_upstream+stale),断言
+    ① 卡上有 [needs_review] 等(逐条治理状态);② header 「health:」行聚合计数(全局一眼看)。
+    无 tags 的库不输出 health 行(不添噪音)—— 由 test_memory_dump_renders_audit_cards 覆盖
+    (那个测试的条目无 tags,断言 'health:' 不在串,见下)。
+    """
+    from hyperion.services.memory.schema import KnowledgeItem, Scope, SourceTier
+
+    scope = Scope(owner="default", codebase="bluez")
+    a = KnowledgeItem(
+        kind="bug_lesson", repo="bluez", scope=scope, summary="矛盾甲:根因是 A",
+        confidence=0.8, source_tier=SourceTier.delegate, tags=["needs_review"],
+    )
+    b = KnowledgeItem(
+        kind="bug_lesson", repo="bluez", scope=scope, summary="已合上游的旧教训",
+        confidence=0.25, source_tier=SourceTier.delegate, tags=["merged_upstream", "stale"],
+    )
+    fake = _FakeMemSvc()
+    fake.list_items_return = [a, b]
+    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    out = _call(mcp, "memory_dump", {"codebase": "bluez"})
+    assert "Traceback" not in out, out
+    assert "[needs_review]" in out, out                                  # 卡上治理标签
+    assert "[merged_upstream,stale]" in out, out                         # 多标签逗号连
+    assert "health:" in out and "needs_review=1" in out, out             # header 健康概要
+    assert "merged_upstream=1" in out and "stale=1" in out, out
 
 
 def test_memory_dump_pagination(monkeypatch):

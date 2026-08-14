@@ -19,14 +19,14 @@ allowed-tools:
 - **只读不改代码,也默认不改记忆库** —— 你不 edit 源码(不 edit / 不 git apply);对记忆库你也**只看不动**(体检 = 出体检卡 + 建议,**不自动删 stale、不自动改 confidence**)。改记忆库是人的活(对齐「未经验证不 memorize / invalidate 谨慎」)。和 onboarding/compare 一样是 read-only,且更严——连记忆库都只读不写。
 - **体检默认不 memorize** —— 体检本身**不产生新知识**(只是把已有记忆摊开看),所以**默认不 memorize**。**唯一例外**:体检中发现记忆库有**未决矛盾**(两条都 active、confidence 都高、但结论冲突)—— 这是关于记忆库本身的新观察,可 memorize 一条 `codebase_fact`「记忆库存矛盾:...」并标**需人工裁决**(你不确定谁对,只记录"这里有冲突待裁")。除此之外不记。
 
-**核心难点**:体检不是「列个清单」就完——得从 dump 出来的条目里**读出健康信号**,这是**语义判断**(没有确定性工具能"自动给记忆打健康分")。四类信号要靠你逐条读出来:① **溯源弱**——高 confidence 却没 evidence(file:line)也没 commit_sha(结论很自信但追不到代码,该补锚点);② **待巩固**——低 confidence 却高 access_count(被反复召回却不自信,可能值得 consolidate 升级);③ **已过期/被纠正**——invalid_at 已设 / 被 superseded_by 取代 / 被 corrected_by 纠正(标了 STALE 或 CORRECTED,占位但不该再用);④ **未决矛盾**——两条都 active、都高 confidence、结论却冲突(记忆库自相打架,要人裁)。`memory_dump` 只摊数据,**读信号靠你**。
+**核心难点**:体检不是「列个清单」就完——得从 dump 出来的条目里**读出健康信号**,这是**语义判断**(没有确定性工具能"自动给记忆打健康分")。四类信号是**双层结构**:consolidate(巩固)已经自动打了**治理标签**(dump 卡上的 `[needs_review]`/`[merged_upstream]`/`[stale]`),你的活是在标签之上**逐条读出语义**:① **溯源弱**——高 confidence 却没 evidence(file:line)也没 commit_sha(结论很自信但追不到代码,该补锚点);② **待巩固**——低 confidence 却高 access_count(被反复召回却不自信,可能值得 consolidate 升级);③ **已过期/被纠正**——invalid_at 已设 / 被 superseded_by 取代 / 被 corrected_by 纠正(标了 STALE 或 CORRECTED,占位但不该再用);④ **未决矛盾**——两条都 active、都高 confidence、结论却冲突(记忆库自相打架,要人裁;带 `[needs_review]` 标签的已被 consolidate 圈出,你核读双方内容判能否闭环)。`memory_dump` 只摊数据+标签,**读信号靠你**。
 
 ## 运行模式
 
 > **先 dump,逐条读,聚信号**。和调研型 skill(onboarding/compare)的「先 recall」不同——体检的第一步是**把全量摊开**(`memory_dump`),不是按 query 挑几条。因为你审的是「整个库长啥样」,不是「某主题命中啥」。
 
 1. **确认 codebase + 体检范围**:问清 codebase 名(如 `bluez`)+ 范围——整体审 / 只审某 kind(codebase_fact / bug_lesson / mental_model)/ 要不要连失效条目一起审(`include_invalid=True`)。然后 `memory_dump(kind=<可选>, include_invalid=<可选>, codebase=<codebase>)` 一次拉全量摊开。**注意翻页**:`memory_dump` 默认每页 60 条,header 若提示 `[showing 1-60 of N, more → memory_dump(offset=60)]` 说明没拿全——**体检要审全量,务必 bump offset 翻页直到拿完**(漏看一半会误判健康度,尤其可能漏掉未决矛盾的另一半)。
-2. **逐条读溯源卡**:对 dump 返回的每张卡,看四个维度——`conf`(置信度)/ `tier`(来源档:delegate/stated 最可信,tool 最低)/ `@file:line` 或 `@无证据`(溯源锚点)/ `sha`(commit 溯源)/ `STALE`(是否失效或被取代)/ `hits`(被召回次数)。把可疑的(高 conf 无溯源 / 低 conf 高 hits / STALE / 互相打架)挑出来。
+2. **逐条读溯源卡**:对 dump 返回的每张卡,看四个维度——`conf`(置信度)/ `tier`(来源档:delegate/stated 最可信,tool 最低)/ `@file:line` 或 `@无证据`(溯源锚点)/ `sha`(commit 溯源)/ `STALE`(是否失效或被取代)/ `hits`(被召回次数)/ `[标签]`(治理标签:needs_review=未决矛盾候选,merged_upstream=补丁已在上游且 conf 已打折,stale=长期没人翻)。把可疑的(高 conf 无溯源 / 低 conf 高 hits / STALE / 互相打架 / 带治理标签)挑出来。
 3. **聚健康信号**(你的核心推理活):把挑出的可疑条目归成四类——
    - **溯源弱**:高 conf(如 ≥0.7)但 `@无证据` 且无 `sha`。→ 建议:补 evidence/commit_sha 再信。
    - **待巩固**:低 conf(如 <0.4)但 `hits` 高(被反复用)。→ 建议:考虑 consolidate 升级成 mental_model(或确认是否该降权)。
@@ -71,13 +71,15 @@ allowed-tools:
   ② 待巩固(低 conf 高 hits): K 条
     - <summary>  conf=X.XX hits=N  → 建议考虑 consolidate / 确认降权
     ...
-  ③ 已过期/被纠正(STALE/CORRECTED): K 条
+  ③ 已过期/被纠正(STALE/CORRECTED/治理标签): K 条
     - <summary>  STALE(invalid/superseded)  → 建议人裁清理
     - <summary>  CORRECTED(by xxxxxxxx)  → 已闭环(纠正者已标记),检索已降权
+    - <summary>  [merged_upstream] conf=X.XX(已打折)  → 补丁已在上游,确认无误后可人裁 invalidate
+    - <summary>  [stale]  → 长期未被召回,建议读码核实是否过时
     ...
   ④ 未决矛盾(都 active 高 conf 结论冲突): K 组
     - A: <summary>  vs  B: <summary>  → 建议人裁(已 memorize 标需裁决)
-    ...
+    ...(带 [needs_review] 标签的已被 consolidate 圈出,你判能否闭环)
 
 建议(给人的,不是自动执行):
   - <一句话:补溯源 / consolidate / 清 stale / 裁决矛盾 的优先级>

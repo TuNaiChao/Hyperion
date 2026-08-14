@@ -92,7 +92,10 @@ def _render_audit_card(it) -> str:
     # 条目 id(截断 8 位):体检/纠正链要用它 —— memory_memorize(corrects=[...]) 要传「在 dump 输出里看到的 id」,
     # 不渲染 id = 闭环走不通(agent 拿不到被纠正条目 id,被逼去 grep SQLite)。与 sha/CORRECTED 同款对称。
     kid = f"  id={it.id[:8]}" if it.id else ""
-    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{kid}{stale}".rstrip()
+    # 治理标签(Phase 3 A2:consolidate 五 pass 的产出):needs_review=未决矛盾 / merged_upstream=补丁已在上游
+    # (conf 已打折)/ stale=长期没人翻。体检时一眼看出「这条卡在哪个治理状态」,不用逐条猜。
+    tg = f"  [{','.join(it.tags)}]" if getattr(it, "tags", None) else ""
+    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{kid}{tg}{stale}".rstrip()
 
 
 def _retrieval_bundle():
@@ -320,6 +323,16 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         tag = f", kind={kind}" if kind else ""
         header = (f"Memory dump: {total} items (codebase={active_repo}{tag}"
                   f"{', +invalid' if include_invalid else ''})")
+        # 健康概要(Phase 3 A2:治理标签聚合,header 一行看全局):consolidate 五 pass 打的标签
+        # 按类计数(needs_review=未决矛盾 / merged_upstream=补丁已在上游 / stale=长期没翻)。
+        # agent 不翻页也能先拿到「库里有没有治理信号」的总量;0 个标签时这行省掉(不输出噪音)。
+        tag_counts: dict[str, int] = {}
+        for it in items:
+            for t in getattr(it, "tags", None) or []:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+        if tag_counts:
+            summary_bits = " ".join(f"{t}={n}" for t, n in sorted(tag_counts.items()))
+            header += f"  health: {summary_bits}"
         # 还有下一页 → 显式提示翻页(诚实信号,不静默截断:体检漏看一半会误判健康度)。
         if total > offset + limit:
             header += (f"  [showing {offset + 1}-{offset + len(page)} of {total},"
