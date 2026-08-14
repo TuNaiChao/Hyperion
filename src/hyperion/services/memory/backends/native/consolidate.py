@@ -1,29 +1,33 @@
 """native 后端 · 巩固 / 持续学习(consolidate.py)。
 
 干什么(面向小白)
-  记忆的"夜间整理"——趁没人翻笔记本时,把里面重复的、打架的、该升级的梳理一遍。
+  记忆的"夜间整理"——趁没人翻笔记本时,把里面重复的、打架的、过期的、该升级的梳理一遍。
   对标 2026 业界共识:consolidation = keeps / merges / evicts(留 / 合 / 逐)三件事。
 
-三个 pass(对应 keeps / merges,evicts 见 backlog):
+五个 pass(keeps + merges + evicts):
   ① 升级 mental_model(keeps):被召回≥N 次(access_count)的教训 → 升级为"稳定规则"(借 Letta 3+ 规则)。
   ② 矛盾检测(只标不裁):同主题不同结论的 active 对 → 打 needs_review 标签 + 进统计上报。
      不自动选边(谁是正确根因是语义判断,踩坑#11:apply 过≠根因对);留给 memory-health-check skill /
      agent / 人裁决。检测本身是确定性的(_same_subject + not _same_conclusion)。
   ③ 语义近邻去重候选(merges):同 scope+同 kind,embedding cosine 超阈值 → 报候选合并对。
      默认只报不自动合(自动合并语义上危险,可能误合近义不同 bug;宁漏不错)。
+  ④ 补丁已合入检测(Phase 2,只标不删):bug_lesson 带 fix_patch + repo_path 给得出 → git apply
+     --check --reverse 通过 = 改动已在树里 → 打 merged_upstream 标签 + confidence 打折。
+     **不 set_invalid**:补丁合入 ≠ 教训错了(这个 bug 真实发生过,考古查询"X 时点在不在"要靠它);
+     且 reverse-check 只证"改动在树里",可能是等价修复而非本补丁 → 留人在环(确认后可手动 invalidate)。
+  ⑤ stale 检测(Phase 2,只标不降权):超过 stale_after_days 没人翻(last_recalled/created_at 取晚者)
+     → 打 stale 标签。**不改 confidence**——recall 已有 exp 时间衰减打分,consolidate 再降就是双杀;
+     标签供 memory-health-check 预警 + agent 提示"这条很久没人验证过了"。
 
 为什么不物理删 / 不 Weibull 物理降级
-  bi-temporal 铁律:永不物理删(能回答"这 bug 在 X 时点还在不在",审计可追溯)。recall 已做 exp 衰减
-  打分(检索时降权),consolidate 不重复做物理降级。evict 的"主动降 confidence"见 backlog Phase 2。
-
-记 backlog(刻意不做):
-  - 自动失效(补丁合入上游 → invalidate):需接 git/merge_eval,Phase 2。
-  - 长期未命中主动降 confidence(evict):Phase 2。
+  bi-temporal 铁律:永不物理删(能回答"这 bug 在 X 时点还在不在",审计可追溯)。召回排序的时效
+  由 recall 的 exp 衰减管;consolidate 只打标签/打折 confidence,不动生命周期。
 """
 
 from __future__ import annotations
 
 import logging
+import subprocess
 from typing import Any
 
 from hyperion.services.memory.backends.native.memorize import _same_conclusion, _same_subject
@@ -36,6 +40,10 @@ logger = logging.getLogger(__name__)
 _CONTRADICTION_MIN_CONFIDENCE = 0.5
 # 语义近邻去重:cosine 超此阈值才算"疑似重复"。保守(0.92),宁漏不错——误合两个不同 bug 比留两条重复更糟。
 _DUPLICATE_COSINE_THRESHOLD = 0.92
+# stale 判定的兜底天数(config 没配时用)。
+_DEFAULT_STALE_AFTER_DAYS = 365.0
+# 补丁已合入的 confidence 折扣(config 没配时用)。
+_DEFAULT_MERGED_DISCOUNT = 0.5
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -57,20 +65,36 @@ def consolidate(
     detect_contradictions: bool = True,
     detect_duplicates: bool = True,
     duplicate_threshold: float = _DUPLICATE_COSINE_THRESHOLD,
+    detect_merged_upstream: bool = True,
+    detect_stale: bool = True,
+    stale_after_days: float = _DEFAULT_STALE_AFTER_DAYS,
+    merged_discount: float = _DEFAULT_MERGED_DISCOUNT,
+    repo_path: str | None = None,
+    now=None,
 ) -> dict[str, Any]:
-    """巩固 pass:升级 mental_model + 矛盾检测 + 语义去重候选。返回统计 dict。
+    """巩固 pass:升级 + 矛盾检测 + 语义去重 + 补丁已合入 + stale 检测。返回统计 dict。
 
-    返回:``{scanned, promoted, contradictions, duplicate_clusters}``。
+    返回:``{scanned, promoted, contradictions, duplicate_clusters, merged_upstream, stale}``。
       - contradictions:发现的"同主题不同结论"矛盾对数(已打 needs_review 标签)。
       - duplicate_clusters:疑似语义重复的条目组数(只统计上报,不自动合)。
+      - merged_upstream:补丁改动已在仓里的条数(打 merged_upstream 标签 + confidence 打折)。
+      - stale:超过 stale_after_days 没人翻的条数(打 stale 标签,只标不降权)。
 
-    domain_knowledge 不参与任何 pass:① 不升级(evergreen 不"毕业");② 不进矛盾检测
-    (领域常理无"同主题不同结论"的 bug 式冲突语义);③ 不进语义去重(领域知识条目天然
-    语义近邻是正常的,如多条都讲 4-way handshake,不该判重复)。mental_model 已是升级终态,也跳过。
+    domain_knowledge 不参与升级/矛盾/去重(evergreen + 天然语义近邻);bug_lesson/codebase_fact
+    都参与 stale 检测(任何知识都可能过期);merged_upstream 只对带 fix_patch 的 bug_lesson 生效。
 
-    各 pass 幂等:重复跑不会叠加标签/重复上报(set 去重 + 已标的不再加)。
+    repo_path:B3 需要(补丁 reverse-apply 检测的 git 仓路径);None → 跳过 B3(不是错误,
+    service 层不知道仓路径时正常)。now:测试注入时间用;None → 当前 UTC 时间。
+
+    各 pass 幂等:重复跑不会叠加标签/重复上报(set 去重 + 已标的不再加/已打过折的不再折)。
     """
-    stats: dict[str, Any] = {"scanned": 0, "promoted": 0, "contradictions": 0, "duplicate_clusters": 0}
+    if now is None:
+        from datetime import UTC, datetime
+        now = datetime.now(UTC)
+    stats: dict[str, Any] = {
+        "scanned": 0, "promoted": 0, "contradictions": 0, "duplicate_clusters": 0,
+        "merged_upstream": 0, "stale": 0,
+    }
     items = store.list_items(scope)
     stats["scanned"] = len(items)
 
@@ -88,11 +112,33 @@ def consolidate(
     if detect_duplicates:
         stats["duplicate_clusters"] = _detect_semantic_duplicates(items, duplicate_threshold)
 
+    # ④ 补丁已合入(只标不删):reverse-apply 通过 → merged_upstream 标签 + confidence 打折。
+    if detect_merged_upstream and repo_path:
+        stats["merged_upstream"] = _detect_merged_upstream(store, items, repo_path=repo_path, discount=merged_discount)
+
+    # ⑤ stale 检测(只标不降权):超 stale_after_days 没人翻 → stale 标签。
+    if detect_stale:
+        stats["stale"] = _detect_stale(store, items, stale_after_days=stale_after_days, now=now)
+
     logger.info(
-        "memory.consolidate(%s): 扫 %d,升级 %d,矛盾对 %d,重复簇 %d",
-        scope.codebase, stats["scanned"], stats["promoted"], stats["contradictions"], stats["duplicate_clusters"],
+        "memory.consolidate(%s): 扫 %d,升级 %d,矛盾对 %d,重复簇 %d,已合入 %d,过期 %d",
+        scope.codebase, stats["scanned"], stats["promoted"], stats["contradictions"],
+        stats["duplicate_clusters"], stats["merged_upstream"], stats["stale"],
     )
     return stats
+
+
+def _add_tag(store: MemoryStore, item_id: str, tag: str) -> None:
+    """打标签:先重读 DB 最新 tags 再合并写回(幂等:已有则不动)。
+
+    为什么不直接用调用方手里的 it.tags:consolidate 五个 pass 共享同一份 list_items
+    快照,pass ④ 打的 merged_upstream 不在 pass ⑤ 拿到的快照里——直接 [*it.tags, "stale"]
+    整体覆盖写会把前面的标签洗掉(e2e 真踩:合并标签被过期 pass 覆盖丢失)。
+    """
+    fresh = store.get(item_id)
+    if fresh is None or tag in fresh.tags:
+        return
+    store.set_tags(item_id, [*fresh.tags, tag])
 
 
 def _detect_contradictions(store: MemoryStore, items: list) -> int:
@@ -115,9 +161,7 @@ def _detect_contradictions(store: MemoryStore, items: list) -> int:
                 flagged.add(a.id)
                 flagged.add(b.id)
     for item_id in flagged:
-        it = store.get(item_id)
-        if it and "needs_review" not in it.tags:
-            store.set_tags(item_id, [*it.tags, "needs_review"])
+        _add_tag(store, item_id, "needs_review")
     return len(flagged)
 
 
@@ -169,3 +213,74 @@ def _detect_semantic_duplicates(items: list, threshold: float) -> int:
         groups.setdefault(it.kind, []).append(it)
 
     return sum(_count_duplicate_clusters(g, threshold) for g in groups.values() if len(g) >= 2)
+
+
+def _reverse_applies(diff_text: str, repo_path: str) -> bool | None:
+    """补丁能否对仓"反向 apply"(= 改动已经在树里)。True=已合入;False=没合入;None=判不了。
+
+    姿势同 merge_eval 的 git apply --check(踩坑#15:归一化行尾,防 marshalling 假阴)。
+    判不了(非 git 仓 / git 挂 / 补丁格式烂)返 None,调用方跳过不误判。
+    """
+    try:
+        diff = diff_text.replace("\r\n", "\n").replace("\r", "\n")
+        if not diff.endswith("\n"):
+            diff += "\n"
+        r = subprocess.run(
+            ["git", "apply", "--check", "--reverse"],
+            input=diff, cwd=str(repo_path), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=60,
+        )
+        if r.returncode == 0:
+            return True
+        # returncode!=0 有两种:补丁没合入(正常态)or 仓状态特殊。区分不了就都当"没合入"——
+        # 误报 merged 的代价(错降权)比漏报大,保守取 False。
+        return False
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _detect_merged_upstream(store: MemoryStore, items: list, *, repo_path: str, discount: float) -> int:
+    """B3:bug_lesson 带 fix_patch 的条目,git apply --check --reverse 通过 = 改动已在树里。
+
+    只标不删:打 merged_upstream 标签 + confidence 打折(×discount)。**不 set_invalid**:
+    补丁合入 ≠ 教训错了(考古"X 时点在不在"要靠它);且 reverse 只证"改动在树里",
+    可能是等价修复 → 留人在环(用户/agent 确认后可手动 invalidate)。
+
+    计数=当前态(含之前已标的;健康体检要的是"总共有几条已合入"),写入=幂等
+    (已带标签的不再重复打折,防 confidence 被反复折到 0)。git 检查对已标条目也跳过
+    (结论已知,省 subprocess)。
+    """
+    count = 0
+    for it in items:
+        if it.kind != "bug_lesson" or not it.fix_patch:
+            continue
+        if "merged_upstream" in it.tags:
+            count += 1  # 之前已判过已合入:计入总数,跳过 git 检查和重复打折
+            continue
+        verdict = _reverse_applies(it.fix_patch, repo_path)
+        if verdict is True:
+            _add_tag(store, it.id, "merged_upstream")
+            store.set_confidence(it.id, it.confidence * discount)
+            count += 1
+    return count
+
+
+def _detect_stale(store: MemoryStore, items: list, *, stale_after_days: float, now) -> int:
+    """B4(stale):超过 stale_after_days 没人翻的条目 → 打 stale 标签。返回条数。
+
+    "最后活动"取 last_recalled(最近一次被召回)与 created_at(建卡)的较晚者 ——
+    从没被召回过的卡,建卡那天就是它最后被"确认新鲜"的日子。
+    只标不降权:recall 已有 exp 时间衰减打分,consolidate 再降就是双杀;标签供
+    memory-health-check 预警 + agent 注入时提示"这条很久没人验证过了"。
+
+    计数=当前态(含已标过的;重复跑统计稳定),写入=幂等(标签只加一次)。
+    """
+    count = 0
+    for it in items:
+        last = it.last_recalled or it.created_at
+        age_days = (now - last).total_seconds() / 86400.0
+        if age_days < stale_after_days:
+            continue
+        count += 1  # 匹配即计数(含已标的)
+        _add_tag(store, it.id, "stale")
+    return count

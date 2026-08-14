@@ -128,6 +128,8 @@ class NativeMemoryConfig(BaseModel):
     auto_index: bool = True  # 向量 ANN(sqlite-vec vec0):True→count>ann_threshold 切 KNN;False→纯 Python loop
     ann_threshold: int = 500  # N>此值切 vec0 KNN(N≤此走 loop 更快;benchmark 实测 1024 维交叉点 ~200-500)
     merge_step: float = 0.3  # 重提时 Bayes 置信度累加步长(mnemopi veracity)
+    stale_after_days: float = 365.0  # B4:超过这么多天没人翻(last_recalled/created_at 取晚者)→ 打 stale 标签(只标不降权)
+    merged_upstream_discount: float = 0.5  # B3:补丁已在上游(apply --reverse 过)→ confidence 打此折 + merged_upstream 标签
 
 
 class MemoryConfig(BaseModel):

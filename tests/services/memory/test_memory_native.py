@@ -357,6 +357,198 @@ def test_consolidate_skips_domain_knowledge(store, scope):
     assert stats["duplicate_clusters"] == 0                          # 不进语义去重
 
 
+# ── Phase 2:B4 stale 检测 + B3 补丁已合入检测 ─────────────────────
+
+
+def test_consolidate_stale_detection(store, scope):
+    """stale 检测:超过 N 天没人翻 → 打 stale 标签(只标不降权);近期翻过的不标;幂等。"""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    fresh = _ki("新教训 scan 挂起", scope=scope)
+    old = _ki("老教训 radio 泄漏", scope=scope)
+    memorize_items([fresh, old], store=store)
+    # 把 old 的 last_recalled 拨到 400 天前(伪造"很久没人翻")。
+    store._conn.execute(
+        "UPDATE knowledge_items SET last_recalled=? WHERE id=?",
+        ((now - timedelta(days=400)).isoformat(), old.id),
+    )
+    stats = consolidate(scope, store=store, promote_access_count=99, stale_after_days=365, now=now)
+    assert stats["stale"] == 1                                       # 只有 old 被标
+    assert "stale" in store.get(old.id).tags
+    assert "stale" not in store.get(fresh.id).tags                   # fresh(刚建)不标
+    # 只标不降权:confidence 不变。
+    assert store.get(old.id).confidence == store.get(fresh.id).confidence
+    # 幂等:再跑 stale 仍=1(已标跳过),不重复。
+    stats2 = consolidate(scope, store=store, promote_access_count=99, stale_after_days=365, now=now)
+    assert stats2["stale"] == 1
+    assert store.get(old.id).tags.count("stale") == 1
+
+
+def test_consolidate_stale_uses_last_recalled(store, scope):
+    """stale 基准取 last_recalled 与 created_at 的较晚者:老卡但最近被召回过 → 不算 stale。"""
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    it = _ki("老卡但常被翻", scope=scope)
+    it.created_at = now - timedelta(days=500)                        # 建卡 500 天前
+    memorize_items([it], store=store)
+    # 最近被召回过(10 天前)→ 不 stale。
+    store._conn.execute(
+        "UPDATE knowledge_items SET last_recalled=? WHERE id=?",
+        ((now - timedelta(days=10)).isoformat(), it.id),
+    )
+    stats = consolidate(scope, store=store, promote_access_count=99, stale_after_days=365, now=now)
+    assert stats["stale"] == 0
+    assert "stale" not in store.get(it.id).tags
+
+
+def _git_repo_with_patch(tmp_path):
+    """造一个真 git 仓 + 一个补丁:先 commit 原文件,再把"加一行守卫"的改动写进工作树。
+
+    返回 (repo_path, patch_text):树里已含改动 → git apply --check --reverse 能过(判"已合入")。
+    """
+    import subprocess
+
+    repo = tmp_path / "grepo"
+    repo.mkdir()
+    f = repo / "scan.c"
+    f.write_text("int scan(void) {\n    return 0;\n}\n")
+    _run = lambda *a: subprocess.run(["git", "-C", str(repo), *a], capture_output=True, text=True)  # noqa: E731
+    _run("init", "-q")
+    _run("config", "user.email", "t@t")
+    _run("config", "user.name", "t")
+    _run("add", "-A")
+    _run("commit", "-qm", "init")
+
+    # 补丁:给 scan.c 加一行守卫(unified diff,含正确行号)。
+    new_body = "int scan(void) {\n    if (0) return -1;\n    return 0;\n}\n"
+    patch = (
+        "--- a/scan.c\n+++ b/scan.c\n"
+        "@@ -1,3 +1,4 @@\n int scan(void) {\n"
+        "+    if (0) return -1;\n"
+        "     return 0;\n }\n"
+    )
+    # 把改动写进树(= 补丁"已合入"状态,reverse-apply 能过)。
+    f.write_text(new_body)
+    return str(repo), patch
+
+
+def test_consolidate_merged_upstream(store, scope, tmp_path):
+    """B3:补丁改动已在仓里(reverse-apply 过)→ merged_upstream 标签 + confidence 打折,不失效。"""
+    repo_path, patch_applied = _git_repo_with_patch(tmp_path)
+    a = _ki("sdp 溢出教训", scope=scope)
+    a.fix_patch = patch_applied
+    memorize_items([a], store=store)
+    conf_before = store.get(a.id).confidence
+
+    stats = consolidate(scope, store=store, promote_access_count=99, repo_path=repo_path, merged_discount=0.5)
+    assert stats["merged_upstream"] == 1
+    got = store.get(a.id)
+    assert "merged_upstream" in got.tags
+    assert abs(got.confidence - conf_before * 0.5) < 1e-9            # 打了对折
+    assert got.active is True                                        # 不失效(只标不删)
+    assert got.invalid_at is None
+    # 幂等(计数=当前态,写入=只一次):再跑统计稳定=1,confidence 不被重复打折。
+    stats2 = consolidate(scope, store=store, promote_access_count=99, repo_path=repo_path, merged_discount=0.5)
+    assert stats2["merged_upstream"] == 1                            # 计数=当前态(含已标)
+    assert abs(store.get(a.id).confidence - conf_before * 0.5) < 1e-9  # 没被折第二次
+
+
+def test_consolidate_merged_upstream_not_merged(store, scope, tmp_path):
+    """B3 边界:补丁没合入(树是原始状态)→ 不标不打折。"""
+    # _git_repo_with_patch 最后把改动写进了树;这里再造一个"原始树 + 补丁"的组合。
+    import subprocess
+
+    repo = tmp_path / "grepo2"
+    repo.mkdir()
+    f = repo / "scan.c"
+    f.write_text("int scan(void) {\n    return 0;\n}\n")
+    def _run(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+    _run("init", "-q")
+    _run("config", "user.email", "t@t")
+    _run("config", "user.name", "t")
+    _run("add", "-A")
+    _run("commit", "-qm", "init")
+
+    patch = (
+        "--- a/scan.c\n+++ b/scan.c\n"
+        "@@ -1,3 +1,4 @@\n int scan(void) {\n"
+        "+    if (0) return -1;\n"
+        "     return 0;\n }\n"
+    )
+    a = _ki("未合入的溢出教训", scope=scope)
+    a.fix_patch = patch
+    memorize_items([a], store=store)
+    conf_before = store.get(a.id).confidence
+
+    stats = consolidate(scope, store=store, promote_access_count=99, repo_path=str(repo), merged_discount=0.5)
+    assert stats["merged_upstream"] == 0                             # 树里没有这改动 → 不标
+    got = store.get(a.id)
+    assert "merged_upstream" not in got.tags
+    assert abs(got.confidence - conf_before) < 1e-9                  # 不打折
+
+
+def test_consolidate_merged_upstream_no_repo_path(store, scope):
+    """B3 边界:repo_path=None(自动 consolidate 路径)→ 跳过检测,不算错。"""
+    a = _ki("没仓路径的教训", scope=scope)
+    a.fix_patch = "--- a/x.c\n+++ b/x.c\n@@ -1 +1 @@\n-a\n+b\n"
+    memorize_items([a], store=store)
+    stats = consolidate(scope, store=store, promote_access_count=99, repo_path=None)
+    assert stats["merged_upstream"] == 0
+    assert "merged_upstream" not in store.get(a.id).tags
+
+
+def test_consolidate_tags_not_clobbered_across_passes(store, scope, tmp_path):
+    """e2e 暴露的标签竞写 bug:同一条既"已合入上游"(pass ④)又"过期"(pass ⑤)→ 两个标签都得在。
+
+    病根:五个 pass 共享 list_items 快照,后跑的 pass 用旧快照 tags 整体覆盖写回,
+    把先跑 pass 打的标签洗掉了(merged_upstream 被 stale 覆盖丢)。修复 = 写前重读 DB 最新 tags。
+    """
+    repo_path, patch_applied = _git_repo_with_patch(tmp_path)
+    a = _ki("既合入又过期的教训", scope=scope)
+    a.fix_patch = patch_applied
+    memorize_items([a], store=store)
+
+    # created_at 拨回 400 天前 → 同时触发 pass ④(补丁已合入)和 pass ⑤(stale)。
+    from datetime import UTC, datetime, timedelta
+    old = datetime.now(UTC) - timedelta(days=400)
+    conn = store._conn
+    conn.execute("UPDATE knowledge_items SET created_at = ? WHERE id = ?", (old.isoformat(), a.id))
+
+    stats = consolidate(scope, store=store, promote_access_count=99, repo_path=repo_path,
+                        merged_discount=0.5, stale_after_days=365.0)
+    assert stats["merged_upstream"] == 1
+    assert stats["stale"] == 1
+    got = store.get(a.id)
+    assert "merged_upstream" in got.tags        # pass ④ 的标签没被 pass ⑤ 洗掉(e2e 踩过的 bug)
+    assert "stale" in got.tags                   # pass ⑤ 的标签也在
+    assert got.active is True                    # 全程只标不删
+
+
+def test_same_subject_nearby_lines_only(store, scope):
+    """e2e 暴露的误报:同文件但行号差大(不同 bug)→ 不判同主题,不误报矛盾。
+
+    _same_subject 的 evidence 回退收紧为"同文件且行号差 ≤5";scan.c:2 溢出和 scan.c:3 越界
+    是同处相邻行(仍判矛盾),scan.c:2 和 scan.c:999 是两个不相干 bug(不判)。
+    """
+    # 相邻行(差 1 ≤5):同主题 → 矛盾对计数。
+    a = _ki("A派 溢出", scope=scope, symptom="", root_cause="结论甲", file="scan.c", line=10)
+    b = _ki("B派 越界", scope=scope, symptom="", root_cause="结论乙", file="scan.c", line=12)
+    memorize_items([a, b], store=store)
+    stats = consolidate(scope, store=store, promote_access_count=99)
+    assert stats["contradictions"] == 2
+
+    # 远行号(差 >5):同文件不同 bug → 不判同主题 → 不误报矛盾。
+    c = _ki("C派 野指针", scope=scope, symptom="", root_cause="结论丙", file="other.c", line=10)
+    d = _ki("D派 死锁", scope=scope, symptom="", root_cause="结论丁", file="other.c", line=999)
+    memorize_items([c, d], store=store)
+    stats2 = consolidate(scope, store=store, promote_access_count=99)
+    # c/d 是新加的两条,旧的 a/b 已标过(计数=当前态=2 恒定),c/d 不给它们加数 → 总数不变。
+    assert stats2["contradictions"] == 2         # 若行号收紧失效,c/d 也会被算进矛盾对(=4)
+
+
 # ── 建议 D:recall → bump → consolidate 全链 e2e + 自转 ────────────
 
 def test_recall_bump_consolidate_e2e(store, scope):

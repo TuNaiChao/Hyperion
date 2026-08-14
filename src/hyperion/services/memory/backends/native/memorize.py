@@ -80,24 +80,38 @@ def _same_subject(a: KnowledgeItem, b: KnowledgeItem) -> bool:
     """两条 KI 是否"同一主题"(v1 启发式)。
 
     bug_lesson:优先比 symptom(都非空且相等);symptom 任一为空(常见:CLI/MCP 写的 bug_lesson
-    默认只填 root_cause 不填 symptom)→ 回退比首证据文件(同文件 = 大概率同 bug)。
-    codebase_fact:比 kind_detail + 首证据文件。
+    默认只填 root_cause 不填 symptom)→ 回退比首证据文件 + 行号邻近(同文件且行号差
+    ≤5 行 = 大概率同 bug)。
+    codebase_fact:比 kind_detail + 首证据文件 + 行号邻近。
 
     symptom 回退是 e2e 暴露的真修复:矛盾检测依赖 _same_subject,而实际写入路径 symptom 常为空,
     不回退会让矛盾对漏判(两条同 bug 不同根因的 bug_lesson symptom 都空 → 判不同主题 → 漏报)。
+    行号邻近窗是第二次 e2e 暴露的修正:同文件 ≠ 同 bug(wpa 的 scan.c 前后脚几十个 bug),
+    纯文件相等会把不相干两条误判成矛盾对;同 bug 两派诊断的证据锚点通常收在同一处,
+    故收紧为"同文件且行号差 ≤ _NEARBY_LINE_WINDOW"。相邻不同 bug 仍可能误报 → 由
+    "只标不裁"的人在环兜底(needs_review 只是提示裁决,不自动选边)。
     """
     if a.kind != b.kind:
         return False
     if a.kind == "bug_lesson":
         if a.symptom and b.symptom:
             return _norm(a.symptom) == _norm(b.symptom)
-        # symptom 任一为空 → 回退到 evidence 文件(同文件 = 同主题)。
-        fa = a.evidence[0].file if a.evidence else ""
-        fb = b.evidence[0].file if b.evidence else ""
-        return bool(fa) and fa == fb
-    fa = a.evidence[0].file if a.evidence else ""
-    fb = b.evidence[0].file if b.evidence else ""
-    return a.kind_detail == b.kind_detail and bool(fa) and fa == fb
+        # symptom 任一为空 → 回退:evidence 同文件且行号邻近(±窗口内)才算同主题。
+        return _evidence_nearby(a, b)
+    return a.kind_detail == b.kind_detail and _evidence_nearby(a, b)
+
+
+# 行号邻近窗:evidence-file 回退判定里,两条证据锚点相差不超过多少行仍算"同一主题"。
+# 5 行 ≈ 一个典型 if 守卫/日志语句的跨度;同 bug 两派诊断锚同一处,不同 bug 至少隔一个函数体。
+_NEARBY_LINE_WINDOW = 5
+
+
+def _evidence_nearby(a: KnowledgeItem, b: KnowledgeItem) -> bool:
+    """两条 KI 的首证据是否同文件且行号邻近(evidence-file 回退的收紧条件)。"""
+    if not a.evidence or not b.evidence:
+        return False
+    ea, eb = a.evidence[0], b.evidence[0]
+    return ea.file == eb.file and abs((ea.line or 0) - (eb.line or 0)) <= _NEARBY_LINE_WINDOW
 
 
 def _same_conclusion(a: KnowledgeItem, b: KnowledgeItem) -> bool:

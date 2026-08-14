@@ -76,8 +76,11 @@ class MemoryService(abc.ABC):
         raise NotImplementedError(f"{type(self).__name__} 未实现 memorize_report")
 
     # ── tier-3:可选钩子 ──
-    async def consolidate(self, scope: Scope) -> dict[str, Any]:
-        """巩固:去重 / Bayes 合并 / 衰减 / 升级 mental_model(借 mnemopi)。返回统计。"""
+    async def consolidate(self, scope: Scope, *, repo_path: str | None = None) -> dict[str, Any]:
+        """巩固:升级/矛盾检测/去重/补丁已合入/stale(借 mnemopi + 2026 业界 keeps/merges/evicts)。
+
+        repo_path 可选:给得出才做"补丁已合入上游"检测(git reverse-apply 需要);None 跳过该 pass。
+        """
         raise NotImplementedError(f"{type(self).__name__} 未实现 consolidate")
 
     async def invalidate(self, item_id: str, scope: Scope, *, reason: str = "") -> bool:

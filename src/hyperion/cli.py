@@ -281,10 +281,11 @@ def cmd_memory(args) -> int:
         return 0
 
     if sub == "consolidate":
-        stats = asyncio.run(svc.consolidate(scope))
+        stats = asyncio.run(svc.consolidate(scope, repo_path=args.repo_path))
         print(
             f"巩固完成:扫 {stats.get('scanned', 0)},升级 mental_model {stats.get('promoted', 0)},"
-            f"矛盾对 {stats.get('contradictions', 0)},重复簇 {stats.get('duplicate_clusters', 0)}。"
+            f"矛盾对 {stats.get('contradictions', 0)},重复簇 {stats.get('duplicate_clusters', 0)},"
+            f"已合入上游 {stats.get('merged_upstream', 0)},过期 {stats.get('stale', 0)}。"
         )
         return 0
 
@@ -481,7 +482,8 @@ def main(argv: list[str] | None = None) -> int:
     m_list.add_argument("--kind", default=None)
     m_list.add_argument("--include-invalid", action="store_true")
     m_list.add_argument("--repo", default=None)
-    m_consol = sub_memory_sub.add_parser("consolidate", help="巩固(升级 mental_model)")
+    m_consol = sub_memory_sub.add_parser("consolidate", help="巩固(升级/矛盾/去重/已合入/过期 五 pass)")
+    m_consol.add_argument("--repo-path", default=None, help="git 仓绝对路径(给了才做『补丁已合入上游』检测)")
     m_consol.add_argument("--repo", default=None)
     m_inv = sub_memory_sub.add_parser("invalidate", help="失效一条")
     m_inv.add_argument("id")

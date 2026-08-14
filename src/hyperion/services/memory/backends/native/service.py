@@ -163,8 +163,19 @@ class NativeMemoryService(MemoryService):
 
     # ── tier-3 ──
 
-    async def consolidate(self, scope: Scope) -> dict[str, Any]:
-        return _consolidate(scope, store=self._store, promote_access_count=self._ncfg.promote_access_count)
+    async def consolidate(self, scope: Scope, *, repo_path: str | None = None) -> dict[str, Any]:
+        """巩固(五 pass)。repo_path 给得出才做 B3 补丁已合入检测(reverse-apply 需要 git 仓路径)。
+
+        recall 的自动 consolidate(_safe_consolidate)不传 repo_path —— 自动路径不知道仓在哪,
+        B3 只在显式 consolidate(CLI --repo-path / 手动)时做,避免乱猜路径误判。
+        """
+        return _consolidate(
+            scope, store=self._store,
+            promote_access_count=self._ncfg.promote_access_count,
+            stale_after_days=getattr(self._ncfg, "stale_after_days", 365.0),
+            merged_discount=getattr(self._ncfg, "merged_upstream_discount", 0.5),
+            repo_path=repo_path,
+        )
 
     async def invalidate(self, item_id: str, scope: Scope, *, reason: str = "") -> bool:
         return self._store.set_invalid(item_id)
