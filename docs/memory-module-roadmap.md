@@ -93,7 +93,7 @@
 - **迁 Neo4j 知识图(Graphiti 式)**:重依赖(Neo4j),SQLite + sqlite-vec 够用且零外部服务。记忆量级(单库几百到几千条)SQLite 完全 hold 住。
 - **工作记忆 / 情景记忆分层(OpenHands 式随 workflow state)**:随 workflow state 走不另建,已定。
 - **物理删除 / eviction**:bi-temporal 软删是 2026 正确做法(Graphiti / mem0 都这趋势),别开倒车。
-- **CJK BM25 分词(jieba)**:wpa / bluez 是 C 代码英文,影响小;但 domain_knowledge 是中文协议知识会受影响——中等优先,排 Phase 2 之后。
+- **CJK BM25 分词(jieba)**:~~wpa / bluez 是 C 代码英文,影响小;但 domain_knowledge 是中文协议知识会受影响——中等优先,排 Phase 2 之后。~~ **✅ Phase 3 已做**(原判"低影响"低估了:真库 e2e 显示 wpa 52 条记忆的 summary/detail 大段中文,纯中文查询 BM25 路此前完全失明。jieba 两侧分词 + FTS standalone 化,见 Phase 3 落地记录)。
 
 ---
 
@@ -130,11 +130,13 @@
 
 **状态**:✅ 已落地(实现与原案的两处偏离见 B3/B4 小节的"偏离记录";e2e 真 DB + 真 git 仓验证,抓到 2 真 bug 已修)。
 
-### Phase 3+:治理展示(A2)+ CJK(B/C 类)
+### Phase 3+:治理展示(A2)+ CJK(B/C 类)—— ✅ 已成
 
 **目标**:体检 skill 可视化(置信度曲线 / stale 预警);CJK BM25 分词(若 domain_knowledge 中文量起来)。
 
-**状态**:低优先,按需启动。
+**状态**:✅ 已落地(2026-08-14):
+- **A2 治理展示**:`memory_dump` 溯源卡渲染 `[tags]`(needs_review / merged_upstream / stale 逐条可见)+ header 健康概要行(标签聚合计数,无标签不输出噪音)+ memory-health-check SKILL 升级为双层读法(consolidate 自动标 → agent 语义读)。原案的"置信度曲线可视化"没做——MCP 工具输出是文本,画曲线是展示端的事,标签 + 计数已够体检用(YAGNI)。
+- **CJK BM25 分词**:jieba 两侧分词(索引侧入 FTS 前切、查询侧 `_fts_query` 前切,同一分词器)+ FTS 从 external-content 触发器同步改 standalone(upsert 同事务维护——触发器在 SQL 层调不了 Python)+ 幂等 migration(老库打开即检测 `content=` 重建 + 全量重灌,失败降级不崩)。调研取舍:trigram 要 ≥3 字查询(溢出/死锁是 2 字)不合身;ICU 多数 Python sqlite3 构建没编译;jieba 零 C 扩展。**e2e 真 DB**:79 条全量重灌,纯中文 "扫描 阻塞" BM25 路召回 wpa 真实中文记忆 top-3(embedder=None 也活,减少对向量 API 依赖)。
 
 ---
 
