@@ -62,10 +62,17 @@ def node_index(state: DeepResearchState) -> dict:
         logger.warning("code_index 建索引失败,继续 CRG 结构图", exc_info=True)
 
     # ② CRG 结构图(+ 社区检测 + 持久化)
-    cg = CodeGraph.build(repo_root, codebase)
-    overview = cg.architecture_overview()
-    stats = cg.stats()
-    logger.info("CRG 建图完成: %s 个社区, %s 节点", len(overview.get("communities", [])), stats.get("total_nodes"))
+    # 图失败不阻断 workflow(CRG extra 未装 / 建图异常):降级无图调研,
+    # 检索层照常,后续 plan 用空社区列表兜底 —— 与 CLI index 子命令的降级标准一致。
+    try:
+        cg = CodeGraph.build(repo_root, codebase)
+        overview = cg.architecture_overview()
+        stats = cg.stats()
+        logger.info("CRG 建图完成: %s 个社区, %s 节点", len(overview.get("communities", [])), stats.get("total_nodes"))
+    except Exception:  # noqa: BLE001 - CRG 未装/建图失败降级,不让整个 workflow 崩掉
+        logger.warning("CRG 建图失败(CRG 未装或建图异常),降级无图调研", exc_info=True)
+        overview = {"communities": [], "cross_community_edges": [], "coupling_warnings": []}
+        stats = {}
 
     return {
         "index_built": True,
@@ -97,8 +104,13 @@ def node_plan(state: DeepResearchState) -> dict:
     communities = communities[:_MAX_MODULES]
 
     # hub 节点按 community_id 分桶,给每个候选填 key_symbols(高连接枢纽 = 该模块的核心)
-    cg = CodeGraph.open(codebase)
-    hubs = cg.hub_nodes(top_n=60)
+    # 图未建(建图降级)时 open 抛 FileNotFoundError → hub 空列表,key_symbols 留空继续。
+    try:
+        cg = CodeGraph.open(codebase)
+        hubs = cg.hub_nodes(top_n=60)
+    except Exception:  # noqa: BLE001 - 图未建/查询失败 → 无 hub 继续(候选缺 key_symbols 不致命)
+        logger.warning("hub_nodes 查询失败(图未建?),候选 key_symbols 留空继续", exc_info=True)
+        hubs = []
     by_comm: dict = {}
     for h in hubs:
         cid = h.get("community_id")

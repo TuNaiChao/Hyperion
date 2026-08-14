@@ -154,6 +154,43 @@ def test_repo_map_success_via_fake_graph(monkeypatch):
     assert "f.c::main" in out  # body(json)含 top_symbols
     assert seen["map_tokens"] == 512  # map_tokens 透传到 repo_map
 
+
+# ════════════════════════ 诚实截断(踩坑 #19 同源治理,2026-08-14)════════════════════════
+# 旧病:图/git 类工具 body 一律 [:8000] 静默丢尾。修法:_honest_truncate —— 超长才截,
+# 尾部明说截了多少 + 怎么补取。两条锁行为:helper 本体(短不截/长截+note)+ 工具壳集成。
+
+def test_honest_truncate_short_body_passthrough():
+    """未超限 → 原样返回,零 note 零噪音(绝大多数调用走这条,不能白加一行提示)。"""
+    from hyperion.tools.mcp_memory import _honest_truncate
+
+    body = '{"k": "v"}'
+    out = _honest_truncate(body, 8000, how_to_refetch="重调")
+    assert out == body
+
+
+def test_repo_map_truncation_note_via_fake_graph(monkeypatch):
+    """超长 body → 截断 + 尾部 note(明说截了多少字符 + 补取路径),不再静默丢尾。
+
+    假图塞一个 >8000 字符的 map_text 触发截断;断言 note 出现且总长被钳在限内。
+    """
+    import hyperion.services.code_index.code_graph as cg_mod
+
+    class _BigGraph:
+        def repo_map(self, *, map_tokens: int = 2048):  # noqa: ANN002
+            return {"repo": "fake", "map_text": "x" * 9000,
+                    "n_symbols": 900, "n_files": 9, "map_tokens_budget": map_tokens,
+                    "map_tokens_used": 9000, "truncated": True,
+                    "top_symbols": [{"qualified_name": "f.c::main", "file": "f.c", "pagerank": 0.5}],
+                    "note": ""}
+
+    monkeypatch.setattr(cg_mod.CodeGraph, "open", lambda target: _BigGraph())
+    mcp = build_server()
+    out = _call(mcp, "repo_map", {})
+    assert "Traceback" not in out, out
+    assert "[截断" in out and "减小 map_tokens" in out, out  # note:截断事实 + 补取路径
+    # 总长被钳在限内(header 一行 + body 8000)
+    assert len(out) <= 8000 + 200, len(out)
+
 # ════════════════════════ repo_overview 工具(#14,onboarding skill 主数据源)════════════════════════
 
 def test_repo_overview_not_built():

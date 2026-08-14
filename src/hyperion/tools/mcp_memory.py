@@ -98,6 +98,24 @@ def _render_audit_card(it) -> str:
     return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{kid}{tg}{stale}".rstrip()
 
 
+def _honest_truncate(body: str, limit: int, *, how_to_refetch: str) -> str:
+    """诚实截断(踩坑 #19 同源治理,2026-08-14):超长才截,且明说截了多少、怎么补取。
+
+    旧病:图/git 类工具 body 一律 `[:8000]` 静默丢尾 —— agent 拿到被截的 JSON 不知道缺了
+    东西,基于残缺结果下结论(和 memory_dump 当年吞一半条目同一个病)。修法照抄
+    repo_overview / memory_dump 已验证的方子:截断时尾部拼 note,告诉 agent 截断了 +
+    指一条补取路径(通常是「收窄参数重调」,如减小 top_n / depth / max_commits)。
+
+    body 未超 limit → 原样返回(零开销,不加噪音)。
+    how_to_refetch: 补取指引,写给 agent 看的指令性短语(如 "重调并减小 depth/top_n")。
+    """
+    if len(body) <= limit:
+        return body
+    note = (f"\n[截断:返回超 {limit} 字符,已截掉尾部 {len(body) - limit} 字符,"
+            f"以上 JSON 可能不完整;{how_to_refetch}]")
+    return body[: limit - len(note)] + note
+
+
 def _retrieval_bundle():
     """懒构造 (embedder, store, reranker)——code_index 检索三件套(search_codebase 用)。
 
@@ -415,7 +433,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             return f"算影响面失败({target}): {e}"
         import json
         body = json.dumps(result, ensure_ascii=False, default=str)
-        return f"blast-radius(codebase={target},输入 {len(changed_files)} 文件):\n{body[:8000]}"
+        return (f"blast-radius(codebase={target},输入 {len(changed_files)} 文件):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整波及面:分批传 changed_files(每次几个文件)重调')}")
 
     # ── ⑤b call_chain:符号中心的 N 跳调用链(仅 CALLS 边 + PageRank;P1.5 caller/callee 进适配层)
     # 和 blast_radius 互补:blast_radius = 文件种子·全边·「改这些会波及谁」(blast);
@@ -459,7 +478,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         import json
         body = json.dumps(result, ensure_ascii=False, default=str)
         return (f"call-chain(codebase={target}, symbol={symbol}, direction={direction}, "
-                f"depth={depth}):\n{body[:8000]}")
+                f"depth={depth}):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整链:减小 top_n/depth 或换 direction(callers/callees 单向)重调')}")
 
     # ── ⑤c cross_version_diff:跨版本对比(同仓两 git ref 间;git 为核,图可选富化)────
     # 回答「旧版本(base)→ 新版本(head),我关心的 concern 改了啥 / 修了没」:
@@ -502,7 +522,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         import json
         body = json.dumps(result, ensure_ascii=False, default=str)
         return (f"cross-version-diff(repo={repo_path}, codebase={target}, "
-                f"{base_ref}..{head_ref}):\n{body[:8000]}")
+                f"{base_ref}..{head_ref}):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整 diff:传 concern_files/concern_symbols 收窄范围,或减小 top_commits 重调')}")
 
     # ── ⑤e merge_eval:上游 commit 合入评估(逐 commit 三态:已修/建议合/冲突;git 为核图可选)
     # 维护 fork 时,把上游一段 commit 范围逐个评估「该不该合入」:patch-id 等价(已修,git --cherry-mark)
@@ -559,7 +580,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                 f"{upstream_base_ref}..{upstream_head_ref}): "
                 f"total={s.get('total', 0)} | already_fixed={s.get('already_fixed', 0)} "
                 f"| recommend_merge={s.get('recommend_merge', 0)} | conflict={s.get('conflict', 0)} "
-                f"| uncertain={s.get('uncertain', 0)}\n{body[:8000]}")
+                f"| uncertain={s.get('uncertain', 0)}\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要逐 commit 详情:传 concern_files 或缩小 ref 范围分批重调')}")
 
     # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
     # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);
@@ -598,7 +620,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         body = json.dumps(result, ensure_ascii=False, default=str)
         return (f"repo-map(codebase={target}, map_tokens={map_tokens}):"
                 f" {result.get('n_symbols', 0)} symbols / {result.get('n_files', 0)} files"
-                f"{' (truncated by budget)' if result.get('truncated') else ''}\n{body[:8000]}")
+                f"{' (truncated by budget)' if result.get('truncated') else ''}\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要更小的地图:减小 map_tokens 重调(top_symbols 字段已含前 10 名摘要)')}")
 
     # ── ⑤e repo_overview:单仓架构总览(社区/模块边界 + hub/bridge 节点 + 耦合告警)──
     # onboarding 导览 skill 的主数据源。三个工具三种俯瞰,互补不打架:
