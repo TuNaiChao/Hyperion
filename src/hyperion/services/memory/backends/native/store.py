@@ -514,6 +514,17 @@ class MemoryStore:
         with self._wl:
             self._conn.execute("UPDATE knowledge_items SET confidence=?, updated_at=? WHERE id=?", (confidence, _utcnow_iso(), item_id))
 
+    def set_tags(self, item_id: str, tags: list[str]) -> None:
+        """覆写 tags 列(consolidate 打 needs_review 标签用;JSON 序列化)。
+
+        调用方负责去重(传进来前用集合合并已有标签 + 新标签),这里只做持久化。
+        """
+        with self._wl:
+            self._conn.execute(
+                "UPDATE knowledge_items SET tags=?, updated_at=? WHERE id=?",
+                (json.dumps(tags, ensure_ascii=False), _utcnow_iso(), item_id),
+            )
+
     # —— 读 ——
 
     def get(self, item_id: str) -> KnowledgeItem | None:

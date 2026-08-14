@@ -279,6 +279,71 @@ def test_consolidate_promotes_mental_model(store, scope):
     assert store.get(a.id).kind == "mental_model"
 
 
+# ── Phase 1:consolidate 矛盾检测 + 语义去重 ────────────────────────
+
+
+def test_consolidate_detects_contradictions(store, scope):
+    """矛盾检测(只标不裁):同主题(同 symptom)不同根因的两条 active 高 conf → 都打 needs_review + 进统计。
+
+    不自动选边谁对(语义判断);幂等:再跑一次 contradictions 仍=2,标签不重复加。
+    """
+    # 同 symptom="扫描挂起"(→ _same_subject=True),不同 root_cause(→ _same_conclusion=False)= 矛盾。
+    a = _ki("A 派结论 radio work 阻塞", scope=scope, symptom="扫描挂起", root_cause="未释放 radio work")
+    b = _ki("B 派结论 scan 竞态", scope=scope, symptom="扫描挂起", root_cause="scan 竞态覆盖")
+    memorize_items([a, b], store=store)
+    # delegate 初始置信度 0.5,正好踩 _CONTRADICTION_MIN_CONFIDENCE 线 → 矛盾检测覆盖。
+    stats = consolidate(scope, store=store, promote_access_count=99)  # promote 抬高,只测矛盾
+    assert stats["contradictions"] == 2                              # 两条都被标
+    assert "needs_review" in store.get(a.id).tags
+    assert "needs_review" in store.get(b.id).tags
+    # 幂等:再跑不重复加标签、统计不变。
+    stats2 = consolidate(scope, store=store, promote_access_count=99)
+    assert stats2["contradictions"] == 2
+    assert store.get(a.id).tags.count("needs_review") == 1           # 没重复加
+
+
+def test_consolidate_no_contradiction_same_conclusion(store, scope):
+    """同主题同结论(同 symptom 同 root_cause)→ 不算矛盾,不标 needs_review(边界:别误报)。"""
+    a = _ki("同一根因 radio work", scope=scope, symptom="扫描挂起", root_cause="死锁")
+    b = _ki("同根因复述 radio work", scope=scope, symptom="扫描挂起", root_cause="死锁")
+    memorize_items([a, b], store=store)
+    stats = consolidate(scope, store=store, promote_access_count=99)
+    assert stats["contradictions"] == 0
+
+
+def test_consolidate_semantic_duplicates(store, scope):
+    """语义去重:同 kind + embedding 高 cosine 的条目 → 报 duplicate_clusters≥1(只报不合)。"""
+    # 两条 codebase_fact,向量几乎一样(cosine≈1.0 > 0.92 阈值)→ 疑似重复簇。
+    near = [0.12, 0.88, 0.01]
+    a = _ki("scan 模块职责 阻塞", scope=scope, kind="codebase_fact", root_cause="", embedding=list(near))
+    b = _ki("scan 模块职责 串行化", scope=scope, kind="codebase_fact", root_cause="", embedding=list(near))
+    memorize_items([a, b], store=store)
+    stats = consolidate(scope, store=store, promote_access_count=99, duplicate_threshold=0.92)
+    assert stats["duplicate_clusters"] >= 1
+    # 不自动合并:两条仍在(active count 不减)。
+    assert store.count(scope) == 2
+
+
+def test_consolidate_skips_domain_knowledge(store, scope):
+    """domain_knowledge 不参与任何 pass:不升级 / 不进矛盾检测 / 不进语义去重(领域常理天然语义近邻是正常的)。"""
+    dk1 = KnowledgeItem(
+        kind="domain_knowledge", repo="wpa", scope=scope, summary="4-way handshake EAPOL-Key 流程",
+        kind_detail="domain", source_tier=SourceTier.stated, embedding=[0.5, 0.5, 0.0],
+    )
+    dk2 = KnowledgeItem(
+        kind="domain_knowledge", repo="wpa", scope=scope, summary="4-way handshake PTK 派生",
+        kind_detail="domain", source_tier=SourceTier.stated, embedding=[0.5, 0.5, 0.0],  # 同向量(高 cosine)
+    )
+    memorize_items([dk1, dk2], store=store)
+    # 频繁 bump 也不会被升级(domain_knowledge 排除)。
+    for _ in range(5):
+        store.bump_access(dk1.id)
+    stats = consolidate(scope, store=store, promote_access_count=3)
+    assert stats["promoted"] == 0                                    # domain_knowledge 不升级
+    assert stats["contradictions"] == 0                              # 不进矛盾检测
+    assert stats["duplicate_clusters"] == 0                          # 不进语义去重
+
+
 # ── 建议 D:recall → bump → consolidate 全链 e2e + 自转 ────────────
 
 def test_recall_bump_consolidate_e2e(store, scope):
