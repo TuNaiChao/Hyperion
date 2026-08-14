@@ -78,6 +78,21 @@ upstream-merge 有确定性锚(`merge_eval` patch-id 三态);**backport 没有�
 
 **关键验证点全绿**:语义判 bug 准(无确定性工具靠 LLM read 函数体)/ strict apply 过 / 路径适配对(`lib/bluetooth/sdp.c`→`lib/sdp.c`)/ 未 memorize(守「验证后才记」边界)。**gotcha:v20 仓 dirty(quilt 基线),export_patch 落全量补丁含基线 → agent 额外手搓纯净 2-hunk 补丁单独落盘**(SKILL.md 提示了「从我的 hunk 取」)。
 
+## e2e 重跑回归(2026-08-14,domain_knowledge 记忆改动后复验)
+
+`domain_knowledge` 记忆特性(schema/store/mcp_memory/cli 全改)合入后,**重跑 backport e2e 验证 backport 依赖的工具链路(call_chain/validate_patch/export_patch/export_report)无回归**。同一 sdp 任务(c50c7ea → v20),25 工具调用 7 步全过,exit 0,**全硬门 + 边界复绿**:
+
+- **step3 硬门(语义判 bug)**:grep 定位 + read v20 `lib/sdp.c:1222-1269`,L1261 裸 `*size = bt_get_be32(buf)` 无 INT_MAX 检查 → 判「有同一 bug」(与金标一致)。
+- **step6 硬门(validate_patch)**:agent **姿势升级** —— 不再「撤销 edit 验」,改用 `git worktree add /tmp/opencode/v20-clean HEAD` 建 **pristine 副本**,补丁对 pristine 树 **strict 干净 apply ✅**(完全不污染工作树;比 2026-08-12 的撤销法更干净)。两次 validate_patch 一过(pristine 树)一败(已应用树,forward-check 必败=预期),证明 agent 真懂 forward-check 语义。
+- **step4 call_chain**:`call_chain(codebase=bluez_v20, symbol=sdp_extract_seqtype, direction=callers, depth=2)` → 服务端 `extract_pdu_server`/`extract_des` + 客户端 `search_completed_cb`/`search_callback`,正确判 caller 已把返回 0 当失败处理。
+- **边界全守**:不编译(json 无 make/gcc/cmake)/ `memory_memorize=0`(未验证不记,守边界)/ `memory_recall=0`(按需非强制,合规)。
+- **适配正确**:agent 只 edit `lib/sdp.c` 2 处(`uint32_t val32;` 声明 + SEQ32/ALT32 分支 INT_MAX 检查),**未碰其它文件**。
+- **gotcha 复现**:export_patch 的 `git add -A` 把 v20 仓**预存 quilt 基线**(sdpd-request.c 的 `uniontech-CVE-2022-0204` 补丁 71 行)一起 stage → 落盘 `bluez.patch` 全量 7.6MB;agent 手搓纯净 2-hunk `bluez-backport-sdp_extract_seqtype.patch`(1.1KB)。
+- **踩坑#21 未复发**:agent 只 edit `lib/sdp.c`(filePath 核实),sdpd-request.c 改动确属 quilt 基线(`.pc/uniontech-CVE-2022-0204...patch` 含 14 处 `sdp_cstate_rsp`/`maxBytesSent`,非 agent 碰)。
+- **还原**:e2e 后 `git -C <v20> checkout HEAD -- lib/sdp.c` + `git reset HEAD -- lib/sdp.c`(export_patch stage 了),三层(working/index/HEAD)还原干净,quilt 基线保持不动,可重跑。
+
+**结论**:domain_knowledge 改动**未影响** backport 工具链路,回归全绿。验证姿势升级为 worktree 隔离(生产级姿势,不动工作树)。
+
 ## 已 commit 文件(commit 9311973 + 3a12721)
 
 - `.claude/skills/backport/SKILL.md`(新)

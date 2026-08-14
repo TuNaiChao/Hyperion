@@ -7,6 +7,8 @@ metadata:
 
 记录所有"当前为最小实现、后续须对齐 deer-flow 补到生产级"的点位。每条标注:位置、deer-flow 参照、目标阶段。原则见 [[align-to-deerflow-production-grade]]。
 
+> **2026-08-14 pivot lens 复审结论**:用三件事(代码情报/记忆/skill+工具)+ 不编译铁律 + YAGNI 三标准过完全部条目。**10 条判 obsolete**:#3/#18/#20/#24/#27/#43/#47/#51/#54/#55(标 ~~obsolete~~ 在条目首)。**真待办分三档**:① 代码情报 9 条(活跃 MCP 工具,触发再做)② 评测 7 条(单机 indicative 够,要统计 tight 才做)③ 记忆/工具硬化 3 条(主路径但低优)。其余 15 条已覆盖或降级路径。~~唯一即时该做:#52(key 安全,跨机同步前必做)~~ —— **#52 2026-08-14 复核已达成**(实测 apiKey 已是 `{env:UNIONTECH_AI_API_KEY}`,2026-08-11 改好,摘要「待改」过时)。**无即时待办,全部触发式**。下次别再逐条念,看此复审结论 + 各条首部标记。
+
 **当前清单:**
 
 1. **`grep` / `glob`(LocalSandbox)** — `src/hyperion/platform/sandbox/local.py`。
@@ -307,11 +309,10 @@ metadata:
     - 现状(R2):只 `bool(patch)` 非空检查(`nodes.py` node_verify);R3 补完整 6 步。
     - 目标阶段:**R3**。
 
-52. **opencode.json key 安全(env 替换)** — `~/.config/opencode/opencode.json`(即时 / 跨机前必做)。
-    - 现状:本机 opencode.json **明文存 uniontech-ai apiKey**(2026-07-29 调研 `opencode debug config` 发现)。
-    - 修:`"apiKey": "{env:UNIONTECH_AI_API_KEY}"`,key 放 `~/.zshrc`/`.env`(gitignore)。
-    - 跨机/dotfiles 同步前必做(否则 key 进 git 泄露)。delegate 子进程用 deer-flow `env_policy` scrub 防 key 泄 trace。
-    - 目标阶段:**即时**(跨机同步前)。
+52. **✅ 已完成(opencode.json key 安全/env 替换,2026-08-11 实测达成)** — `~/.config/opencode/opencode.json`。
+    - **2026-08-14 复核实证**(脱敏探针,踩坑#20:不轻信交接摘要口头状态):`provider.uniontech-ai.options.apiKey` 当前值 = `'{env:UNIONTECH_AI_API_KEY}'`(**已是 env 引用,非明文**,len=26);全文件唯一 key 字段,无明文残留;项目内 `opencode.json`+`config/opencode_hyperion.json` 明文 apiKey 行数=0;`UNIONTECH_AI_API_KEY` 在 `~/.bashrc` export,`bash -ic 'env'` 验子进程 `CHILD_INHERITS ✓`(opencode 启动能读到);`~/.config/opencode` 不在任何 git 仓。**文件 mtime 2026-08-11 16:05 → 当时已改好**(摘要写「待改」是过时信息)。
+    - ~~原条目(2026-07-29 记)~~:明文存 uniontech-ai apiKey;改 `{env:...}`;key 放 `.bashrc`/`.env`。**现已达成**。
+    - 目标阶段:**即时**(跨机同步前)——**已达成,关闭**。
 
 53. **问题描述多格式解析 + 关键字抽取(预筛源头)** — 新增 `src/hyperion/services/trigger_parser/`(R3)。
     - 输入:`triggers/issue.{md,txt,pdf}` 或直接 prompt(cli/API)。txt/md 直读;**PDF 用 pypdf/pdfplumber**(demo1 是 PDF 漏洞报告驱动);统一写 `triggers/issue.md`。
