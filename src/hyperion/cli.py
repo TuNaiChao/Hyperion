@@ -282,7 +282,10 @@ def cmd_memory(args) -> int:
 
     if sub == "consolidate":
         stats = asyncio.run(svc.consolidate(scope))
-        print(f"巩固完成:扫 {stats.get('scanned', 0)},升级 mental_model {stats.get('promoted', 0)}。")
+        print(
+            f"巩固完成:扫 {stats.get('scanned', 0)},升级 mental_model {stats.get('promoted', 0)},"
+            f"矛盾对 {stats.get('contradictions', 0)},重复簇 {stats.get('duplicate_clusters', 0)}。"
+        )
         return 0
 
     if sub == "invalidate":

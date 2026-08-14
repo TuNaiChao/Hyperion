@@ -302,6 +302,19 @@ def test_consolidate_detects_contradictions(store, scope):
     assert store.get(a.id).tags.count("needs_review") == 1           # 没重复加
 
 
+def test_consolidate_detects_contradictions_no_symptom(store, scope):
+    """e2e 暴露的回退场景:bug_lesson symptom 空(CLI/MCP 写入常见)+ 同 evidence 文件 + 不同 root_cause → 仍判矛盾。
+
+    _same_subject 对 bug_lesson:symptom 都非空→比 symptom;任一空→回退比 evidence 文件。
+    不回退会让两条同 bug 不同根因的 bug_lesson(symptom 都空)漏判为"不同主题"。
+    """
+    a = _ki("A派 radio work 阻塞", scope=scope, symptom="", root_cause="未释放 radio work", file="scan.c", line=10)
+    b = _ki("B派 scan 竞态", scope=scope, symptom="", root_cause="scan 竞态覆盖", file="scan.c", line=10)
+    memorize_items([a, b], store=store)
+    stats = consolidate(scope, store=store, promote_access_count=99)
+    assert stats["contradictions"] == 2                              # symptom 空回退 evidence 仍判矛盾
+
+
 def test_consolidate_no_contradiction_same_conclusion(store, scope):
     """同主题同结论(同 symptom 同 root_cause)→ 不算矛盾,不标 needs_review(边界:别误报)。"""
     a = _ki("同一根因 radio work", scope=scope, symptom="扫描挂起", root_cause="死锁")

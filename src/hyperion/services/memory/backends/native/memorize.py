@@ -77,11 +77,24 @@ def _link_related(item: KnowledgeItem, store: MemoryStore, scope: Scope) -> None
 
 
 def _same_subject(a: KnowledgeItem, b: KnowledgeItem) -> bool:
-    """两条 KI 是否"同一主题"(v1 启发式:bug_lesson 看症状;codebase_fact 看 kind_detail+首证据文件)。"""
+    """两条 KI 是否"同一主题"(v1 启发式)。
+
+    bug_lesson:优先比 symptom(都非空且相等);symptom 任一为空(常见:CLI/MCP 写的 bug_lesson
+    默认只填 root_cause 不填 symptom)→ 回退比首证据文件(同文件 = 大概率同 bug)。
+    codebase_fact:比 kind_detail + 首证据文件。
+
+    symptom 回退是 e2e 暴露的真修复:矛盾检测依赖 _same_subject,而实际写入路径 symptom 常为空,
+    不回退会让矛盾对漏判(两条同 bug 不同根因的 bug_lesson symptom 都空 → 判不同主题 → 漏报)。
+    """
     if a.kind != b.kind:
         return False
     if a.kind == "bug_lesson":
-        return bool(a.symptom and b.symptom and _norm(a.symptom) == _norm(b.symptom))
+        if a.symptom and b.symptom:
+            return _norm(a.symptom) == _norm(b.symptom)
+        # symptom 任一为空 → 回退到 evidence 文件(同文件 = 同主题)。
+        fa = a.evidence[0].file if a.evidence else ""
+        fb = b.evidence[0].file if b.evidence else ""
+        return bool(fa) and fa == fb
     fa = a.evidence[0].file if a.evidence else ""
     fb = b.evidence[0].file if b.evidence else ""
     return a.kind_detail == b.kind_detail and bool(fa) and fa == fb
