@@ -17,7 +17,8 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 - **P1 调研**产出的"这个库长啥样、关键模块怎么实现" → 记下来(带源码 commit SHA 溯源)。
 - **P2 bug-RCA** 产出的"这个 bug 根因是啥、怎么修的" → 记下来,并连到相关的代码库知识。
 - **外部文档/补丁**也能吃进来(team 历史 bug 报告、上游已合入补丁)。
-- 下次任何人遇到类似问题 → 先翻笔记本("这模式之前见过,这是当时的修法")→ 省推导、省 token。
+
+记完的回报:下次任何人遇到类似问题 → 先翻笔记本("这模式之前见过,这是当时的修法")→ 省推导、省 token。
 
 **为什么是"持续学习"而不只是"存储":** 笔记本会**去重、衰减、把反复出现的教训升级成稳定规则**(像人把短期记忆巩固成长期记忆)。否则就是越攒越乱的垃圾堆。
 
@@ -46,7 +47,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 - `mental_model` —— 稳定规则(被反复召回 ≥N 次的教训"毕业"成的规律)
 - `domain_knowledge` —— 领域知识(蓝牙协议 / wpa 各层职责这类"常理")
 
-这四类正好对齐 2026 业界共识的 agent memory 四分类:**语义记忆(semantic)= domain_knowledge / codebase_fact、情景记忆(episodic)= bug_lesson、程序性记忆(procedural)= mental_model**。这套分类不是拍脑袋,是踩在认知科学共识上的。
+这四类正好对齐 2026 业界共识的 agent memory 四分类:**语义记忆(semantic)= domain_knowledge / codebase_fact、情景记忆(episodic)= bug_lesson、程序性记忆(procedural)= mental_model**(第四类"工作记忆"随 workflow state 走、不单独建库,见 §8 明确不做)。这套分类不是拍脑袋,是踩在认知科学共识上的。
 
 ### 内容章(展开细节)
 
@@ -81,7 +82,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ### 纠正章 —— 纠正关系闭环
 
-这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:179-188](../src/hyperion/services/memory/schema.py#L179-L188)):
+这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:180-188](../src/hyperion/services/memory/schema.py#L180-L188)):
 - `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/hyperion/services/memory/schema.py#L187))
 - `corrected_by` —— 旧条上"我被谁纠正了"(持久化,检索降权 0.3,仍可见作参考)
 
@@ -152,9 +153,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **向量检索的渐进式设计**:count(scope) ≤ 500 走 Python 逐行 cosine(小规模更快);> 500 切 sqlite-vec vec0 KNN(C 扩展,快 2-4×)。加载失败降级纯 loop。契约不变,recall 无感。
 
-**BM25 路的中文分词(CJK)**:FTS5 自带的 unicode61 分词器只认空格,中文没空格 → 整句"扫描会阻塞所有站点"被当成**一个**词,搜"扫描"匹配不上,纯中文查询此前只能靠向量路。现在索引侧(入库前)和查询侧(`_fts_query` 前)**同用 jieba 分词**([tokenize.py](../src/hyperion/services/memory/backends/native/tokenize.py)):只切中文段(英文标识符原样保留,不切碎),切完空格连回,两侧切法一致就能对上。代价是 FTS 表从「SQL 触发器自动同步」改成「upsert 时同事务维护」(触发器在 SQL 层调不了 Python 分词);老库打开时自动迁移重灌,分词失败降级回原行为,不崩。
-
-**比喻**:以前中文书脊是一整句话,你报其中两个词找不到书;现在入库时把书脊切成词卡、检索时把你的话也切成词卡,对卡就行。
+**BM25 路的中文分词(CJK)**:FTS5 自带的 unicode61 分词器只认空格,中文没空格 → 整句"扫描会阻塞所有站点"被当成**一个**词,搜"扫描"匹配不上,纯中文查询此前只能靠向量路。现在索引侧(入库前)和查询侧(`_fts_query` 前)**同用 jieba 分词**([tokenize.py](../src/hyperion/services/memory/backends/native/tokenize.py)):只切中文段(英文标识符原样保留,不切碎),切完空格连回,两侧切法一致就能对上。代价是 FTS 表从「SQL 触发器自动同步」改成「upsert 时同事务维护」(触发器在 SQL 层调不了 Python 分词);老库打开时自动迁移重灌,分词失败降级回原行为,不崩。就像中文书脊原本是一整句话,只报其中两个词找不到书;入库时把书脊切成词卡、检索时把查询也切成词卡,对卡就行。
 
 **比喻**:翻记忆不是"只翻一个抽屉",是**四个侦探同时翻四个档案柜**(关键词柜 / 语义柜 / 代码柜 / 结构图),各翻各的,最后把四份名单合在一起按"多侦探都提名 → 更靠前"排,再按"新旧 + 可信度"微调。这叫**多路召回融合(RRF)**,是检索工程的成熟做法。
 
@@ -165,8 +164,8 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 **铁律:永不物理删除**(bi-temporal 软删)。这是对的——能回答"这 bug 在 X 时点还在不在",审计可追溯。
 
 - **手动失效** `invalidate` → `set_invalid`([store.py:550](../src/hyperion/services/memory/backends/native/store.py#L550)):设 `invalid_at`(+可选 `superseded_by`)
-- **检索默认只看 active**(`invalid_at IS NULL AND superseded_by IS NULL`)
-- ⚠️ R3.5+ 起召回的 BM25 / vector **不再过滤 superseded_by**——被取代的旧版本能召回作参考,靠 decay 排到后面;只有手动 invalidate(错 fact)才真正隐藏
+- **管理视图(list / count)只看 active**:`invalid_at IS NULL AND superseded_by IS NULL`(失效和被取代的都不算数)
+- **召回(BM25 / vector)只滤 `invalid_at`,不过滤 `superseded_by`**——被取代的旧版本仍能召回作参考,靠 decay 排到后面;只有手动 invalidate(错 fact)才真正隐藏。管理视图和召回的过滤口径**故意不同**:前者管"现在有几条有效记忆"(计数要干净),后者管"翻参考"(旧结论也有参考价值)
 
 **比喻**:过期记忆不撕掉,是"盖个作废章放进档案室"。平时翻笔记本默认只看有效的;但旧版本还能翻出来当参考(比如"以前以为根因是 A,后来发现是 B"——A 留着能讲清思路演变)。
 
@@ -174,7 +173,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 6. 怎么处理冲突记忆 —— 演进史
 
-这是整套记忆里**最考验设计**的一块,经历了三个阶段:
+这是整套记忆里**最考验设计**的一块,经历了四个阶段:
 
 **阶段 1(旧设计)**:写时 supersede——同主题不同结论,**新覆盖旧**(旧条设 invalid_at + superseded_by)。研究称这是"最站得住脚的默认"。
 
