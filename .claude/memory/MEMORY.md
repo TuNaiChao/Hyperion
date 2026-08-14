@@ -9,6 +9,8 @@
 - [对齐 deer-flow,目标生产级非 demo](align-to-deerflow-production-grade.md) — 实现优先照齐 deer-flow;最小实现可起步但必须迭代到生产级。
 - [生产级补齐待办清单](backlog-production-grade.md) — "最小实现→生产级"跨阶段待办 #1–#44(完成 #22/#23/#38/#54/#57/#58;#55 obsolete;#60 待触发)。
 - [注释面向小白](comment-style-beginner-friendly.md) — 注释/docstring 用大白话+类比;区别于 skill/prompt(面向模型)。
+- [项目文档写作风格](doc-writing-style.md) — 2026-08-14:docs/*.md 面向小白+比喻+去噪音(不带时间戳)+ 本项目化(不说"你")。区别于注释(可带时间戳)+ skill(面向模型)。
+- [新功能自跑 opencode e2e](new-feature-run-opencode-e2e.md) — 2026-08-14:做了新功能我自己跑 opencode e2e(不等用户自验);系统软件编译/复现仍用户自验。
 - [Python语法.md 不提交](commit-python-syntax-notes.md) — 永不提交 Python语法.md(个人笔记);commit 用显式路径,别 git add -A。
 - [oh-my-pi 调研与设计演进](oh-my-pi-research-and-design-evolution.md) — 2026-07-27 报告 + v2 更正:三层栈是用户心智模型;记忆改自建 MemoryService。
 - [DeepSeek 结构化产出踩坑](deepseek-structured-output-gotcha.md) — DeepSeek 思考模式不支持 json_schema;改"喂 Schema+直出 JSON+解析"。embedding/rerank 走 DashScope。
