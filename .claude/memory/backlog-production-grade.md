@@ -85,7 +85,7 @@ metadata:
     - 目标阶段:**P1.3 之后 / P2**(有第二个被测仓库时)。
 
 16. ✅ **已成(2026-08-11)** precision 指标校准 — `eval/scorer.py` / `runner.py` / `tests/services/code_index/test_scorer.py`。
-    - 现状(已成):落地 `scorer.precision_at_min_k = |top-k∩gold|/min(k,|gold|)`(R-precision 风格,单 gold 命中=1.0);runner 报 `rprecision@5`(旧 `precision@5` 列保留参考);退出标准 ② 改用 R-precision;11 单测绿(7 R-precision + 4 回归)。旧 P1.3 实测 precision@5=0.240(定义问题非缺陷)不再卡退出标准;R-precision@5 实测数待重跑评测填(不编)。
+    - 现状(已成):落地 `scorer.precision_at_min_k = |top-k∩gold|/min(k,|gold|)`(R-precision 风格,单 gold 命中=1.0);runner 报 `rprecision@5`(旧 `precision@5` 列保留参考);退出标准 ② 改用 R-precision;11 单测绿(7 R-precision + 4 回归)。旧 P1.3 实测 precision@5=0.240(定义问题非缺陷)不再卡退出标准。**✅ 2026-08-17 实测已补**(改名后首跑,commit 8637e26 索引 747 chunk):**rprecision@5=0.833**(L1 符号直查 1.000 / L2 概念 0.700),同场旧 precision@5=0.222 正好复证"定义问题非缺陷";评测集 4 条死 gold(tools/sandbox.py / tools/registry.py 已删)先行替换为现行等价物(provider/LocalSandbox、mcp_memory build_server/_honest_truncate),18 条全有效零警告。L2 全部 4 条 miss 同一形态——**概念 query 命中正确文件的兄弟符号/模块块、粒度不匹配**(抽象基类 `Embedder.embed_chunks` 压过 `RemoteEmbedder`、`<module>` 块压过 `parse_file` 入口、内部 helper `_symbol_to_chunk` 压过 `chunk_file`);是「查询形态 boosting / 入口符号加权」类改进的现成触发数据点,文件级全对、符号级错位,非检索方向错。
 
 (后续每发现一处最小实现就追加一条。)
 
