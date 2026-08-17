@@ -1,15 +1,15 @@
 ---
 name: bug-rca
-description: 在 C/系统软件仓库(Linux 内核、BlueZ、wpa_supplicant、systemd、dbus、网络栈)定位 bug 根因并修复。用户让你查 bug/崩溃/挂起/回归/CVE 的根因、问"为什么 X 会断/泄漏/死锁"、或修这类 bug 时用。你负责推理和改代码;Hyperion 工具提供记忆、代码检索、影响面、补丁 apply 校验、补丁/报告落盘(日志用你自己的 grep/awk 切)。补丁只有在干净 apply 且经人/真机验证后才算正确——在此之前持续迭代。
+description: 在 C/系统软件仓库(Linux 内核、BlueZ、wpa_supplicant、systemd、dbus、网络栈)定位 bug 根因并修复。用户让你查 bug/崩溃/挂起/回归/CVE 的根因、问"为什么 X 会断/泄漏/死锁"、或修这类 bug 时用。你负责推理和改代码;RootRecall 工具提供记忆、代码检索、影响面、补丁 apply 校验、补丁/报告落盘(日志用你自己的 grep/awk 切)。补丁只有在干净 apply 且经人/真机验证后才算正确——在此之前持续迭代。
 allowed-tools:
-  - hyperion_memory_recall
-  - hyperion_search_codebase
-  - hyperion_blast_radius
-  - hyperion_when_introduced
-  - hyperion_validate_patch
-  - hyperion_export_patch
-  - hyperion_memorize
-  - hyperion_export_report
+  - rootrecall-memory_recall
+  - rootrecall-search_codebase
+  - rootrecall-blast_radius
+  - rootrecall-when_introduced
+  - rootrecall-validate_patch
+  - rootrecall-export_patch
+  - rootrecall-memorize
+  - rootrecall-export_report
   - read
   - grep
   - glob
@@ -19,7 +19,7 @@ allowed-tools:
 
 # Bug 根因定位 + 修复
 
-你负责在 C/系统软件仓库定位根因并修复。推理和改代码是你的活;`hyperion_*` 工具提供记忆、代码情报、日志取证、影响面、apply 校验、落盘。
+你负责在 C/系统软件仓库定位根因并修复。推理和改代码是你的活;`rootrecall-*` 工具提供记忆、代码情报、日志取证、影响面、apply 校验、落盘。
 
 ## 运行模式:迭代,不是走流水线
 
@@ -33,14 +33,14 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文 |
-| `hyperion_search_codebase(query)` | 找入口符号——传概念,别传猜的文件名 | 只回真实存在的符号,不会编路径 |
-| `hyperion_blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |
-| `hyperion_when_introduced(repo_path, symbol=\|file+line)` | 候选难分胜负时——「这段缺陷逻辑哪个 commit 带进来的」 | 纯 git 候选表(时间倒序+added/removed);引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移;哪条真引入语义裁决(git show 逐条读);引入 commit 的 message/diff 常直接暴露根因意图——假设循环的辅助证据,不是硬门 |
-| `hyperion_validate_patch(patch, repo_path)` | 每版补丁都调 | 只验 **apply,不验修对** |
-| `hyperion_export_patch(repo_path)` | 每出一版补丁就调 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证 |
-| `hyperion_memorize(...)` | 验证通过后才调 | kind=bug_lesson |
-| `hyperion_export_report(content, repo_path)` | 验证通过后才调 | 最终报告落 `data/bug_rca/<repo>-rca.md` |
+| `rootrecall-memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文 |
+| `rootrecall-search_codebase(query)` | 找入口符号——传概念,别传猜的文件名 | 只回真实存在的符号,不会编路径 |
+| `rootrecall-blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |
+| `rootrecall-when_introduced(repo_path, symbol=\|file+line)` | 候选难分胜负时——「这段缺陷逻辑哪个 commit 带进来的」 | 纯 git 候选表(时间倒序+added/removed);引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移;哪条真引入语义裁决(git show 逐条读);引入 commit 的 message/diff 常直接暴露根因意图——假设循环的辅助证据,不是硬门 |
+| `rootrecall-validate_patch(patch, repo_path)` | 每版补丁都调 | 只验 **apply,不验修对** |
+| `rootrecall-export_patch(repo_path)` | 每出一版补丁就调 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证 |
+| `rootrecall-memorize(...)` | 验证通过后才调 | kind=bug_lesson |
+| `rootrecall-export_report(content, repo_path)` | 验证通过后才调 | 最终报告落 `data/bug_rca/<repo>-rca.md` |
 
 ## 硬约束
 

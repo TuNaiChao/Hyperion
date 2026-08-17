@@ -1,7 +1,7 @@
 """R3.0 runtime harness 冒烟测试。
 
 验证 R3.0 五大件集成可用:
-  1. factory 装配默认中间件链 + 编译图(channels 含 HyperionState 字段)。
+  1. factory 装配默认中间件链 + 编译图(channels 含 RootRecallState 字段)。
   2. token 预算闸:_apply 在硬停阈值剥 tool_calls + 写 stop_reason。
   3. 工具输出预算:超阈值外化到磁盘 + synopsis。
   4. checkpointer:sqlite 往返(put → get_tuple)。
@@ -22,10 +22,10 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import PrivateAttr
 
-from hyperion.platform.runtime.checkpoint import _checkpointer_cm
-from hyperion.platform.runtime.factory import SummarizationConfig, build_default_middlewares, create_hyperion_agent
-from hyperion.platform.runtime.middlewares.token_budget import TokenBudgetConfig, TokenBudgetMiddleware
-from hyperion.platform.runtime.middlewares.tool_output import ToolOutputBudgetConfig, _budget_content, _patch_model_messages
+from rootrecall.platform.runtime.checkpoint import _checkpointer_cm
+from rootrecall.platform.runtime.factory import SummarizationConfig, build_default_middlewares, create_rootrecall_agent
+from rootrecall.platform.runtime.middlewares.token_budget import TokenBudgetConfig, TokenBudgetMiddleware
+from rootrecall.platform.runtime.middlewares.tool_output import ToolOutputBudgetConfig, _budget_content, _patch_model_messages
 
 
 # ── 不联网的脚本模型(冒烟用,按 script 顺序吐 AIMessage)──────────────
@@ -108,9 +108,9 @@ def test_factory_summarization_disabled_skips():
 
 
 def test_factory_compiles_with_state_channels():
-    """编译图的 channels 含 HyperionState 三字段(messages/delegations/summary_text)。"""
+    """编译图的 channels 含 RootRecallState 三字段(messages/delegations/summary_text)。"""
     model = _ScriptedModel(script=[AIMessage(content="ok", id="m1")])
-    graph = create_hyperion_agent(model, tools=[], system_prompt="test", checkpointer=None)
+    graph = create_rootrecall_agent(model, tools=[], system_prompt="test", checkpointer=None)
     for field in ("messages", "delegations", "summary_text"):
         assert field in graph.channels, f"{field} 未进 graph channels"
 
@@ -231,7 +231,7 @@ def test_agent_invoke_writes_checkpoint_and_resumes():
     """脚本模型 invoke 一次:产出回复 + checkpointer 写入 + 同 thread_id 可取 state。"""
     model = _ScriptedModel(script=[AIMessage(content="调研完成:这是结论。", id="m-final", usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})])
     cp = InMemorySaver()
-    graph = create_hyperion_agent(model, tools=[], system_prompt="你是测试 agent。", checkpointer=cp)
+    graph = create_rootrecall_agent(model, tools=[], system_prompt="你是测试 agent。", checkpointer=cp)
     config: RunnableConfig = {"configurable": {"thread_id": "smoke-e2e"}}
     # 第一次 invoke:agent loop 跑一轮(model 无 tool_calls → 终止)
     result = graph.invoke({"messages": [{"role": "user", "content": "跑一下"}]}, config=config)

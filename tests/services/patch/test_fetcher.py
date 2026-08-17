@@ -15,7 +15,7 @@ import asyncio
 import httpx
 import pytest
 
-from hyperion.services.patch.fetcher import (
+from rootrecall.services.patch.fetcher import (
     _GH_PR_RE,
     GitHubFetcher,
     PatchArtifact,
@@ -141,7 +141,7 @@ def test_gerrit_fetcher_strips_xssi_and_decodes_patch():
     import base64
     import json as _json
 
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
 
     diff_text = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1 +1,2 @@\n-x\n+y\n"
     # Gerrit JSON 响应带 )]}' 前缀;change 列表含 subject/id/revisions。
@@ -166,7 +166,7 @@ def test_gerrit_fetcher_strips_xssi_and_decodes_patch():
 
 
 def test_gerrit_fetcher_non_gerrit_url():
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
     with pytest.raises(ValueError):
         _run(GerritFetcher(transport=httpx.MockTransport(lambda r: httpx.Response(200, text="")))
              .fetch("https://github.com/o/r/pull/1"))
@@ -174,7 +174,7 @@ def test_gerrit_fetcher_non_gerrit_url():
 
 def test_gerrit_fetcher_change_not_found():
     """change 查询返空列表 → ValueError(404/无权限)。"""
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
 
     def handle(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=")]}'\n[]")  # 空 change 列表
@@ -185,7 +185,7 @@ def test_gerrit_fetcher_change_not_found():
 
 
 def test_diff_changed_files_helper():
-    from hyperion.services.patch.fetcher import _diff_changed_files
+    from rootrecall.services.patch.fetcher import _diff_changed_files
     diff = ("diff --git a/a.c b/a.c\n+++ b/a.c\n@@\n+x\n"
             "diff --git a/b.c b/b.c\n+++ /dev/null\n@@\n-x\n"
             "diff --git a/a.c b/a.c\n+++ b/a.c\n@@\n+y\n")  # a.c 重复,去重
@@ -194,7 +194,7 @@ def test_diff_changed_files_helper():
 
 def test_diff_hunk_lines_helper():
     """diff_hunk_lines:按新文件归改动行区间(`@@ -a,b +c,d @@` 取新侧 c..c+d-1)。"""
-    from hyperion.services.patch.fetcher import diff_hunk_lines
+    from rootrecall.services.patch.fetcher import diff_hunk_lines
     diff = ("diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n"
             "@@ -1,2 +1,3 @@\n int old;\n+int new;\n int keep;\n"
             "@@ -10,3 +11,2 @@\n-int gone;\n int stay;\n"
@@ -235,7 +235,7 @@ def _gerrit_handler(record: dict):
 
 def test_gerrit_auth_uses_a_prefix_and_basic():
     """有凭据 → 端点走 /a/ 前缀 + 带 Authorization: Basic。"""
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
 
     rec = {}
     f = GerritFetcher(username="alice", http_password="secret-token",
@@ -248,7 +248,7 @@ def test_gerrit_auth_uses_a_prefix_and_basic():
 
 def test_gerrit_anonymous_no_a_prefix_no_auth(monkeypatch):
     """无凭据(env 也没设)→ 匿名:无 /a/ 前缀、无 Authorization 头(回归现有行为)。"""
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
 
     monkeypatch.delenv("GERRIT_USERNAME", raising=False)
     monkeypatch.delenv("GERRIT_HTTP_PASSWORD", raising=False)
@@ -261,7 +261,7 @@ def test_gerrit_anonymous_no_a_prefix_no_auth(monkeypatch):
 
 def test_gerrit_reads_creds_from_env(monkeypatch):
     """GERRIT_USERNAME / GERRIT_HTTP_PASSWORD env 在 → 自动鉴权(对齐 GITHUB_TOKEN 惯例)。"""
-    from hyperion.services.patch.fetcher import GerritFetcher
+    from rootrecall.services.patch.fetcher import GerritFetcher
 
     monkeypatch.setenv("GERRIT_USERNAME", "bob")
     monkeypatch.setenv("GERRIT_HTTP_PASSWORD", "env-token")
@@ -277,7 +277,7 @@ def test_gerrit_reads_creds_from_env(monkeypatch):
 
 def test_fetcher_for_url_dispatches():
     """fetcher_for_url:Gerrit change URL → GerritFetcher;GitHub PR URL → GitHubFetcher。"""
-    from hyperion.services.patch.fetcher import GerritFetcher, GitHubFetcher, fetcher_for_url
+    from rootrecall.services.patch.fetcher import GerritFetcher, GitHubFetcher, fetcher_for_url
 
     assert isinstance(fetcher_for_url("https://gerrit.example.com/c/proj/+/42"), GerritFetcher)
     assert isinstance(fetcher_for_url("https://github.com/o/r/pull/1"), GitHubFetcher)

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from hyperion.workflows.deep_research._verify import _verify_report_citations
+from rootrecall.workflows.deep_research._verify import _verify_report_citations
 
 
 def _sym(qname: str, start: int, end: int, name: str | None = None) -> SimpleNamespace:
@@ -30,7 +30,7 @@ def _state(repo_root, findings, plan=None):
 
 
 # _verify 模块顶层 import 了 parse_file,所以打它的桩要 patch _verify 模块里的那个名字。
-_PARSE = "hyperion.workflows.deep_research._verify.parse_file"
+_PARSE = "rootrecall.workflows.deep_research._verify.parse_file"
 
 
 # ── 1. strict:symbol 存在 + line 落在区间内 ─────────────────────────────────

@@ -38,4 +38,4 @@ echo "[3/3] Claude Code 记忆软链"
 bash "$(dirname "$0")/setup_claude.sh"
 
 echo ""
-echo "✅ 完成。验证:uv run hyperion models"
+echo "✅ 完成。验证:uv run rootrecall models"

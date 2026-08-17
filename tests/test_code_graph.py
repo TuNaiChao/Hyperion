@@ -13,7 +13,7 @@ import importlib.util
 
 import pytest
 
-from hyperion.services.code_index.code_graph import CodeGraph, _require_crg
+from rootrecall.services.code_index.code_graph import CodeGraph, _require_crg
 
 
 def _crg_installed() -> bool:
@@ -28,7 +28,7 @@ needs_crg = pytest.mark.skipif(not _crg_installed(), reason="需要 code-review-
 
 def test_require_crg_missing_raises(monkeypatch):
     """CRG 没装时 _require_crg 抛 ImportError 且带安装指引。"""
-    import hyperion.services.code_index.code_graph as cg
+    import rootrecall.services.code_index.code_graph as cg
 
     real = cg.importlib.util.find_spec
 
@@ -219,7 +219,7 @@ def test_render_repomap_tree_format():
     """
     from types import SimpleNamespace
 
-    from hyperion.services.code_index.code_graph import _render_repomap_tree
+    from rootrecall.services.code_index.code_graph import _render_repomap_tree
 
     meta = {
         "a.py::alpha": SimpleNamespace(kind="function", line_start=1),
@@ -347,7 +347,7 @@ def test_cross_version_diff_small_git_repo(tmp_path):
     g(["add", "-A"])
     g(["commit", "-q", "-m", "v2: change alpha"])
 
-    from hyperion.services.code_index.code_graph import cross_version_diff
+    from rootrecall.services.code_index.code_graph import cross_version_diff
 
     # 纯 git 核(无图):refs / commits / concern_diff / patch_equivalence
     res = cross_version_diff("HEAD~1", "HEAD", repo_path=str(tmp_path),
@@ -431,7 +431,7 @@ def test_merge_eval_three_states(tmp_path):
     g(["commit", "-q", "-m", "F2 beta returns 50"])
     # worktree 现在在 fork(already checked out)—— merge_eval 的 apply 检查对它
 
-    from hyperion.services.code_index.code_graph import merge_eval
+    from rootrecall.services.code_index.code_graph import merge_eval
     res = merge_eval("main", "upstream", fork_ref="fork", repo_path=str(tmp_path))
 
     # 顶层结构
@@ -517,7 +517,7 @@ def test_merge_eval_dirty_worktree_zero_touch(tmp_path):
     if probe.returncode != 0:
         pytest.skip(f"git 无 merge-tree --write-tree(<2.38): {probe.stderr[:80]}")
 
-    from hyperion.services.code_index.code_graph import merge_eval
+    from rootrecall.services.code_index.code_graph import merge_eval
     res = merge_eval("main", "upstream", fork_ref="fork", repo_path=str(tmp_path))
     # U2 加 c.py 与 fork(main 态,没动 c.py)三方合并干净 → recommend_merge;
     # 脏 a.py 不影响(worktree 状态与对象库合并无关)
@@ -546,7 +546,7 @@ def test_merge_eval_empty_range(tmp_path):
     g(["commit", "-q", "-m", "base"])
     g(["branch", "-m", "main"])
 
-    from hyperion.services.code_index.code_graph import merge_eval
+    from rootrecall.services.code_index.code_graph import merge_eval
     res = merge_eval("main", "main", fork_ref="main", repo_path=str(tmp_path))
     assert res["summary"]["total"] == 0
     assert res["commits"] == []
@@ -554,7 +554,7 @@ def test_merge_eval_empty_range(tmp_path):
 
 def test_merge_eval_not_a_repo(tmp_path):
     """非 git 仓目录 → ValueError(工具层据此转友好串)。"""
-    from hyperion.services.code_index.code_graph import merge_eval
+    from rootrecall.services.code_index.code_graph import merge_eval
     empty = tmp_path / "notarepo"
     empty.mkdir()
     with pytest.raises(ValueError):

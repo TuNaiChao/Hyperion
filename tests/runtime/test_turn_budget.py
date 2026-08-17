@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage
 
-from hyperion.platform.runtime.middlewares.turn_budget import (
+from rootrecall.platform.runtime.middlewares.turn_budget import (
     TurnBudgetConfig,
     TurnBudgetMiddleware,
 )

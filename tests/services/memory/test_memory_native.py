@@ -12,14 +12,14 @@ from typing import Literal
 import numpy as np
 import pytest
 
-from hyperion.platform.config import NativeMemoryConfig
-from hyperion.services.memory.backends.native.consolidate import consolidate
-from hyperion.services.memory.backends.native.memorize import memorize_items
-from hyperion.services.memory.backends.native.recall import _rrf_fuse, recall
-from hyperion.services.memory.backends.native.service import NativeMemoryService
-from hyperion.services.memory.backends.native.store import MemoryStore
-from hyperion.services.memory.backends.native.structural import NoopStructuralBackend
-from hyperion.services.memory.schema import Evidence, KnowledgeItem, RecallHit, Scope, SourceTier
+from rootrecall.platform.config import NativeMemoryConfig
+from rootrecall.services.memory.backends.native.consolidate import consolidate
+from rootrecall.services.memory.backends.native.memorize import memorize_items
+from rootrecall.services.memory.backends.native.recall import _rrf_fuse, recall
+from rootrecall.services.memory.backends.native.service import NativeMemoryService
+from rootrecall.services.memory.backends.native.store import MemoryStore
+from rootrecall.services.memory.backends.native.structural import NoopStructuralBackend
+from rootrecall.services.memory.schema import Evidence, KnowledgeItem, RecallHit, Scope, SourceTier
 
 VEC_DIM = 8  # 测试用向量维度(小,够区分相似度)
 
@@ -753,7 +753,7 @@ def test_search_vector_degrades_when_auto_index_off(scope):
 
 def test_segment_only_cjk(scope):
     """tokenize.segment:只切 CJK 段(英文标识符/路径原样),停用词滤掉,jieba 缺席时原样返回。"""
-    from hyperion.services.memory.backends.native import tokenize
+    from rootrecall.services.memory.backends.native import tokenize
 
     if tokenize.jieba_available():
         out = tokenize.segment("蓝牙L2CAP面向连接的可靠传输,扫描阻塞所有站点")

@@ -1,7 +1,7 @@
 # bug 根因定位模块设计分析
 
-> 这是 Hyperion 三大支柱里 P2「bug 根因定位」(★MVP)的当前实现分析。
-> 源码真相在 `.claude/skills/`(菜谱)、`src/hyperion/tools/mcp_memory.py`(硬门工具)、`src/hyperion/services/workspace/`(验证),本文档只做"讲清它在干什么、怎么设计的"。
+> 这是 RootRecall 三大支柱里 P2「bug 根因定位」(★MVP)的当前实现分析。
+> 源码真相在 `.claude/skills/`(菜谱)、`src/rootrecall/tools/mcp_memory.py`(硬门工具)、`src/rootrecall/services/workspace/`(验证),本文档只做"讲清它在干什么、怎么设计的"。
 
 ---
 
@@ -11,7 +11,7 @@
 
 **比喻**:这是刑警破案,不是流水线质检。普通 agent 拿到日志容易犯的错,是**锚定最响的那声警报**(满屏 `ERROR` / `abort failed` 里挑一行显眼的当"根因")——就像警察只抓喊得最响的人,而真凶早在两小时前就离开了现场。本项目实测踩过这个坑:模型把"abort failed"当根因,实际它是"扫描早完成了、状态没清"的**后果**(症状)。
 
-Hyperion 的 P2 就是把"老刑警的办案纪律"固化成 agent 可执行的菜谱(skill)+ 一组确定性"取证工具"(MCP):
+RootRecall 的 P2 就是把"老刑警的办案纪律"固化成 agent 可执行的菜谱(skill)+ 一组确定性"取证工具"(MCP):
 
 ```
 假设 ↔ 证伪循环            补丁 ↔ 验证循环             验证后收尾
@@ -19,7 +19,7 @@ Hyperion 的 P2 就是把"老刑警的办案纪律"固化成 agent 可执行的�
  每轮主动找反证)            落盘补丁交人)                才 memorize + 报告)
 ```
 
-**核心分工**:重活(读码 / 改代码)归成熟的 coding agent(opencode / claude code),Hyperion 负责它不会的三件事——**历史同类案件的记忆召回、确定性验证工具、办案纪律**。
+**核心分工**:重活(读码 / 改代码)归成熟的 coding agent(opencode / claude code),RootRecall 负责它不会的三件事——**历史同类案件的记忆召回、确定性验证工具、办案纪律**。
 
 **两个铁律**(全模块设计的地基):
 
@@ -55,7 +55,7 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 - **日志是线索,代码是确定答案**:真根因(状态机 / 分支逻辑 / 持久化状态)用 `search_codebase` 在源码里确定,重心放代码。
 - **候选难分胜负时查引入史**:根因锚定到符号 / file:line 后 `when_introduced` 出引入 commit 候选表,引入 commit 的 message / diff 常直接暴露缺陷意图——辅助证据路,不是硬门。
 
-这套纪律对应 2026 业界的 hypothesis-testing 流向([CogniGent](https://arxiv.org/html/2601.12522v2):多 agent 假设检验定位;[DoVer](https://huggingface.co/papers):假设生成 + 主动验证)——方向一致,Hyperion 用"菜谱纪律"而非"多 agent 编排"实现,是单机 harness 的现实取舍。
+这套纪律对应 2026 业界的 hypothesis-testing 流向([CogniGent](https://arxiv.org/html/2601.12522v2):多 agent 假设检验定位;[DoVer](https://huggingface.co/papers):假设生成 + 主动验证)——方向一致,RootRecall 用"菜谱纪律"而非"多 agent 编排"实现,是单机 harness 的现实取舍。
 
 ---
 
@@ -65,7 +65,7 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 ### validate_patch —— apply 门
 
-`validate_patch(patch, repo_path)`([validate.py:19](../src/hyperion/services/workspace/validate.py#L19))验补丁能否干净地打到目标仓:
+`validate_patch(patch, repo_path)`([validate.py:19](../src/rootrecall/services/workspace/validate.py#L19))验补丁能否干净地打到目标仓:
 
 - **验证梯子**(从严到宽三级):strict `git apply --recount --check` → `--3way --check`(容 context 漂移)→ `patch -p1 --dry-run`(非 git 经典补丁)。返回实际停在哪一级(strict / 3way / patch),**梯子本身就是补丁质量信号**——要降级才能过的补丁,context 已经漂了。
 - **LF 归一化**:agent 传补丁常丢末尾换行 / 带错行尾,先归一化再验——治"git 报第 N 行损坏"的实证坑。
@@ -73,7 +73,7 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 ### merge_eval —— 合入三态判定
 
-`merge_eval(upstream_base, upstream_head, fork_ref, repo_path)`([code_graph.py:281](../src/hyperion/services/code_index/code_graph.py#L281))回答"上游一批 commit 该不该合进 fork":
+`merge_eval(upstream_base, upstream_head, fork_ref, repo_path)`([code_graph.py:281](../src/rootrecall/services/code_index/code_graph.py#L281))回答"上游一批 commit 该不该合进 fork":
 
 - **already_fixed**:用 `git log --cherry-pick --right-only` 对称差(底层 patch-id 等价)取反集——范围内**不在**"还没等价进 fork"名单里的 commit 就是已修。比逐个算 patch-id 高效,不用扫 fork 全史。
 - **recommend_merge / conflict**:逐 commit `git merge-tree --write-tree <fork_ref> <commit>` **在对象库里试合并**(rc=0 干净 / rc=1 冲突),不碰工作树、不需要 checkout——三态不再押在"agent 先切到 fork 且树干净"的调用姿势上;git < 2.38 或 merge-tree 跑挂 → 回退老路(commit diff 跑 `git apply --check`,对当前工作树,note 明示"三态可能失真")。
@@ -130,8 +130,8 @@ P2 的差异化在于**每个环节都接记忆**(详细机制见[记忆模块�
 | 业界实践 | 本项目现状 |
 |---|---|
 | [CogniGent](https://arxiv.org/html/2601.12522v2)(多 agent 假设检验定位,2026) | ✅ 核心增益(多候选假设并行 + 各自证伪淘汰)已以"菜谱纪律"形态内建——多假设清单 + 淘汰制,e2e 实证候选淘汰记录生效 |
-| [AgentFL](https://www.alphaxiv.org/overview/2403.16362v1) / [LLM4FL](https://openreview.net/forum?id=z91EvZbSI1)(项目级定位:Context → Debugger → Verification) | ✅ 殊途同归——delegate 多阶段(localize → repair)曾做过,pivot 后 Debugger 角色归 opencode,Hyperion 保留取证工具 + 纪律 |
-| [CrashFixer](https://arxiv.org/html/2504.20412v1)(Linux kernel crash → 修复)、[AMD RGD MCP](https://gpuopen.com/learn/post-mortem-gpu-crash-debugging-with-llms/)(crash 工具链接 MCP) | ✅ 同一定位(系统软件 crash / 日志 → 根因),Hyperion 多出的 **带记忆 + 带溯源** 是这批工作没有的 |
+| [AgentFL](https://www.alphaxiv.org/overview/2403.16362v1) / [LLM4FL](https://openreview.net/forum?id=z91EvZbSI1)(项目级定位:Context → Debugger → Verification) | ✅ 殊途同归——delegate 多阶段(localize → repair)曾做过,pivot 后 Debugger 角色归 opencode,RootRecall 保留取证工具 + 纪律 |
+| [CrashFixer](https://arxiv.org/html/2504.20412v1)(Linux kernel crash → 修复)、[AMD RGD MCP](https://gpuopen.com/learn/post-mortem-gpu-crash-debugging-with-llms/)(crash 工具链接 MCP) | ✅ 同一定位(系统软件 crash / 日志 → 根因),RootRecall 多出的 **带记忆 + 带溯源** 是这批工作没有的 |
 | [SZZ-Agent](https://www.researchgate.net/publication/403379901_How_and_Why_Agents_Can_Identify_Bug-Inducing_Commits)(SZZ 出候选 + agent 裁决"哪个 commit 引入了 bug",2026) | ✅ 同款分工已落地——`when_introduced` 双锚点(pickaxe 符号 / `-L` 行历史)出候选表,引入者裁决归 agent;真仓探针:hostap `scan_only_handler` → 唯一候选 `66fe0f70` = 金标引入点分毫不差 |
 | blast radius / impact analysis(2026 业界做成 PR 实时信号) | ✅ `blast_radius` 图驱动波及面,patch-review 在用 |
 
@@ -141,8 +141,8 @@ P2 的差异化在于**每个环节都接记忆**(详细机制见[记忆模块�
 
 ## 7. 明确不做(YAGNI,防未来跑偏)
 
-- **编译 / 测试 / 复现验证永不做**(用户封顶):系统软件构建环境重、测试信号歧义(通过 ≠ 修对),Hyperion 验到 apply 为止,真机归用户。correctness 措辞只报 apply-based / reasoning-based,不报 tested / verified。
+- **编译 / 测试 / 复现验证永不做**(用户封顶):系统软件构建环境重、测试信号歧义(通过 ≠ 修对),RootRecall 验到 apply 为止,真机归用户。correctness 措辞只报 apply-based / reasoning-based,不报 tested / verified。
 - **不建日志切片专用工具**:`filter_logs` 建过又撤(deer-flow / omp 双证 opencode 的 read / grep / awk 等价且更灵活)——重造 agent 已会的就是踩坑#2。日志领域的知识(时间窗 / 日志词汇 / 窗口会漏根因 / 重心代码)进菜谱,不进代码。
-- **不建平行定位管线**:opencode 自己就会读码定位,Hyperion 建平行管线就是重复建设——正确姿势是给它"记忆 + 确定性工具 + 纪律"(delegate-already-localizes 原则)。
+- **不建平行定位管线**:opencode 自己就会读码定位,RootRecall 建平行管线就是重复建设——正确姿势是给它"记忆 + 确定性工具 + 纪律"(delegate-already-localizes 原则)。
 - **delegate 多阶段 workflow 不复活**:localize → repair 的 verify-refine 收敛逻辑有价值,但 skill 主路径已覆盖等价能力,留作参考实现不接回。
 - **验证不做 Tier 1/2**(复现测试 / 对抗审):当初规划过,与"不编译不复现"冲突,砍。

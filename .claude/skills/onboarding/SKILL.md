@@ -2,14 +2,14 @@
 name: onboarding
 description: 给新 contributor 讲清单个 codebase 的架构——先用结构图俯瞰社区/模块边界和核心 hub 函数,再挑一条真实用户旅程端到端走一遍,产出导览报告。用户问"这个仓库整体架构是怎么组织的"、"帮我快速上手这个项目"、"核心模块和入口在哪"、"给新人的 codebase 导览"时用。
 allowed-tools:
-  - hyperion_repo_overview
-  - hyperion_repo_map
-  - hyperion_search_codebase
-  - hyperion_call_chain
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
-  - hyperion_export_report
-  - hyperion_ensure_repo
+  - rootrecall-repo_overview
+  - rootrecall-repo_map
+  - rootrecall-search_codebase
+  - rootrecall-call_chain
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
+  - rootrecall-export_report
+  - rootrecall-ensure_repo
   - read
   - grep
   - glob
@@ -17,7 +17,7 @@ allowed-tools:
 
 # 单 codebase 架构导览调研
 
-你负责给新来的开发者讲清楚**一个代码仓库**长什么样:架构怎么分、核心模块在哪、一条主线流程怎么走。读码、挑旅程、讲架构是你的活;Hyperion 工具负责取结构图、查调用链、落盘、记忆。
+你负责给新来的开发者讲清楚**一个代码仓库**长什么样:架构怎么分、核心模块在哪、一条主线流程怎么走。读码、挑旅程、讲架构是你的活;RootRecall 工具负责取结构图、查调用链、落盘、记忆。
 
 **两个边界**(必须守):
 - **只调研不改代码** —— 你不改任何仓库(不 edit / 不 git apply / 不写源码),只读码出导览报告。和 upstream-merge/patch-review/compare 一样是 read-only。
@@ -45,15 +45,15 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_repo_overview(codebase?)` | step 3 结构快照,主数据源 | 一次返社区/hub/bridge/耦合告警;onboarding 的「城市分区图」 |
-| `hyperion_repo_map(codebase?)` | step 3 PageRank 俯瞰 | 全仓最重要符号地图;和 repo_overview 互补(一个看模块一个看函数) |
-| `hyperion_search_codebase(query, codebase?)` | step 4 按主题定位旅程入口 | 传**概念**别传文件名;用户指定主题时定位那条旅程的入口函数 |
-| `hyperion_call_chain(symbol, codebase?)` | step 4 旅程多跳展开 | 从入口种子多跳展开,看旅程涉及的函数链 |
+| `rootrecall-repo_overview(codebase?)` | step 3 结构快照,主数据源 | 一次返社区/hub/bridge/耦合告警;onboarding 的「城市分区图」 |
+| `rootrecall-repo_map(codebase?)` | step 3 PageRank 俯瞰 | 全仓最重要符号地图;和 repo_overview 互补(一个看模块一个看函数) |
+| `rootrecall-search_codebase(query, codebase?)` | step 4 按主题定位旅程入口 | 传**概念**别传文件名;用户指定主题时定位那条旅程的入口函数 |
+| `rootrecall-call_chain(symbol, codebase?)` | step 4 旅程多跳展开 | 从入口种子多跳展开,看旅程涉及的函数链 |
 | `read` / `grep` / `glob` | step 4 读函数体(仅重跑路径) | **核心**:step 4 逐节点走旅程全靠 read 函数体。**短路路径不用** |
-| `hyperion_memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题导览事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
-| `hyperion_memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带 file:line evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
-| `hyperion_export_report(content, repo_path, out_dir)` | step 6 落盘 | 写导览报告 .md |
-| `hyperion_ensure_repo(name)` | 本地没仓 | 只读 clone |
+| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题导览事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
+| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带 file:line evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
+| `rootrecall-export_report(content, repo_path, out_dir)` | step 6 落盘 | 写导览报告 .md |
+| `rootrecall-ensure_repo(name)` | 本地没仓 | 只读 clone |
 
 ## 硬约束
 

@@ -1,5 +1,5 @@
 {
-  "//": "src layout: extraPaths=src 让 IDE 认得 hyperion 包;venv=uv 建的 .venv;排除 deer-flow 只读参考(987 文件,又慢又吵)。",
+  "//": "src layout: extraPaths=src 让 IDE 认得 rootrecall 包;venv=uv 建的 .venv;排除 deer-flow 只读参考(987 文件,又慢又吵)。",
   "extraPaths": ["src"],
   "venvPath": ".",
   "venv": ".venv",

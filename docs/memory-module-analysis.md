@@ -1,7 +1,7 @@
 # 记忆模块设计分析
 
-> 这是 Hyperion 三大支柱里 P3「记忆与持续学习」的当前实现分析。
-> 源码真相在 `src/hyperion/services/memory/`,本文档只做"讲清它在干什么、怎么设计的"。
+> 这是 RootRecall 三大支柱里 P3「记忆与持续学习」的当前实现分析。
+> 源码真相在 `src/rootrecall/services/memory/`,本文档只做"讲清它在干什么、怎么设计的"。
 
 ---
 
@@ -9,9 +9,9 @@
 
 普通 coding agent(opencode / claude code)有个致命毛病:**每开新会话就失忆**——上次定位过的 bug、上次摸清的模块结构,它全忘了,得从头读代码读日志,费 token 又费时间。
 
-Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪明的"长期笔记本"**。
+RootRecall 的记忆模块就是给 agent 装一本**跨会话、能自己变聪明的"长期笔记本"**。
 
-**比喻**:把 agent 想象成一个新来的实习生。普通 agent 是「干完活就把笔记撕了」的实习生;Hyperion 的记忆模块是「每干完一件活就往团队共享笔记本里记一条,还带页码和出处,下次遇到类似的能直接翻到」的实习生。而且这本笔记本**会自己整理**(consolidate 巩固):重复的合并、反复出现的教训升级成"规律"、互相打架的结论标「待裁决」、补丁已修的标「已合入上游」打折、长期没人翻的标「过期」、被推翻的旧结论不撕掉但打上「已被纠正」的标签排到后面。
+**比喻**:把 agent 想象成一个新来的实习生。普通 agent 是「干完活就把笔记撕了」的实习生;RootRecall 的记忆模块是「每干完一件活就往团队共享笔记本里记一条,还带页码和出处,下次遇到类似的能直接翻到」的实习生。而且这本笔记本**会自己整理**(consolidate 巩固):重复的合并、反复出现的教训升级成"规律"、互相打架的结论标「待裁决」、补丁已修的标「已合入上游」打折、长期没人翻的标「过期」、被推翻的旧结论不撕掉但打上「已被纠正」的标签排到后面。
 
 记下来的东西分三类来源:
 - **P1 调研**产出的"这个库长啥样、关键模块怎么实现" → 记下来(带源码 commit SHA 溯源)。
@@ -28,7 +28,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 1. 一条记忆的结构(KnowledgeItem)
 
-所有记忆都是同一个类 `KnowledgeItem`([schema.py:132](../src/hyperion/services/memory/schema.py#L132)),按 `kind` 分成**四类**,共用一张 SQLite 表。一条记忆有 7 组字段。
+所有记忆都是同一个类 `KnowledgeItem`([schema.py:132](../src/rootrecall/services/memory/schema.py#L132)),按 `kind` 分成**四类**,共用一张 SQLite 表。一条记忆有 7 组字段。
 
 **比喻**:一条记忆就像图书馆里的一张「索引卡片」,上面盖满了不同颜色的章——身份章、出处章、可信度章、时间章、关系章……
 
@@ -41,7 +41,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 | `repo` / `scope` | 哪个库 / `(owner, codebase)` 谁管的哪个库 | 哪个案件、哪个侦探的笔记本 |
 | `summary` | 人读一句话摘要 | 卡片标题;检索 + 注入模型时最先看到 |
 
-**四类 `kind`**([schema.py:141](../src/hyperion/services/memory/schema.py#L141)):
+**四类 `kind`**([schema.py:141](../src/rootrecall/services/memory/schema.py#L141)):
 - `codebase_fact` —— 代码事实(这个模块/符号/架构是干啥的)
 - `bug_lesson` —— bug 教训(根因 + 修法 + 影响面)
 - `mental_model` —— 稳定规则(被反复召回 ≥N 次的教训"毕业"成的规律)
@@ -62,11 +62,11 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 | `source_url` | 外部溯源 URL(domain_knowledge 网调来的) |
 | `source_tier` | 来源可信度档(6 档,见可信度章) |
 
-这是 Hyperion 区别于所有通用 agent memory 的核心。Graphiti / Zep / mem0 记的是"用户说过的话",**没有 file:line + commit 这种代码锚点**。每条结论都能追到「在哪个 commit、哪个文件第几行」,模型才敢用它下根因判断。
+这是 RootRecall 区别于所有通用 agent memory 的核心。Graphiti / Zep / mem0 记的是"用户说过的话",**没有 file:line + commit 这种代码锚点**。每条结论都能追到「在哪个 commit、哪个文件第几行」,模型才敢用它下根因判断。
 
 ### 可信度章(持续学习信号)
 
-`source_tier`(6 档权重 [schema.py:61](../src/hyperion/services/memory/schema.py#L61)):delegate / stated 1.0(侦探当面查 / 报告明说)> unknown 0.8(保守)> inferred 0.7(推断)> imported 0.6(外部导入)> tool 0.5(工具检索,可能是噪声)。
+`source_tier`(6 档权重 [schema.py:61](../src/rootrecall/services/memory/schema.py#L61)):delegate / stated 1.0(侦探当面查 / 报告明说)> unknown 0.8(保守)> inferred 0.7(推断)> imported 0.6(外部导入)> tool 0.5(工具检索,可能是噪声)。
 
 `confidence`(0..1 Bayes 累加)、`access_count`(被召回几次)、`last_recalled`。
 
@@ -82,8 +82,8 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ### 纠正章 —— 纠正关系闭环
 
-这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:178-188](../src/hyperion/services/memory/schema.py#L178-L188)):
-- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/hyperion/services/memory/schema.py#L187) 字段定义)
+这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:178-188](../src/rootrecall/services/memory/schema.py#L178-L188)):
+- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/rootrecall/services/memory/schema.py#L187) 字段定义)
 - `corrected_by` —— 旧条上"我被谁纠正了"(持久化,检索降权 0.3,仍可见作参考)
 
 **为什么不复用 `superseded_by`:** 这是关键设计。superseded_by 绑定 `active`,设了会让旧条从 active 视图**消失**;但"被纠正" ≠ "失效"——被推翻的旧根因仍要能检索到、体检能看到(审计可追溯),只是排到纠正者后面。所以独立 `corrected_by` 解耦。场景:bug 根因被推翻(A 派"abort-failure"是错的,B 派"scan-only 竞态"纠正它)→ B.corrects=[A.id],写入时自动回填 A.corrected_by=B.id → recall 时 A 被降权排后面,但还能看到,讲清思路演变。
@@ -92,12 +92,12 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 2. 怎么管理记忆(架构骨架)
 
-**分层契约**([manager.py:33](../src/hyperion/services/memory/manager.py#L33)):`MemoryService` 是个抽象基类,分三层:
+**分层契约**([manager.py:33](../src/rootrecall/services/memory/manager.py#L33)):`MemoryService` 是个抽象基类,分三层:
 - **tier-1**(必须实现):`memorize`(记)、`recall`(翻)
 - **tier-2**(管理,默认未实现,后端按需覆盖):`search` / `get` / `list_items` / `memorize_report`
 - **tier-3**(可选钩子):`consolidate`(巩固)、`invalidate`(失效)
 
-**后端可换**([manager.py:109](../src/hyperion/services/memory/manager.py#L109)):丢一个 `backends/<name>/` 文件夹(暴露 `BACKEND_CLASS`)+ 配置 `memory.backend`。v1 只实现 `native`,mem0 / cognee 留接口位(需要时一行配置换上,零锁死)。**拒绝静默回退**——后端名配错必须报错(记忆是持久状态,不能偷偷用别的)。
+**后端可换**([manager.py:109](../src/rootrecall/services/memory/manager.py#L109)):丢一个 `backends/<name>/` 文件夹(暴露 `BACKEND_CLASS`)+ 配置 `memory.backend`。v1 只实现 `native`,mem0 / cognee 留接口位(需要时一行配置换上,零锁死)。**拒绝静默回退**——后端名配错必须报错(记忆是持久状态,不能偷偷用别的)。
 
 **比喻**:这是"笔记本的标准接口"——不管后端是自家 SQLite 还是外接 mem0 / cognee,对外都只认"记"和"翻"两个动作。换笔记本品牌不用改上面的代码。
 
@@ -107,19 +107,19 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 3. 怎么新增记忆(写路径 memorize)
 
-入口 `memorize_items`([memorize.py:159](../src/hyperion/services/memory/backends/native/memorize.py#L159)),五步流水线:
+入口 `memorize_items`([memorize.py:159](../src/rootrecall/services/memory/backends/native/memorize.py#L159)),五步流水线:
 
 1. **嵌向量** `_embed_items`:给 summary 算 embedding(复用 code_index 的 embedder;off 则只走 BM25)
 2. **连图边** `_link_related`:找同 scope 内 evidence 文件有交集的现有项 → 填 `related`(便宜有用)
 3. **合并 / 冲突** `_merge_on_remention` —— 见第 6 节
 4. **纠正链**:新条若声明 `corrects` → `mark_corrected` 回填旧条 `corrected_by`
-5. **upsert** 入库([store.py:417](../src/hyperion/services/memory/backends/native/store.py#L417))
+5. **upsert** 入库([store.py:417](../src/rootrecall/services/memory/backends/native/store.py#L417))
 
 **置信度怎么算**(Bayes 累加,借 mnemopi):新条初始 = tier_weight · 0.5;重提同事实时 `conf += (1-conf)·tier·step`(step=0.3,封顶 1.0)。cur 越接近 1 增量越小(饱和);tier 越可信权重越大。
 
 ### 文档摄取通道(外部文档 → 记忆)
 
-除了 workflow 内部产出,外部文档也能吃进来([ingest.py](../src/hyperion/services/memory/ingest.py)),按扩展名分流:
+除了 workflow 内部产出,外部文档也能吃进来([ingest.py](../src/rootrecall/services/memory/ingest.py)),按扩展名分流:
 - **报告路**(.md / .pdf / .txt):`parse_issue` 取文本 → `LongDocChunker` 按 markdown header 切块(一章太厚再按段切,顺着作者本来的边界,不劈断句子)→ 每块 LLM 抽 KI → memorize
 - **补丁路**(.patch / .diff):`PatchIngestPipeline` 解 hunk → `code_index.retrieve` 取周围代码上下文 → LLM 抽根因 → 组装 bug_lesson。**补丁的 id 按 diff 内容算**(不是 LLM 的总结),保证同一补丁摄取两次 → 同 id → Bayes 合并
 
@@ -131,7 +131,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 4. 怎么检索记忆(读路径 recall)
 
-`recall`([recall.py:131](../src/hyperion/services/memory/backends/native/recall.py#L131))——**四路召回 → 融合 → 精排 → 衰减加权**:
+`recall`([recall.py:131](../src/rootrecall/services/memory/backends/native/recall.py#L131))——**四路召回 → 融合 → 精排 → 衰减加权**:
 
 ```
 四路(各路可选,失败降级不崩):
@@ -153,7 +153,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **向量检索的渐进式设计**:count(scope) ≤ 500 走 Python 逐行 cosine(小规模更快);> 500 切 sqlite-vec vec0 KNN(C 扩展,快 2-4×)。加载失败降级纯 loop。契约不变,recall 无感。
 
-**BM25 路的中文分词(CJK)**:FTS5 自带的 unicode61 分词器只认空格,中文没空格 → 整句"扫描会阻塞所有站点"被当成**一个**词,搜"扫描"匹配不上,纯中文查询此前只能靠向量路。现在索引侧(入库前)和查询侧(`_fts_query` 前)**同用 jieba 分词**([tokenize.py](../src/hyperion/services/memory/backends/native/tokenize.py)):只切中文段(英文标识符原样保留,不切碎),切完空格连回,两侧切法一致就能对上。代价是 FTS 表从「SQL 触发器自动同步」改成「upsert 时同事务维护」(触发器在 SQL 层调不了 Python 分词);老库打开时自动迁移重灌,分词失败降级回原行为,不崩。就像中文书脊原本是一整句话,只报其中两个词找不到书;入库时把书脊切成词卡、检索时把查询也切成词卡,对卡就行。
+**BM25 路的中文分词(CJK)**:FTS5 自带的 unicode61 分词器只认空格,中文没空格 → 整句"扫描会阻塞所有站点"被当成**一个**词,搜"扫描"匹配不上,纯中文查询此前只能靠向量路。现在索引侧(入库前)和查询侧(`_fts_query` 前)**同用 jieba 分词**([tokenize.py](../src/rootrecall/services/memory/backends/native/tokenize.py)):只切中文段(英文标识符原样保留,不切碎),切完空格连回,两侧切法一致就能对上。代价是 FTS 表从「SQL 触发器自动同步」改成「upsert 时同事务维护」(触发器在 SQL 层调不了 Python 分词);老库打开时自动迁移重灌,分词失败降级回原行为,不崩。就像中文书脊原本是一整句话,只报其中两个词找不到书;入库时把书脊切成词卡、检索时把查询也切成词卡,对卡就行。
 
 **比喻**:翻记忆不是"只翻一个抽屉",是**四个侦探同时翻四个档案柜**(关键词柜 / 语义柜 / 代码柜 / 结构图),各翻各的,最后把四份名单合在一起按"多侦探都提名 → 更靠前"排,再按"新旧 + 可信度"微调。这叫**多路召回融合(RRF)**,是检索工程的成熟做法。
 
@@ -163,7 +163,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **铁律:永不物理删除**(bi-temporal 软删)。这是对的——能回答"这 bug 在 X 时点还在不在",审计可追溯。
 
-- **手动失效** `invalidate` → `set_invalid`([store.py:550](../src/hyperion/services/memory/backends/native/store.py#L550)):设 `invalid_at`(+可选 `superseded_by`)
+- **手动失效** `invalidate` → `set_invalid`([store.py:550](../src/rootrecall/services/memory/backends/native/store.py#L550)):设 `invalid_at`(+可选 `superseded_by`)
 - **管理视图(list / count)只看 active**:`invalid_at IS NULL AND superseded_by IS NULL`(失效和被取代的都不算数)
 - **召回(BM25 / vector)只滤 `invalid_at`,不过滤 `superseded_by`**——被取代的旧版本仍能召回作参考,靠 decay 排到后面;只有手动 invalidate(错 fact)才真正隐藏。管理视图和召回的过滤口径**故意不同**:前者管"现在有几条有效记忆"(计数要干净),后者管"翻参考"(旧结论也有参考价值)
 
@@ -177,7 +177,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 **阶段 1(旧设计)**:写时 supersede——同主题不同结论,**新覆盖旧**(旧条设 invalid_at + superseded_by)。研究称这是"最站得住脚的默认"。
 
-**阶段 2(对标 mem0 v3)**:改成**只追加不取代**([memorize.py:136](../src/hyperion/services/memory/backends/native/memorize.py#L136))。同主题不同结论不再盖戳作废,新旧都 active 并存,靠检索侧 decay 排"最新为主、旧作参考"。同 id 重提(同 content_key)仍 Bayes 合并增强。这正是 mem0 v3 的 ADD-only architecture。
+**阶段 2(对标 mem0 v3)**:改成**只追加不取代**([memorize.py:136](../src/rootrecall/services/memory/backends/native/memorize.py#L136))。同主题不同结论不再盖戳作废,新旧都 active 并存,靠检索侧 decay 排"最新为主、旧作参考"。同 id 重提(同 content_key)仍 Bayes 合并增强。这正是 mem0 v3 的 ADD-only architecture。
 
 **阶段 3(纠正关系闭环)**:加 `corrects` / `corrected_by`。新条声明"我纠正了谁" → 旧条降权 0.3 仍可见。
 
@@ -195,7 +195,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ## 7. 怎么巩固 / 持续学习(consolidate)
 
-`consolidate`([consolidate.py:60](../src/hyperion/services/memory/backends/native/consolidate.py#L60))——recall 命中后后台自动跑(fire-and-forget)或 CLI 手动触发,五个 pass:
+`consolidate`([consolidate.py:60](../src/rootrecall/services/memory/backends/native/consolidate.py#L60))——recall 命中后后台自动跑(fire-and-forget)或 CLI 手动触发,五个 pass:
 
 | pass | 干什么 | 写入动作 |
 |---|---|---|
@@ -222,7 +222,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 调研了 Graphiti / Zep、mem0 v3、Letta、Cognee + 学术 survey 后的定位:
 
-| 维度 | Hyperion | Graphiti / Zep | mem0 v3 | Letta |
+| 维度 | RootRecall | Graphiti / Zep | mem0 v3 | Letta |
 |---|---|---|---|---|
 | 双时间轴 bi-temporal | 有 | 领先(矛盾处理 63.8%) | 部分 | 弱 |
 | 写时 append-only + 检索降权 | 有 | 有 | v3 核心 | — |

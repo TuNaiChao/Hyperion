@@ -1,4 +1,4 @@
-# Hyperion 主配置
+# RootRecall 主配置
 # - 模型用 `use: <module>:<ClassName>` 声明,工厂用反射加载(加 provider 零代码)。
 # - 任何以 $ 开头的值会被解析为环境变量(见 .env)。
 # 详见 docs/architecture.md §4.1 / §4.2。
@@ -82,7 +82,7 @@ tool_groups:
 
 # 沙箱 provider + 参数(P0 本地沙箱;P6 换 Docker 时只改 use 即可)。
 sandbox:
-  use: hyperion.platform.sandbox.provider:LocalSandboxProvider
+  use: rootrecall.platform.sandbox.provider:LocalSandboxProvider
   workspace: data/sandbox/workspace
   bash_command_timeout: 600
   bash_output_max_chars: 20000
@@ -92,7 +92,7 @@ sandbox:
 # 代码理解服务(P1 分阶段搭建,见 docs/p1-code-understanding-design.md)。
 # P1.2 先配 embedding;vector_store / retrieval / repo_map 随对应阶段补。
 code_index:
-  repo: hyperion                       # P1.4: search_code 查的表名(须与 build_index 一致;缺省回退 workspace 目录名)
+  repo: rootrecall                       # P1.4: search_code 查的表名(须与 build_index 一致;缺省回退 workspace 目录名)
   embedding:
     # provider 抽象(像模型工厂):
     #   openai_compatible = 远端 OpenAI 兼容 API(默认;免下载、免 torch,和调 chat 一样配 key)
@@ -163,13 +163,13 @@ memory:
     merge_step: 0.3              # 重提时 Bayes 置信度累加步长(mnemopi veracity 0.3)
 
 # 委托(R2,★P2 MVP):把 bug-RCA 的「读码 / 写补丁 / 给根因」重活委托给成熟 coding agent。
-# 抽象接口 CodingAgentDelegate(见 src/hyperion/tools/delegate.py);v1 默认 opencode。
+# 抽象接口 CodingAgentDelegate(见 src/rootrecall/tools/delegate.py);v1 默认 opencode。
 # 调研定稿(2026-07-29):本机 omp 未装(github 墙 + bun),opencode v1.18.3 已装、
 # run --format json 事件流天然绕开「DeepSeek 思考模式不支持结构化产出」坑。完整理由见
 # docs/调研/r2-bug-rca-research.md §1-2。
 # 流程:opencode run --format json --auto --dir <repo> "<prompt>" → 解析 NDJSON 事件流
 #       → 取最后一条 assistant 文本 → 喂 JSON Schema 抠对象(复用 memory/extract.py 方案)。
-# 反向:opencode 原生 MCP client 挂 `hyperion mcp serve`,外勤现场查 Hyperion 记忆(§6)。
+# 反向:opencode 原生 MCP client 挂 `rootrecall mcp serve`,外勤现场查 RootRecall 记忆(§6)。
 delegate:
   backend: opencode             # opencode(v1 默认,本机已装)| omp(需 bun)| claude(需 claude CLI)
   max_localize_loops: 2         # R3.1 B 迭代 verify-refine:localize 阶段最多自审重定位几轮(iter0 + K1-1)
@@ -182,7 +182,7 @@ delegate:
     auto_approve: true          # 无头必须(--auto):自动批准未显式拒绝的权限
     format: json                # json(NDJSON 事件流,默认)| default(格式化文本)
     timeout: 1200               # 委托总超时(秒);复杂 C RCA + 写补丁需久,600 不够 flash 收敛
-    config: config/opencode_hyperion.json  # Hyperion 自带 opencode 配置(hyperion-localize/repair agent + steps 限轮 + permission 工具白名单);env OPENCODE_CONFIG 注入
+    config: config/opencode_rootrecall.json  # RootRecall 自带 opencode 配置(rootrecall-localize/repair agent + steps 限轮 + permission 工具白名单);env OPENCODE_CONFIG 注入
     retry_max: 2               # 瞬时网络错(connection reset)重试次数 —— glm API 偶发 reset,delegate 自动续 session 重试(每模型最多跑这么多次)
     fallback_model: uniontech-ai/deepseek-v4-flash  # 主模型(glm-5.2)重试仍瞬时错 → 换 flash(非推理、调用快 2-5s、reset 概率低;同 provider 无需新 key)
   omp:                          # 备选(本机暂未装;网络/bun 通了切回 —— 其 strict schema 强校验是最大价值)
@@ -195,7 +195,7 @@ delegate:
     timeout: 600
 
 # ── agent 运行时 harness(R3)─────────────────────────────────────────
-# 面向小白:Hyperion 自己的 lead agent(深度调研那种长 agent)跑起来的护栏——
+# 面向小白:RootRecall 自己的 lead agent(深度调研那种长 agent)跑起来的护栏——
 # 断点续跑(checkpointer)+ token 预算闸(防烧爆)+ 工具输出外化(防单次工具返回撑爆上下文)。
 # 对标 deer-flow harness(自建 runtime,coding 活仍委托 opencode)。设计见 docs/设计/runtime-harness-design.md。
 # R3.0:runtime 只驱动 checkpointer(checkpoint.py 读 checkpoint_backend/path);
@@ -215,13 +215,13 @@ runtime:
     outputs_dir: data/runtime/tool-outputs
 
 # ── MCP 对外暴露(harness 转向 D0)─────────────────────────────────────
-# 面向小白:Hyperion 把自己的能力(记忆/代码检索/日志/影响面/补丁验证)做成 MCP 工具,
+# 面向小白:RootRecall 把自己的能力(记忆/代码检索/日志/影响面/补丁验证)做成 MCP 工具,
 # 给别的 coding agent(opencode 主 / codex / claude code)调。这层控制怎么"开门":
 #   stdio(默认)= 每次 agent 拉起一个子进程,本地最简(delegate 老路径用它);
 #   http = 一个长期开着的 warm 进程,所有 agent 共用,省掉每修一个 bug 都重启加载
 #          ~1.2GB(sentence-transformers)的冷启动(= 解掉老 ③ 号 cold-boot 痛)。
-# CLI `hyperion mcp serve --transport http --host --port` 覆盖这里的默认值。
-# 用 http:先 `hyperion mcp serve --transport http` 跑起来,再把 opencode/codex 指向
+# CLI `rootrecall mcp serve --transport http --host --port` 覆盖这里的默认值。
+# 用 http:先 `rootrecall mcp serve --transport http` 跑起来,再把 opencode/codex 指向
 #        http://<host>:<port>/mcp(端点路径 /mcp 是 FastMCP 默认 streamable_http_path)。
 mcp:
   transport: stdio            # stdio(默认)| http(streamable-http)

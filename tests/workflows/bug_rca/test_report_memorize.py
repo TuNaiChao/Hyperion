@@ -9,9 +9,9 @@ from __future__ import annotations
 import asyncio
 import subprocess
 
-from hyperion.services.memory.schema import Scope
-from hyperion.tools.delegate import DelegateResult
-from hyperion.workflows.bug_rca import nodes
+from rootrecall.services.memory.schema import Scope
+from rootrecall.tools.delegate import DelegateResult
+from rootrecall.workflows.bug_rca import nodes
 
 
 # ── 假 MemoryService:捕获 memorize 收到的 KI,不真写 ──
@@ -48,7 +48,7 @@ def _state(repo_root, *, problem_summary=None, blast_radius=None,
 
 def _patch(monkeypatch, tmp_path, svc):
     """render_report mock 成空串(不关心报告);get_memory_service 返假 svc;cwd 转 tmp(data/ 写 tmp)。"""
-    monkeypatch.setattr("hyperion.workflows.bug_rca.report.render_report", lambda state: "# report")
+    monkeypatch.setattr("rootrecall.workflows.bug_rca.report.render_report", lambda state: "# report")
     monkeypatch.setattr(nodes, "get_memory_service", lambda: svc)
     monkeypatch.chdir(tmp_path)
 

@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from hyperion.tools.mcp_memory import build_server
+from rootrecall.tools.mcp_memory import build_server
 
 
 def _call(mcp, name: str, args: dict) -> str:
@@ -104,7 +104,7 @@ def test_call_chain_bad_direction(monkeypatch):
     monkeypatch CodeGraph.open 返一个 call_chain 必抛 ValueError 的假图,直测工具的 ValueError 兜底
     (不靠真图,hermetic;真图缺失时 direction 校验根本到不了,故必须注入)。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     class _FakeGraph:
         def call_chain(self, *a, **kw):  # noqa: ANN002,ANN003 —— 假对象,签名宽松
@@ -133,7 +133,7 @@ def test_repo_map_success_via_fake_graph(monkeypatch):
 
     monkeypatch CodeGraph.open 返假图(不靠真图,hermetic):直测工具壳的格式化 + map_tokens/per-call codebase 透传。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     seen: dict = {}
 
@@ -161,7 +161,7 @@ def test_repo_map_success_via_fake_graph(monkeypatch):
 
 def test_honest_truncate_short_body_passthrough():
     """未超限 → 原样返回,零 note 零噪音(绝大多数调用走这条,不能白加一行提示)。"""
-    from hyperion.tools.mcp_memory import _honest_truncate
+    from rootrecall.tools.mcp_memory import _honest_truncate
 
     body = '{"k": "v"}'
     out = _honest_truncate(body, 8000, how_to_refetch="重调")
@@ -173,7 +173,7 @@ def test_repo_map_truncation_note_via_fake_graph(monkeypatch):
 
     假图塞一个 >8000 字符的 map_text 触发截断;断言 note 出现且总长被钳在限内。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     class _BigGraph:
         def repo_map(self, *, map_tokens: int = 2048):  # noqa: ANN002
@@ -210,7 +210,7 @@ def test_repo_overview_success_via_fake_graph(monkeypatch):
     取社区(architecture_overview 内部已调 get_communities),故假图不单写 communities() 方法。
     warnings 用 list[str] 匹配真实 CRG(communities.py:1079-1082 拼 "High coupling ..." 串)。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     seen: dict = {}
 
@@ -247,7 +247,7 @@ def test_repo_overview_large_repo_caps_communities_and_keeps_hubs(monkeypatch):
     member_count + 样本(不堆全量 qn);③ hub/bridge/warnings 排在 communities 前 —— 即便末尾社区被
     截断,架构最关键的枢纽/咽喉/告警也不丢;④ 截断有显式 note(诚实信号,不静默丢)。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     # 50 个社区,每个塞 100 个 member qn → 模拟大仓 bulky communities(不压会爆截断)。
     # 用长 name + 长 description 让即便压成 member_count+5样本后,30 个社区仍超 12000 → 触发截断路径。
@@ -382,7 +382,7 @@ def test_export_report_agents_md_opt_in(tmp_path):
     agents = repo / "AGENTS.md"
     assert agents.is_file()
     body = agents.read_text(encoding="utf-8")
-    assert body.startswith("# AGENTS.md") and "Hyperion export_report 生成" in body
+    assert body.startswith("# AGENTS.md") and "RootRecall export_report 生成" in body
     assert "模块 A 是核心入口" in body  # 同源内容
     # ③ 已有不覆盖
     out3 = _call(mcp, "export_report",
@@ -411,7 +411,7 @@ def test_memory_recall_kind_filter():
 class _FakeMemSvc:
     """记录 scope 的假 MemoryService —— 让 recall/memorize 的 per-call codebase 测试不碰真 db / 网络。
 
-    build_server() 内 `from hyperion.services.memory import get_memory_service` 在调用时读模块属性,
+    build_server() 内 `from rootrecall.services.memory import get_memory_service` 在调用时读模块属性,
     monkeypatch 替掉它即可注入本假对象(绕开真单例)。
     """
 
@@ -459,7 +459,7 @@ def test_memory_recall_per_call_codebase(monkeypatch):
     见 memory-design-review-2026-08-12:memory_recall 职责是翻长期记忆,代码检索另有 search_codebase。
     """
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_recall",
                 {"query": "bluetooth disconnect", "codebase": "nonexistent_xyz_cb_42"})
@@ -472,7 +472,7 @@ def test_memory_recall_per_call_codebase(monkeypatch):
 def test_memory_memorize_per_call_codebase(monkeypatch):
     """memory_memorize 传 codebase → 写入用对应 scope(返回串回显 + scope 记录双证,不碰真 db)。"""
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_memorize", {
         "kind": "bug_lesson", "summary": "per-call codebase probe",
@@ -491,7 +491,7 @@ def test_memory_memorize_with_corrects(monkeypatch):
     本测验工具透传;不碰真 db(假 svc 记录传入的 KI)。
     """
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_memorize", {
         "kind": "bug_lesson",
@@ -514,7 +514,7 @@ def test_memory_memorize_multi_evidence(monkeypatch):
     工具却收不下)。现加 evidence 参数:list[dict] 每条 {file,line?,snippet?},去重,与旧 file/line 合并。
     """
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_memorize", {
         "kind": "codebase_fact", "summary": "wpa 连接主流程架构",
@@ -556,10 +556,10 @@ def test_memory_memorize_domain_knowledge_with_url(monkeypatch):
     验领域知识溯源分层:网调来的协议知识(source_url 非空)落 imported 档(外部导入,weight 0.6),
     区别于用户笔记(stated)和委托 agent 产出(delegate)。这是 domain-research skill 的核心入口。
     """
-    from hyperion.services.memory.schema import SourceTier
+    from rootrecall.services.memory.schema import SourceTier
 
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_memorize", {
         "kind": "domain_knowledge",
@@ -586,10 +586,10 @@ def test_memory_memorize_domain_knowledge_user_note(monkeypatch):
     验用户笔记路径:用户直接给的技术笔记(非网调)落 stated 档(人陈述,weight 1.0),
     source_url 留空。和网调(imported)区分,体现溯源分层。
     """
-    from hyperion.services.memory.schema import SourceTier
+    from rootrecall.services.memory.schema import SourceTier
 
     fake = _FakeMemSvc()
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_memorize", {
         "kind": "domain_knowledge",
@@ -614,7 +614,7 @@ def test_memory_dump_empty(monkeypatch):
     包 MemoryService.list_items(已是契约);空返回 → 工具走空提示分支。hermetic:假 svc 返 []。
     """
     fake = _FakeMemSvc()  # list_items_return 默认 [] → 空提示分支
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_dump", {"codebase": "nonexistent_xyz_cb_42"})
     assert "Traceback" not in out, out
@@ -630,7 +630,7 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     hermetic:假 svc 注入 2 条 KnowledgeItem(一条高 conf 带 evidence/sha,一条低 conf 无证据),
     断言 header「2 items」+ 两条 summary + 审计字段都进串。
     """
-    from hyperion.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
+    from rootrecall.services.memory.schema import Evidence, KnowledgeItem, Scope, SourceTier
 
     scope = Scope(owner="default", codebase="bluez")
     item_hi = KnowledgeItem(
@@ -647,7 +647,7 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     )
     fake = _FakeMemSvc()
     fake.list_items_return = [item_hi, item_lo]
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_dump", {"codebase": "bluez"})
     assert "Traceback" not in out, out
@@ -672,7 +672,7 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     无 tags 的库不输出 health 行(不添噪音)—— 由 test_memory_dump_renders_audit_cards 覆盖
     (那个测试的条目无 tags,断言 'health:' 不在串,见下)。
     """
-    from hyperion.services.memory.schema import KnowledgeItem, Scope, SourceTier
+    from rootrecall.services.memory.schema import KnowledgeItem, Scope, SourceTier
 
     scope = Scope(owner="default", codebase="bluez")
     a = KnowledgeItem(
@@ -685,7 +685,7 @@ def test_memory_dump_renders_audit_cards(monkeypatch):
     )
     fake = _FakeMemSvc()
     fake.list_items_return = [a, b]
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     out = _call(mcp, "memory_dump", {"codebase": "bluez"})
     assert "Traceback" not in out, out
@@ -702,13 +702,13 @@ def test_memory_dump_pagination(monkeypatch):
     分页 + 显式翻页提示(诚实信号)。本测:65 条(>默认 limit=60)→ 第一页提示 more + offset=60;
     offset=60 第二页拿余下 5 条,header 仍带总数 65。
     """
-    from hyperion.services.memory.schema import KnowledgeItem, Scope
+    from rootrecall.services.memory.schema import KnowledgeItem, Scope
     scope = Scope(owner="default", codebase="big")
     items = [KnowledgeItem(kind="codebase_fact", repo="big", scope=scope,
                            summary=f"fact-{i:03d}", confidence=0.5) for i in range(65)]
     fake = _FakeMemSvc()
     fake.list_items_return = items
-    monkeypatch.setattr("hyperion.services.memory.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
     mcp = build_server()
     # 第一页:总数 65,提示还有更多 + 下次 offset=60
     p1 = _call(mcp, "memory_dump", {"codebase": "big"})
@@ -856,7 +856,7 @@ def test_merge_eval_success_via_fake(monkeypatch):
     monkeypatch 模块级 merge_eval(工具内 `from ... import merge_eval as _me` 每次调用重读属性 → 拿到假函数,
     hermetic 不靠真 git 仓)。CodeGraph.open('fake_cb') 会 FileNotFoundError → 工具 try/except → graph=None,假函数忽略 graph。
     """
-    import hyperion.services.code_index.code_graph as cg_mod
+    import rootrecall.services.code_index.code_graph as cg_mod
 
     seen: dict = {}
 

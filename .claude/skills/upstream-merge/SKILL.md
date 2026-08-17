@@ -2,14 +2,14 @@
 name: upstream-merge
 description: 评估上游仓库的一批 commit 该不该 backport 到当前 fork——把上游拉到本地,逐个 commit 判断「fork 已修 / 建议合 / 冲突大」,再查相关性。用户问"上游这些 commit 哪些该合进来 / 哪些已经修过 / 会不会冲突"时用。
 allowed-tools:
-  - hyperion_merge_eval
-  - hyperion_ensure_repo
-  - hyperion_search_codebase
-  - hyperion_call_chain
-  - hyperion_blast_radius
-  - hyperion_validate_patch
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
+  - rootrecall-merge_eval
+  - rootrecall-ensure_repo
+  - rootrecall-search_codebase
+  - rootrecall-call_chain
+  - rootrecall-blast_radius
+  - rootrecall-validate_patch
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
   - read
   - grep
   - glob
@@ -18,7 +18,7 @@ allowed-tools:
 
 # 上游 commit 合入评估
 
-你负责判断上游仓库一段范围里的 commit 该不该 backport 到用户的 fork。读码和相关性推理是你的活;`hyperion_merge_eval` 负责逐 commit 的确定性三态判定(已修/能合/冲突),其他 `hyperion_*` 工具取代码、查影响面、验 apply、存记忆。
+你负责判断上游仓库一段范围里的 commit 该不该 backport 到用户的 fork。读码和相关性推理是你的活;`rootrecall-merge_eval` 负责逐 commit 的确定性三态判定(已修/能合/冲突),其他 `rootrecall-*` 工具取代码、查影响面、验 apply、存记忆。
 
 **两个边界**(必须守):
 - **只评估不修改** —— 你不改用户的 fork(不 `apply`/`cherry-pick`/`merge`/`reset`/写文件)。合不合、怎么合,用户自己定、自己做。
@@ -39,14 +39,14 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_merge_eval(base, head, fork_ref, repo_path, concern_files?, codebase?)` | 主扫描,每个评估都调 —— 硬门 | 逐 commit 三态;确定性地板,不判相关性 |
-| `hyperion_ensure_repo(name)` | 本地没这个仓 | clone;确认非浅克隆(有历史) |
-| `hyperion_call_chain(seed)` | 判相关性 | commit 改的符号在 fork 调用链里的位置 |
-| `hyperion_blast_radius(files)` | 判影响面 | commit 触及的文件波及谁 |
-| `hyperion_search_codebase(query)` | 理解 commit 涉及的代码 | 传概念别传文件名;只回真实存在的符号 |
-| `hyperion_validate_patch(patch, repo_path)` | 细查单个 commit 的 apply | 传该 commit 的 `git show` diff |
-| `hyperion_memory_recall(query)` | 评估前后 | 翻同类上游变更 / 历史 backport 决策 |
-| `hyperion_memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传上游 sha;决策作 summary |
+| `rootrecall-merge_eval(base, head, fork_ref, repo_path, concern_files?, codebase?)` | 主扫描,每个评估都调 —— 硬门 | 逐 commit 三态;确定性地板,不判相关性 |
+| `rootrecall-ensure_repo(name)` | 本地没这个仓 | clone;确认非浅克隆(有历史) |
+| `rootrecall-call_chain(seed)` | 判相关性 | commit 改的符号在 fork 调用链里的位置 |
+| `rootrecall-blast_radius(files)` | 判影响面 | commit 触及的文件波及谁 |
+| `rootrecall-search_codebase(query)` | 理解 commit 涉及的代码 | 传概念别传文件名;只回真实存在的符号 |
+| `rootrecall-validate_patch(patch, repo_path)` | 细查单个 commit 的 apply | 传该 commit 的 `git show` diff |
+| `rootrecall-memory_recall(query)` | 评估前后 | 翻同类上游变更 / 历史 backport 决策 |
+| `rootrecall-memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传上游 sha;决策作 summary |
 | `bash` | 拉 upstream / 查 refs | **只许** `fetch`/`log`/`show`/`rev-parse`/`status`/`diff`(读类);**禁** `apply`/`cherry-pick`/`merge`/`reset`/`checkout`/写类 |
 
 ## 硬约束

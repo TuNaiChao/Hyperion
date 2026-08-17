@@ -1,6 +1,6 @@
 # Skill 路由矩阵:用户问题 → 进哪个 skill
 
-> Hyperion 的 8 个 skill 各管一类问题。本文是"总机接线表":拿到一个用户请求,先在这张表里对号入座,再进对应 SKILL.md 看详细菜谱。
+> RootRecall 的 8 个 skill 各管一类问题。本文是"总机接线表":拿到一个用户请求,先在这张表里对号入座,再进对应 SKILL.md 看详细菜谱。
 > 三条总纪律(所有 skill 共享):**只到 apply 不编译**(编译/复现/正确性一律用户真机自验);**read-only 的 skill 不改任何仓库**;**bug/补丁类结论等用户验证才 memorize,读码/调研类读完即记**。
 
 ---
@@ -52,7 +52,7 @@
 | `memory_recall` / `memory_memorize` | 全部 8 个 | 召回先验 / 沉淀结论(recall-first 是所有 skill 的第一步) |
 | `search_codebase` / `repo_map` / `call_chain` / `blast_radius` / `when_introduced` | bug-rca(主)/ compare / onboarding / backport(辅) | 代码情报五件套:检索/符号图/调用链/影响面/引入史 |
 | `repo_overview` | onboarding | 架构层俯瞰(社区/hub/bridge/耦合告警) |
-| `validate_patch` / `fetch_patch` | bug-rca / patch-review / backport | apply 硬门(Tier 0,Hyperion 验的唯一一层) |
+| `validate_patch` / `fetch_patch` | bug-rca / patch-review / backport | apply 硬门(Tier 0,RootRecall 验的唯一一层) |
 | `merge_eval` | upstream-merge(专用) | 三态判定(patch-id + merge-tree) |
 | `memory_dump` | memory-health-check(专用) | 摊全量记忆出溯源卡 |
 | `cross_version_diff` | (单仓两 ref 场景,skill 层刻不用) | 只对同一个 git 仓的两个 ref 有效,两独立仓无效 |
@@ -66,7 +66,7 @@
 
 ## 五、全 skill 公共纪律(路由之外的底线)
 
-1. **验证封顶 apply**(Tier 0):`validate_patch` 是 Hyperion 唯一自动跑的验证;编译/测试/复现永不做,correctness 只报 apply-based / reasoning-based。
+1. **验证封顶 apply**(Tier 0):`validate_patch` 是 RootRecall 唯一自动跑的验证;编译/测试/复现永不做,correctness 只报 apply-based / reasoning-based。
 2. **溯源铁律**:每条结论带 file:line(compare/onboarding 带双源);domain-research 带 source_url;记忆条目带 evidence/commit_sha。
 3. **recall-first**:所有 skill 第一步 `memory_recall` 探底,命中同主题直接短路出报告(「下次秒答」);只有没命中/主题不符才重跑调研。
 4. **诚实信号**:不静默截断、不报没验过的 tested/verified、工具降级时 note 明说。

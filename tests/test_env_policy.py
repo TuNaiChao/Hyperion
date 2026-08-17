@@ -1,6 +1,6 @@
 """env_policy:验证 secret-looking 环境变量被刮除、普通变量保留。"""
 
-from hyperion.platform.sandbox.env_policy import build_sandbox_env, is_blocked_env_name
+from rootrecall.platform.sandbox.env_policy import build_sandbox_env, is_blocked_env_name
 
 
 def test_secret_patterns_blocked():

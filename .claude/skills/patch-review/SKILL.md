@@ -2,13 +2,13 @@
 name: patch-review
 description: 鉴定一个补丁或 GitHub PR——在 C/系统软件仓库判断它做了什么、能否 apply、影响面、该不该合入。用户给你补丁文件 / PR 链接,或问"这个补丁干啥 / 能不能打上 / 该不该合 / 有没有副作用"时用。
 allowed-tools:
-  - hyperion_fetch_patch
-  - hyperion_ensure_repo
-  - hyperion_search_codebase
-  - hyperion_blast_radius
-  - hyperion_validate_patch
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
+  - rootrecall-fetch_patch
+  - rootrecall-ensure_repo
+  - rootrecall-search_codebase
+  - rootrecall-blast_radius
+  - rootrecall-validate_patch
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
   - read
   - grep
   - glob
@@ -16,7 +16,7 @@ allowed-tools:
 
 # 补丁 / PR 鉴定
 
-你负责判断一个补丁/PR:它想干什么、能否 apply、影响面、该不该合入。读码和推理是你的活;`hyperion_*` 工具负责取 PR、检索代码、查影响面、验 apply、存记忆。
+你负责判断一个补丁/PR:它想干什么、能否 apply、影响面、该不该合入。读码和推理是你的活;`rootrecall-*` 工具负责取 PR、检索代码、查影响面、验 apply、存记忆。
 
 **两个边界**(必须守):
 - **编译 / 正确性不自动验证** —— 系统软件构建环境重,工具只验到 apply;能否编译 / 修对由用户自验。
@@ -36,13 +36,13 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_fetch_patch(url)` | 给的是 PR 链接 | 抓 diff + title/body/changed_files/merge_commit_sha |
-| `hyperion_ensure_repo(name)` | 本地没这个仓 | 按配置 remotes clone;已有就复用(幂等) |
-| `hyperion_validate_patch(patch, repo_path)` | 每个补丁都调 —— 硬门 | 传补丁原文;只验 apply,不验修对 |
-| `hyperion_blast_radius(files)` | 判影响面 | 改这些文件会波及谁 |
-| `hyperion_search_codebase(query)` | 理解补丁涉及的代码 | 传概念别传文件名;只回真实存在的符号 |
-| `hyperion_memory_recall(query)` | 鉴定前后 | 翻同类历史补丁 / 教训 |
-| `hyperion_memory_memorize(...)` | **用户验证通过后**才调 | `fix_patch` 传补丁原文;结论作 summary/root_cause |
+| `rootrecall-fetch_patch(url)` | 给的是 PR 链接 | 抓 diff + title/body/changed_files/merge_commit_sha |
+| `rootrecall-ensure_repo(name)` | 本地没这个仓 | 按配置 remotes clone;已有就复用(幂等) |
+| `rootrecall-validate_patch(patch, repo_path)` | 每个补丁都调 —— 硬门 | 传补丁原文;只验 apply,不验修对 |
+| `rootrecall-blast_radius(files)` | 判影响面 | 改这些文件会波及谁 |
+| `rootrecall-search_codebase(query)` | 理解补丁涉及的代码 | 传概念别传文件名;只回真实存在的符号 |
+| `rootrecall-memory_recall(query)` | 鉴定前后 | 翻同类历史补丁 / 教训 |
+| `rootrecall-memory_memorize(...)` | **用户验证通过后**才调 | `fix_patch` 传补丁原文;结论作 summary/root_cause |
 
 ## 硬约束
 

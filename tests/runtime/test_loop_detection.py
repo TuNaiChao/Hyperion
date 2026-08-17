@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from hyperion.platform.runtime._bounded_dict import BoundedDict
-from hyperion.platform.runtime.middlewares.loop_detection import (
+from rootrecall.platform.runtime._bounded_dict import BoundedDict
+from rootrecall.platform.runtime.middlewares.loop_detection import (
     LoopDetectionMiddleware,
     _hash_tool_calls,
 )

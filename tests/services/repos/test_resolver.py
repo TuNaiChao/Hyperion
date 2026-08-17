@@ -14,8 +14,8 @@ import subprocess
 
 import pytest
 
-from hyperion.platform.config import AppConfig, PatchConfig, PatchGitConfig
-from hyperion.services.repos.resolver import ensure_repo, repo_name
+from rootrecall.platform.config import AppConfig, PatchConfig, PatchGitConfig
+from rootrecall.services.repos.resolver import ensure_repo, repo_name
 
 
 def _cfg(clone_dir: str, remotes: dict | None = None) -> AppConfig:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from hyperion.services.code_index.eval.scorer import (
+from rootrecall.services.code_index.eval.scorer import (
     acc_at_k,
     hit_rate_at_k,
     mean_metrics,

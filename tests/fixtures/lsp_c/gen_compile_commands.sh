@@ -16,4 +16,4 @@ cat > compile_commands.json <<EOF
 ]
 EOF
 echo "wrote $D/compile_commands.json"
-echo "验证:uv run hyperion lsp health \"$D\""
+echo "验证:uv run rootrecall lsp health \"$D\""

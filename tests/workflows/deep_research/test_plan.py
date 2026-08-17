@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from hyperion.workflows.deep_research._plan import plan_modules
+from rootrecall.workflows.deep_research._plan import plan_modules
 
 
 # ── 桩 model:plan_modules 只用 .invoke() + .content,不需要真 langchain 模型 ──
@@ -126,7 +126,7 @@ def test_plan_modules_empty_candidates():
 def test_node_plan_wiring(monkeypatch):
     """node_plan 把 CRG 社区 + hub 分桶成候选,再交给 plan_modules。打桩 CodeGraph.open +
     create_chat_model,不依赖真 CRG / 真 LLM,验:大社区优先 + hub 按 community 分桶 + LLM 命名落地。"""
-    from hyperion.workflows.deep_research.nodes import node_plan
+    from rootrecall.workflows.deep_research.nodes import node_plan
 
     # 假 CodeGraph.open → 返一个只有 hub_nodes() 的假对象(按 community_id 分桶的输入)
     class _FakeCG:
@@ -138,12 +138,12 @@ def test_node_plan_wiring(monkeypatch):
             ]
 
     monkeypatch.setattr(
-        "hyperion.services.code_index.code_graph.CodeGraph.open",
+        "rootrecall.services.code_index.code_graph.CodeGraph.open",
         lambda codebase: _FakeCG(),
     )
     # 假 create_chat_model → 返吐合法 JSON 的桩(node_plan 只用它产 model 传给 plan_modules)
     monkeypatch.setattr(
-        "hyperion.platform.models.create_chat_model",
+        "rootrecall.platform.models.create_chat_model",
         lambda name=None: _StubModel(
             json.dumps(
                 [

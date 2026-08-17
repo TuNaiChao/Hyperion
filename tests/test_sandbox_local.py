@@ -2,7 +2,7 @@
 
 import pytest
 
-from hyperion.platform.sandbox.local import LocalSandbox
+from rootrecall.platform.sandbox.local import LocalSandbox
 
 
 @pytest.fixture

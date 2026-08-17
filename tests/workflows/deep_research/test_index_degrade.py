@@ -8,7 +8,7 @@ node_plan 的 CodeGraph.open 同理(图未建 → hub 空列表,key_symbols 留�
 这两条把"CRG 缺席时 deep_research 仍能出报告(检索层照常)"锁死。
 """
 
-from hyperion.workflows.deep_research.nodes import node_index, node_plan
+from rootrecall.workflows.deep_research.nodes import node_index, node_plan
 
 
 class _StubModel:
@@ -32,14 +32,14 @@ def test_node_index_crg_build_failure_degrades(monkeypatch, tmp_path):
         raise ImportError("code-review-graph extra 未安装")
 
     monkeypatch.setattr(
-        "hyperion.services.code_index.code_graph.CodeGraph.build", _boom
+        "rootrecall.services.code_index.code_graph.CodeGraph.build", _boom
     )
     # build_index 也打桩(不依赖真 embedder / 真索引)
     monkeypatch.setattr(
-        "hyperion.services.code_index.index.build_index", lambda *a, **k: None
+        "rootrecall.services.code_index.index.build_index", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        "hyperion.services.code_index.embed.create_embedder",
+        "rootrecall.services.code_index.embed.create_embedder",
         lambda cfg: None,
     )
 
@@ -49,7 +49,7 @@ def test_node_index_crg_build_failure_degrades(monkeypatch, tmp_path):
                 pass
 
     monkeypatch.setattr(
-        "hyperion.workflows.deep_research.nodes.get_app_config", lambda: _Cfg()
+        "rootrecall.workflows.deep_research.nodes.get_app_config", lambda: _Cfg()
     )
 
     out = node_index(
@@ -69,10 +69,10 @@ def test_node_plan_no_graph_hub_empty(monkeypatch):
         raise FileNotFoundError("结构图未建")
 
     monkeypatch.setattr(
-        "hyperion.services.code_index.code_graph.CodeGraph.open", _open_boom
+        "rootrecall.services.code_index.code_graph.CodeGraph.open", _open_boom
     )
     monkeypatch.setattr(
-        "hyperion.platform.models.create_chat_model",
+        "rootrecall.platform.models.create_chat_model",
         lambda name=None: _StubModel("[]"),
     )
 

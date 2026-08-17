@@ -2,10 +2,10 @@
 name: memory-health-check
 description: 给一个 codebase 的长期记忆做"体检"——一次性把所有记忆条目摊开,逐条看它多可信(confidence)、来自哪(source_tier/commit_sha/evidence)、还有没有效(bi-temporal),聚出健康信号(溯源弱/待巩固/已过期/未决矛盾)和建议。用户问"我们对这个仓到底记了啥"、"记忆库质量怎么样"、"哪些记忆可信"、"帮我审一下记忆库"、"这些教训还有效吗"时用。
 allowed-tools:
-  - hyperion_memory_dump
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
-  - hyperion_search_codebase
+  - rootrecall-memory_dump
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
+  - rootrecall-search_codebase
   - read
   - grep
   - glob
@@ -13,7 +13,7 @@ allowed-tools:
 
 # 记忆库体检
 
-你负责给 Hyperion 关于**一个代码仓库**的长期记忆做体检:把库里所有记忆条目摊开,逐条看清楚它**多可信、哪来的、还有没有效**,然后聚出健康信号和改进建议。读记忆卡、判健康信号是你的活;Hyperion 工具负责把记忆摊开(`memory_dump`)、查特定主题补充(`memory_recall`)、必要时核验引用的代码是否真存在。
+你负责给 RootRecall 关于**一个代码仓库**的长期记忆做体检:把库里所有记忆条目摊开,逐条看清楚它**多可信、哪来的、还有没有效**,然后聚出健康信号和改进建议。读记忆卡、判健康信号是你的活;RootRecall 工具负责把记忆摊开(`memory_dump`)、查特定主题补充(`memory_recall`)、必要时核验引用的代码是否真存在。
 
 **两个边界**(必须守):
 - **只读不改代码,也默认不改记忆库** —— 你不 edit 源码(不 edit / 不 git apply);对记忆库你也**只看不动**(体检 = 出体检卡 + 建议,**不自动删 stale、不自动改 confidence**)。改记忆库是人的活(对齐「未经验证不 memorize / invalidate 谨慎」)。和 onboarding/compare 一样是 read-only,且更严——连记忆库都只读不写。
@@ -43,10 +43,10 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_memory_dump(kind?, include_invalid?, codebase?)` | **step 1 主数据源** | 一次返全量,每条带溯源卡(conf/tier/evidence/sha/STALE/hits)。体检的入口,必调 |
-| `hyperion_memory_recall(query, codebase?)` | step 3 查特定主题补充 | dump 只给 summary,某条你想看细节(detail/root_cause)→ recall 拉。或核对「这两条是否真矛盾」时按主题召全 |
-| `read` / `grep` / `glob` / `hyperion_search_codebase` | step 3 核验引用代码 | **必要时**才核:某条溯源弱但你怀疑它指向的代码早改了 → read/search_codebase 核 file:line 还在不在(防「记忆指向不存在的代码」)。不必每条都核(省 token) |
-| `hyperion_memory_memorize(...)` | step 5(仅发现矛盾) | 能闭环 → `corrects=[旧id]` 写纠正关系;不能闭环 → kind=codebase_fact 标「需人工裁决」;**无矛盾不记** |
+| `rootrecall-memory_dump(kind?, include_invalid?, codebase?)` | **step 1 主数据源** | 一次返全量,每条带溯源卡(conf/tier/evidence/sha/STALE/hits)。体检的入口,必调 |
+| `rootrecall-memory_recall(query, codebase?)` | step 3 查特定主题补充 | dump 只给 summary,某条你想看细节(detail/root_cause)→ recall 拉。或核对「这两条是否真矛盾」时按主题召全 |
+| `read` / `grep` / `glob` / `rootrecall-search_codebase` | step 3 核验引用代码 | **必要时**才核:某条溯源弱但你怀疑它指向的代码早改了 → read/search_codebase 核 file:line 还在不在(防「记忆指向不存在的代码」)。不必每条都核(省 token) |
+| `rootrecall-memory_memorize(...)` | step 5(仅发现矛盾) | 能闭环 → `corrects=[旧id]` 写纠正关系;不能闭环 → kind=codebase_fact 标「需人工裁决」;**无矛盾不记** |
 
 ## 硬约束
 

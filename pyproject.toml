@@ -1,7 +1,7 @@
 [project]
-name = "hyperion"
+name = "rootrecall"
 version = "0.1.0"
-description = "Hyperion — code & log analysis agent with continuous learning (bug RCA, deep research, PR tracking)"
+description = "RootRecall — code & log analysis agent with continuous learning (bug RCA, deep research, PR tracking)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -69,7 +69,7 @@ embedding-local = [
 dev = ["pytest>=8", "ruff>=0.6"]
 
 [project.scripts]
-hyperion = "hyperion.cli:main"
+rootrecall = "rootrecall.cli:main"
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -80,7 +80,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/hyperion"]
+packages = ["src/rootrecall"]
 
 [tool.ruff]
 # 240 对齐 deer-flow(其 backend/AGENTS.md 明定 line-length 240),容纳详尽中文 docstring。

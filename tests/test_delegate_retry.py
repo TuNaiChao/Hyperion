@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hyperion.tools.delegate as dele
-from hyperion.tools.delegate import DelegateResult, DelegateStatus, OpencodeDelegate
+import rootrecall.tools.delegate as dele
+from rootrecall.tools.delegate import DelegateResult, DelegateStatus, OpencodeDelegate
 
 
 def _err(msg: str) -> DelegateResult:
@@ -73,7 +73,7 @@ def test_retry_primary_then_fallback(monkeypatch):
     """主模型 2 次瞬时错 → 换 fallback 第 3 次成功;全程 continue_session=True 续 session。"""
     _patch_cfg(monkeypatch)
     calls = _script(monkeypatch, [_err("connection reset by peer"), _err("connection reset"), _ok()])
-    out = asyncio.run(OpencodeDelegate().run("p", "/tmp", agent="hyperion-repair", continue_session=True))
+    out = asyncio.run(OpencodeDelegate().run("p", "/tmp", agent="rootrecall-repair", continue_session=True))
     assert out.status == "ok"
     assert out.data == {"verdict": "verified"}
     assert len(calls) == 3

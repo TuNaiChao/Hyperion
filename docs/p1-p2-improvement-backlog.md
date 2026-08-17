@@ -10,11 +10,11 @@
 
 ### 1. auto-query 记忆召回接回主路径(0 代码,改 SKILL)
 
-**问题**:定位后用 `problem_summary` 自动召回历史修法(路线 #4 拍板的 B 方案)只活在已降级的老 workflow([nodes.py:125](../src/hyperion/workflows/bug_rca/nodes.py#L125)),skill 主路径全靠 agent 自觉——bug-rca SKILL 工具表里只有一行"定位前后调"。
+**问题**:定位后用 `problem_summary` 自动召回历史修法(路线 #4 拍板的 B 方案)只活在已降级的老 workflow([nodes.py:125](../src/rootrecall/workflows/bug_rca/nodes.py#L125)),skill 主路径全靠 agent 自觉——bug-rca SKILL 工具表里只有一行"定位前后调"。
 
 **为什么重要**:这是"已设计、已验证"的机制,只差接回主路径。老 workflow 的实现还有现成依据:query 取值优先级 `problem_summary → root_cause → trigger`(真实 journalctl 无关服务 error 行会淹没真信号,用 delegate 已理解的 problem_summary 才是高质量 query——A1 方案被探针证伪的教训)。
 
-**改法**:bug-rca SKILL.md 工具表 + 证伪纪律节硬化成步骤:"根因候选定稿前,必须用 problem_summary(或 root_cause)当 query 调一次 `memory_recall`,命中先验要对照本次证据复核再定论"。同步改 `config/opencode_hyperion.json` 的 hyperion-bug-rca agent prompt。
+**改法**:bug-rca SKILL.md 工具表 + 证伪纪律节硬化成步骤:"根因候选定稿前,必须用 problem_summary(或 root_cause)当 query 调一次 `memory_recall`,命中先验要对照本次证据复核再定论"。同步改 `config/opencode_rootrecall.json` 的 rootrecall-bug-rca agent prompt。
 
 **验证**:opencode e2e(自跑,不等用户)。
 
@@ -38,7 +38,7 @@
 
 ### 4. deep_research 的 CRG 建图补 try 降级(1 行级)
 
-**问题**:[nodes.py:65](../src/hyperion/workflows/deep_research/nodes.py#L65) 裸调 `CodeGraph.build`,CRG 没装会崩掉整个 workflow——与 CLI `index` 子命令的降级标准(ImportError 非致命 + 提示装法)不一致,属于该降不降的真 bug。
+**问题**:[nodes.py:65](../src/rootrecall/workflows/deep_research/nodes.py#L65) 裸调 `CodeGraph.build`,CRG 没装会崩掉整个 workflow——与 CLI `index` 子命令的降级标准(ImportError 非致命 + 提示装法)不一致,属于该降不降的真 bug。
 
 **改法**:try/except 包住,失败 warning + 继续无图调研(检索层照常,报告的架构章降级为"图未建")。
 
@@ -99,7 +99,7 @@
 > **✅ 已删(2026-08-17)**:五接触点(graph.run 签名+docstring / nodes 读 state / _analyze 形参+docstring / state.py 字段 / CLI `--deep` 参数+透传)全清,三处注释留痕「真需要逐 PR 深审时按 deep_research 子 agent 模式实现」。剩余 "deep" 全是 deepin 打包无关词。patch_report 16 测回归绿。
 
 
-**问题**:docstring 自认"deep 留 stretch"([_analyze.py:44](../src/hyperion/workflows/patch_report/_analyze.py#L44)),参数透传但空壳——违背"诚实信号"原则。
+**问题**:docstring 自认"deep 留 stretch"([_analyze.py:44](../src/rootrecall/workflows/patch_report/_analyze.py#L44)),参数透传但空壳——违背"诚实信号"原则。
 
 **改法**:建议先删参数 + 注释留痕(真需求来了按 deep_research 的子 agent 模式实现);等 P-A 遗留的 deep 需求(Gerrit 逐 PR 深审)真出现再建。
 

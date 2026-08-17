@@ -2,16 +2,16 @@
 name: backport
 description: 把一个版本(如 v25)已修的 bug 回移植到另一个独立发行版线(如 v20)——读 v25 的 fix、判断 v20 有没有同一个 bug、把修复适配到 v20 并验 apply。用户问"v25 修了这个 bug、v20 还没修、帮我改 v20"、"把这个 fix backport 到旧版"时用。
 allowed-tools:
-  - hyperion_search_codebase
-  - hyperion_call_chain
-  - hyperion_blast_radius
-  - hyperion_cross_version_diff
-  - hyperion_validate_patch
-  - hyperion_export_patch
-  - hyperion_export_report
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
-  - hyperion_ensure_repo
+  - rootrecall-search_codebase
+  - rootrecall-call_chain
+  - rootrecall-blast_radius
+  - rootrecall-cross_version_diff
+  - rootrecall-validate_patch
+  - rootrecall-export_patch
+  - rootrecall-export_report
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
+  - rootrecall-ensure_repo
   - read
   - grep
   - glob
@@ -20,7 +20,7 @@ allowed-tools:
 
 # 跨版本回移植(v25 fix → v20)
 
-你负责把一个发行版线(下称 **v25**)已修的某个 bug,回移植到另一条**独立发行版线**(下称 **v20**)。两条线是各自独立演进的仓库(共同祖先极远或无),不是同仓的旧分支。读码、判 bug、改代码都是你的活;Hyperion 工具负责取代码、查影响面、验 apply、落盘。
+你负责把一个发行版线(下称 **v25**)已修的某个 bug,回移植到另一条**独立发行版线**(下称 **v20**)。两条线是各自独立演进的仓库(共同祖先极远或无),不是同仓的旧分支。读码、判 bug、改代码都是你的活;RootRecall 工具负责取代码、查影响面、验 apply、落盘。
 
 **两个边界**(必须守):
 - **只到 apply,不编译/不复现** —— 系统软件构建环境重、信号歧义,工具只验到补丁能不能干净打上;能否编译、修没修对,用户真机自验。**apply 过 ≠ 修对**。
@@ -47,16 +47,16 @@ allowed-tools:
 | 工具 | 何时调 | 要点 |
 |---|---|---|
 | `read` / `grep` / `glob` | 全程读码 | v25 读 fix、v20 找目标函数 + 读函数体。**核心**:step 3 靠 grep 定位 + read 读完整函数体 |
-| `hyperion_search_codebase(query, codebase?)` | step 3 定位 v20 函数 | 传**概念**别传文件名;`codebase=` 指向 v20 的索引(如 `bluez_v20`)。grep 更直接就 grep,两者择一 |
-| `hyperion_call_chain(symbol, codebase?)` | step 4 影响面 | 目标函数在 v20 调用链的位置;`codebase=` 指向 v20 |
-| `hyperion_blast_radius(files, codebase?)` | step 4 影响面 | 改动波及谁;`codebase=` 指向 v20 |
-| `hyperion_cross_version_diff(base, head, repo_path)` | step 5 理解两版差异(可选) | 同仓两 ref 对比;两独立仓需先 `git fetch` 一边到另一边的仓里 |
-| `hyperion_validate_patch(patch, repo_path)` | step 6 —— 硬门 | 只验 apply 不验修对;`repo_path` 传 v20 仓 |
-| `hyperion_export_patch(repo_path, out_dir)` | step 7 落盘 | 把 v20 工作区的适配改动写成补丁 |
-| `hyperion_export_report(content, repo_path, out_dir)` | step 7 落盘 | 写 backport 卡 .md |
-| `hyperion_memory_recall(query, codebase?)` | step 3 前后 | 翻同类漏洞 / 历史回移植决策(先验是线索不是答案) |
-| `hyperion_memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传 v25 fix sha;`fix_patch` 传适配后补丁;`codebase` 指向 v20 |
-| `hyperion_ensure_repo(name)` | 本地没这个仓 | clone |
+| `rootrecall-search_codebase(query, codebase?)` | step 3 定位 v20 函数 | 传**概念**别传文件名;`codebase=` 指向 v20 的索引(如 `bluez_v20`)。grep 更直接就 grep,两者择一 |
+| `rootrecall-call_chain(symbol, codebase?)` | step 4 影响面 | 目标函数在 v20 调用链的位置;`codebase=` 指向 v20 |
+| `rootrecall-blast_radius(files, codebase?)` | step 4 影响面 | 改动波及谁;`codebase=` 指向 v20 |
+| `rootrecall-cross_version_diff(base, head, repo_path)` | step 5 理解两版差异(可选) | 同仓两 ref 对比;两独立仓需先 `git fetch` 一边到另一边的仓里 |
+| `rootrecall-validate_patch(patch, repo_path)` | step 6 —— 硬门 | 只验 apply 不验修对;`repo_path` 传 v20 仓 |
+| `rootrecall-export_patch(repo_path, out_dir)` | step 7 落盘 | 把 v20 工作区的适配改动写成补丁 |
+| `rootrecall-export_report(content, repo_path, out_dir)` | step 7 落盘 | 写 backport 卡 .md |
+| `rootrecall-memory_recall(query, codebase?)` | step 3 前后 | 翻同类漏洞 / 历史回移植决策(先验是线索不是答案) |
+| `rootrecall-memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传 v25 fix sha;`fix_patch` 传适配后补丁;`codebase` 指向 v20 |
+| `rootrecall-ensure_repo(name)` | 本地没这个仓 | clone |
 | `bash` | 读 git(show/log/diff/fetch) | **只许** `show`/`log`/`diff`/`fetch`/`status`(读类)+ `checkout`(切 v20 干净态验 apply);改动通过 `edit` 做,不靠 `git apply` |
 
 ## 硬约束

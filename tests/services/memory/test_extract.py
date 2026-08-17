@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from hyperion.services.memory.backends.native.extract import extract_items
-from hyperion.services.memory.schema import Scope, SourceTier
+from rootrecall.services.memory.backends.native.extract import extract_items
+from rootrecall.services.memory.schema import Scope, SourceTier
 
 
 def _stub_model(reply: str) -> SimpleNamespace:

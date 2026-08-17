@@ -9,8 +9,8 @@ fixture 思路:report 测试只调 render_report(纯函数),不调 delegate.run 
 """
 from __future__ import annotations
 
-from hyperion.tools.delegate import DelegateResult, DelegateStatus
-from hyperion.workflows.bug_rca.report import render_report
+from rootrecall.tools.delegate import DelegateResult, DelegateStatus
+from rootrecall.workflows.bug_rca.report import render_report
 
 
 def _dr(data=None, status=DelegateStatus.OK, tokens=None):

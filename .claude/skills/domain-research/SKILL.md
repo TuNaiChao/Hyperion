@@ -4,9 +4,9 @@ description: 上网调研领域/项目知识(协议语义、各层职责、技�
 allowed-tools:
   - websearch
   - webfetch
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
-  - hyperion_export_report
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
+  - rootrecall-export_report
   - read
   - grep
   - glob
@@ -14,7 +14,7 @@ allowed-tools:
 
 # 领域/项目知识调研 → 记忆
 
-你负责把**领域/项目知识**(协议语义、各层职责、技术原理这类"领域常理")调研清楚并记进 Hyperion 的长期记忆。网调、多源验证、聚结论是你的活;Hyperion 工具负责查历史记忆、落盘报告、记忆。
+你负责把**领域/项目知识**(协议语义、各层职责、技术原理这类"领域常理")调研清楚并记进 RootRecall 的长期记忆。网调、多源验证、聚结论是你的活;RootRecall 工具负责查历史记忆、落盘报告、记忆。
 
 **什么是领域知识**(区别于其他记忆):
 - **不是源码事实**(那是 onboarding/compare 的活,靠读码)—— 领域知识是协议/标准/技术的常理,源码里读不全,得上权威源查(官方 spec、RFC、标准文档、核心技术手册)。
@@ -52,12 +52,12 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题领域知识 → **短路直接出知识卡**(step 5/6),不重跑网调;这才是「秒答」。没命中才走完整调研 |
+| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题领域知识 → **短路直接出知识卡**(step 5/6),不重跑网调;这才是「秒答」。没命中才走完整调研 |
 | `websearch(query)` | step 3 撒网找源(仅重跑路径) | 传**主题 + 权威词**(协议名 + spec/RFC/standard);挑权威源 |
 | `webfetch(url)` | step 3 精读权威源(仅重跑路径) | 读官方 spec/RFC/手册正文;记 URL 做溯源 |
 | `read` / `grep` / `glob` | step 3 第三重交叉验证(可选) | 网调查到的协议行为,本地有源码时去核实(如查到"X→Y",grep 源码确有此调用) |
-| `hyperion_memory_memorize(...)` | step 7(仅重跑路径才记) | kind=domain_knowledge,kind_detail=domain,带 source_url(网调)/不带(笔记);**不需用户验证**。**短路路径不 memorize** |
-| `hyperion_export_report(...)` | step 6 落盘(可选) | 写调研报告 .md;每条结论附 source URL |
+| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=domain_knowledge,kind_detail=domain,带 source_url(网调)/不带(笔记);**不需用户验证**。**短路路径不 memorize** |
+| `rootrecall-export_report(...)` | step 6 落盘(可选) | 写调研报告 .md;每条结论附 source URL |
 
 ## 硬约束
 

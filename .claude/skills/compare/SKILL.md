@@ -2,13 +2,13 @@
 name: compare
 description: 对比两个版本/两个仓库的某个流程或模块有什么差异——锚定两版各自的流程入口函数,逐节点读函数体语义对照,聚成流程级差异报告。用户问"v20、v25 蓝牙在连接流程上有什么差异"、"这两个版本的 X 功能实现有什么不同"、"新版本改了哪条流程"时用。
 allowed-tools:
-  - hyperion_search_codebase
-  - hyperion_repo_map
-  - hyperion_call_chain
-  - hyperion_memory_recall
-  - hyperion_memory_memorize
-  - hyperion_export_report
-  - hyperion_ensure_repo
+  - rootrecall-search_codebase
+  - rootrecall-repo_map
+  - rootrecall-call_chain
+  - rootrecall-memory_recall
+  - rootrecall-memory_memorize
+  - rootrecall-export_report
+  - rootrecall-ensure_repo
   - read
   - grep
   - glob
@@ -16,7 +16,7 @@ allowed-tools:
 
 # 跨版本代码对比调研
 
-你负责对比**两个版本**(或两个仓库)在某个流程/模块上的实现差异。比如 v25 和 v20 两条独立发行版线,用户问「蓝牙连接流程有什么差异」。读码、配对函数、对照差异都是你的活;Hyperion 工具负责取代码、查调用链、落盘、记忆。
+你负责对比**两个版本**(或两个仓库)在某个流程/模块上的实现差异。比如 v25 和 v20 两条独立发行版线,用户问「蓝牙连接流程有什么差异」。读码、配对函数、对照差异都是你的活;RootRecall 工具负责取代码、查调用链、落盘、记忆。
 
 **两个边界**(必须守):
 - **只调研不改代码** —— 你不改任何仓库(不 edit / 不 git apply / 不写源码),只读码出对比报告。和 upstream-merge/patch-review 一样是 read-only。
@@ -44,14 +44,14 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `hyperion_search_codebase(query, codebase?)` | step 2 锚定入口 | 传**概念**别传文件名(如"蓝牙连接建立流程");两 codebase 各跑一次;只回真实符号 |
-| `hyperion_repo_map(codebase?)` | step 2 俯瞰两版骨架 | Aider repomap 式 PageRank 符号地图,找流程入口模块;两 codebase 各跑一次 |
-| `hyperion_call_chain(symbol, codebase?)` | step 2 流程展开 | 从入口种子多跳展开,看流程涉及的函数链;两 codebase 各跑 |
+| `rootrecall-search_codebase(query, codebase?)` | step 2 锚定入口 | 传**概念**别传文件名(如"蓝牙连接建立流程");两 codebase 各跑一次;只回真实符号 |
+| `rootrecall-repo_map(codebase?)` | step 2 俯瞰两版骨架 | Aider repomap 式 PageRank 符号地图,找流程入口模块;两 codebase 各跑一次 |
+| `rootrecall-call_chain(symbol, codebase?)` | step 2 流程展开 | 从入口种子多跳展开,看流程涉及的函数链;两 codebase 各跑 |
 | `read` / `grep` / `glob` | step 4 读两版函数体(仅重跑路径) | **核心**:step 4 配对判同职责 + 逐节点对照全靠 read 两版函数体。**短路路径不用** |
-| `hyperion_memory_recall(query, codebase?)` | **step 1 第一步**(两 codebase 各查) | 命中同主题对比事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
-| `hyperion_memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
-| `hyperion_export_report(content, repo_path, out_dir)` | step 6 落盘 | 写对比报告 .md |
-| `hyperion_ensure_repo(name)` | 本地没仓 | 只读 clone |
+| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步**(两 codebase 各查) | 命中同主题对比事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
+| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
+| `rootrecall-export_report(content, repo_path, out_dir)` | step 6 落盘 | 写对比报告 .md |
+| `rootrecall-ensure_repo(name)` | 本地没仓 | 只读 clone |
 
 ## 硬约束
 

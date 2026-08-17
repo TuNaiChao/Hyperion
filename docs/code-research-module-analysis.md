@@ -1,7 +1,7 @@
 # 代码调研模块设计分析
 
-> 这是 Hyperion 三大支柱里 P1「代码仓深度调研」的当前实现分析。
-> 源码真相在 `src/hyperion/services/code_index/`(检索 + 结构图)与 `src/hyperion/workflows/`(流程),本文档只做"讲清它在干什么、怎么设计的"。
+> 这是 RootRecall 三大支柱里 P1「代码仓深度调研」的当前实现分析。
+> 源码真相在 `src/rootrecall/services/code_index/`(检索 + 结构图)与 `src/rootrecall/workflows/`(流程),本文档只做"讲清它在干什么、怎么设计的"。
 
 ---
 
@@ -11,7 +11,7 @@
 
 **比喻**:像陌生人进了大城市,没地图没导航,走到哪问到哪,token 花了上万还在城郊打转;下次再来(新会话),连上次问过的路都忘光重来。
 
-Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力 + 一套导游路线:
+RootRecall 的代码调研就是给代码库建一套**导航系统**,三层能力 + 一套导游路线:
 
 | 层 | 比喻 | 对应 |
 |---|---|---|
@@ -29,16 +29,16 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 ### 1.1 建索引:四步流水线
 
-一条命令 `hyperion index <repo_path>` 把四步跑完([cli.py:46-109](../src/hyperion/cli.py#L46-L109)):
+一条命令 `rootrecall index <repo_path>` 把四步跑完([cli.py:46-109](../src/rootrecall/cli.py#L46-L109)):
 
-1. **解析(parser)**:tree-sitter(一个"语法显微镜")逐文件读出符号"名片"——叫什么、在哪行、签名长啥样(`Symbol` dataclass,[parser.py:258-332](../src/hyperion/services/code_index/parser.py#L258-L332))。认 Python + C 两门语言,语言表是数据驱动的(`GRAMMARS` 注册表,[parser.py:189-214](../src/hyperion/services/code_index/parser.py#L189-L214)),加语言只改表不动核心。读不了的文件返回空不崩。
-2. **切块(chunker)**:按**符号边界**切——一个函数一块,一个类一块。**比喻**:给房子拍照片是**按房间拍**,不是每 10 米盲拍一张把墙拍成两半。超长符号(>16000 字符,`MAX_CHUNK_CHARS` [chunker.py:163](../src/hyperion/services/code_index/chunker.py#L163))再按行区间贪心二次切,防止单块撑爆嵌入接口;模块级的 import / 全局常量由兜底块收走,保证所有块拼起来能还原原文件——**100% 文件覆盖,零漏网**。
-3. **向量化(embed)**:每块算一个"语义指纹"(embedding)。嵌之前给块拼一行注释头(`# file: scan.c · symbol: sdp_extract_seqtype · kind: function`)——指纹带上地址,这是 Anthropic Contextual Retrieval 的轻量版([embed.py:87-97](../src/hyperion/services/code_index/embed.py#L87-L97))。远端走 OpenAI 兼容接口(默认 DashScope Qwen3),也能切本地 sentence-transformers,配置即换。
+1. **解析(parser)**:tree-sitter(一个"语法显微镜")逐文件读出符号"名片"——叫什么、在哪行、签名长啥样(`Symbol` dataclass,[parser.py:258-332](../src/rootrecall/services/code_index/parser.py#L258-L332))。认 Python + C 两门语言,语言表是数据驱动的(`GRAMMARS` 注册表,[parser.py:189-214](../src/rootrecall/services/code_index/parser.py#L189-L214)),加语言只改表不动核心。读不了的文件返回空不崩。
+2. **切块(chunker)**:按**符号边界**切——一个函数一块,一个类一块。**比喻**:给房子拍照片是**按房间拍**,不是每 10 米盲拍一张把墙拍成两半。超长符号(>16000 字符,`MAX_CHUNK_CHARS` [chunker.py:163](../src/rootrecall/services/code_index/chunker.py#L163))再按行区间贪心二次切,防止单块撑爆嵌入接口;模块级的 import / 全局常量由兜底块收走,保证所有块拼起来能还原原文件——**100% 文件覆盖,零漏网**。
+3. **向量化(embed)**:每块算一个"语义指纹"(embedding)。嵌之前给块拼一行注释头(`# file: scan.c · symbol: sdp_extract_seqtype · kind: function`)——指纹带上地址,这是 Anthropic Contextual Retrieval 的轻量版([embed.py:87-97](../src/rootrecall/services/code_index/embed.py#L87-L97))。远端走 OpenAI 兼容接口(默认 DashScope Qwen3),也能切本地 sentence-transformers,配置即换。
 4. **存储(store)**:进 LanceDB 嵌入式向量库(单机零服务,**一个目录就是一个库**),每个仓一张表物理隔离(`data/code_index/<repo>/lancedb/`)。
 
 ### 1.2 查询:两段式(海选 + 精排)
 
-`retrieve`([retrieval.py:236-271](../src/hyperion/services/code_index/retrieval.py#L236-L271)):
+`retrieve`([retrieval.py:236-271](../src/rootrecall/services/code_index/retrieval.py#L236-L271)):
 
 ```
 混合召回(Stage 1):BM25 关键词 + 向量语义,RRF 融合,取前 50
@@ -48,14 +48,14 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 **比喻**:招聘先海选 50 份简历(BM25 看"简历关键词",向量看"这人气质像不像"),再让资深面试官(reranker)逐份细读挑出 5 份。
 
-- BM25 侧专门为代码调过参:FTS 索引 `stem=False / remove_stop_words=False`,不然 `malloc` / `int` / `void` 会被词干化或当停用词删掉([store.py:147-161](../src/hyperion/services/code_index/store.py#L147-L161))。
-- 全文侧喂的不是裸代码,是**词袋**:标识符拆词(`scan_res_handler` → scan / res / handler)、符号名和 docstring 重复加权([chunker.py:198-230](../src/hyperion/services/code_index/chunker.py#L198-L230))——让"处理扫描结果"也能命中 `scan_res_handler`。
+- BM25 侧专门为代码调过参:FTS 索引 `stem=False / remove_stop_words=False`,不然 `malloc` / `int` / `void` 会被词干化或当停用词删掉([store.py:147-161](../src/rootrecall/services/code_index/store.py#L147-L161))。
+- 全文侧喂的不是裸代码,是**词袋**:标识符拆词(`scan_res_handler` → scan / res / handler)、符号名和 docstring 重复加权([chunker.py:198-230](../src/rootrecall/services/code_index/chunker.py#L198-L230))——让"处理扫描结果"也能命中 `scan_res_handler`。
 - **降级链全程可观测**:`out_mode` 四态 `hybrid+rerank / hybrid / rerank-failed:hybrid / empty`——reranker 挂了自动退海选顺序,不装死也不谎报。
 
 ### 1.3 工程细节(增量与原子)
 
-- **增量更新**:索引带"清单"(manifest)——每文件的 sha256、嵌入模型指纹、schema 版本。重跑时按清单对账,只重嵌改过的文件;行级用 content_hash 判定,`merge_insert` 条件更新,**没变的块零重写**([store.py:196-199](../src/hyperion/services/code_index/store.py#L196-L199))。
-- **原子重建**:全量重建写影子目录,建完 `os.replace` 原子交换,建一半崩了旧索引不脏、下次能恢复([index.py:183-227](../src/hyperion/services/code_index/index.py#L183-L227))。
+- **增量更新**:索引带"清单"(manifest)——每文件的 sha256、嵌入模型指纹、schema 版本。重跑时按清单对账,只重嵌改过的文件;行级用 content_hash 判定,`merge_insert` 条件更新,**没变的块零重写**([store.py:196-199](../src/rootrecall/services/code_index/store.py#L196-L199))。
+- **原子重建**:全量重建写影子目录,建完 `os.replace` 原子交换,建一半崩了旧索引不脏、下次能恢复([index.py:183-227](../src/rootrecall/services/code_index/index.py#L183-L227))。
 - **模型指纹换版自动全量**:换 embedding 模型 → 指纹变 → 自动全量重建,不会出现新模型向量混旧模型向量的暗病。
 
 ---
@@ -64,7 +64,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 检索回答"X 在哪",但回答不了"这个系统的**形状**是什么":哪些是核心模块、改一处会波及谁、哪个函数是全仓枢纽。这需要**图**。
 
-外部引入 code-review-graph(可选 extra)把全仓解析成一张**函数调用图**(谁调用谁、谁继承谁)存 SQLite(`data/structgraph/<repo>/graph.db`),Hyperion 在 [code_graph.py](../src/hyperion/services/code_index/code_graph.py) 上包出查询面。图上跑三类经典算法:
+外部引入 code-review-graph(可选 extra)把全仓解析成一张**函数调用图**(谁调用谁、谁继承谁)存 SQLite(`data/structgraph/<repo>/graph.db`),RootRecall 在 [code_graph.py](../src/rootrecall/services/code_index/code_graph.py) 上包出查询面。图上跑三类经典算法:
 
 | 算法 | 干什么 | 比喻 |
 |---|---|---|
@@ -76,7 +76,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 | 工具 | 回答什么问题 | 机制 |
 |---|---|---|
-| `repo_map` | "这仓最重要的符号是谁?" | CALLS 子图整图 PageRank,按 token 预算贪心装填成树状地图([code_graph.py:748-823](../src/hyperion/services/code_index/code_graph.py#L748-L823)) |
+| `repo_map` | "这仓最重要的符号是谁?" | CALLS 子图整图 PageRank,按 token 预算贪心装填成树状地图([code_graph.py:748-823](../src/rootrecall/services/code_index/code_graph.py#L748-L823)) |
 | `repo_overview` | "这仓整体架构怎么组织?" | 聚合四个图查询:社区边界 + hub(度最高,商业中心)+ bridge(介数最高,咽喉)+ 跨社区耦合告警 |
 | `call_chain` | "X 的上下游调用链?" | 符号种子 + 有界 BFS(深度封顶 5 防大图爆炸)+ PageRank 排序 |
 | `blast_radius` | "改这些文件会波及谁?" | 图上 BFS 波及面;带路径解析容错(agent 给相对路径也能对上图里的绝对路径,否则静默返空) |
@@ -86,7 +86,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 **分层检索**是刻意的:`repo_map` 管符号层(哪个函数重要),`repo_overview` 管架构层(模块边界 + 枢纽 + 耦合告警),`call_chain` 管路径层(端到端怎么走)。问哪层用哪个工具,不混。
 
-**图是可选的**:CRG 没装 / 图没建,检索层照常工作,工具返回可操作的提示(怎么装、怎么建)而不是报错——`hyperion index` 同样把"图建失败"降级为非致命(向量索引不受影响)。
+**图是可选的**:CRG 没装 / 图没建,检索层照常工作,工具返回可操作的提示(怎么装、怎么建)而不是报错——`rootrecall index` 同样把"图建失败"降级为非致命(向量索引不受影响)。
 
 ---
 
@@ -96,7 +96,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 ### deep_research workflow —— "给我写一份这仓的调研报告"
 
-六节点([graph.py:34-50](../src/hyperion/workflows/deep_research/graph.py#L34-L50)):建索引 → 规划 → 调研 → 报告 → 记忆。
+六节点([graph.py:34-50](../src/rootrecall/workflows/deep_research/graph.py#L34-L50)):建索引 → 规划 → 调研 → 报告 → 记忆。
 
 - **规划**:社区检测聚出的模块按规模取 top-8,每模块配"人话名 + 调研视角"(基础事实 always-on,再从五个视角种子挑 1-2 个)——LLM 失败降级通用视角,单条降级不全盘丢。
 - **调研**:每模块一个 ReAct 子 agent,**并发帽 3**,各持 grep / read / 检索三件套去"采访";轮数用 TurnBudget 封顶防跑飞。产出契约是**带引用的 JSON**:每条结论必须附 file:line。
@@ -125,7 +125,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 
 1. **检索工具只回真实存在的东西**:`search_codebase` 只返回索引里真实解析出的符号,不会编路径。
 2. **cited-reporter 契约**:子 agent 的产出格式强制"每条结论 + file:line 引用",只允许断言工具真实返回过的符号。
-3. **Verifier 回查**:报告落盘前逐条核验引用,四档判级([_verify.py:32-38](../src/hyperion/workflows/deep_research/_verify.py#L32-L38))——strict(文件 + 符号 + 行号全对)/ near(±5 行容差)/ file(只查到文件)/ bad(疑似编造,标红列出)。产出 Existence@Line 比例当报告质量指标。
+3. **Verifier 回查**:报告落盘前逐条核验引用,四档判级([_verify.py:32-38](../src/rootrecall/workflows/deep_research/_verify.py#L32-L38))——strict(文件 + 符号 + 行号全对)/ near(±5 行容差)/ file(只查到文件)/ bad(疑似编造,标红列出)。产出 Existence@Line 比例当报告质量指标。
 
 **诚实截断**:工具返回大结果时明说"截在哪、怎么补取",不静默丢尾。两级手段:结构化收口(repo_overview 大仓社区按 size 取前 30、成员只留计数 + 样本,从源头控制体积)+ 真超长才截并带 note(五个列表型工具统一 `_honest_truncate`);列表型工具(blast_radius / call_chain / cross_version_diff / merge_eval / repo_map)可调参数收缩重取。
 

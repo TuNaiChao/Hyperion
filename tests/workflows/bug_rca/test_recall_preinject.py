@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
-from hyperion.services.memory.schema import RecallHit, Scope
-from hyperion.workflows.bug_rca import nodes
+from rootrecall.services.memory.schema import RecallHit, Scope
+from rootrecall.workflows.bug_rca import nodes
 
 
 # ── 假 MemoryService:search 返脚本 hits ──

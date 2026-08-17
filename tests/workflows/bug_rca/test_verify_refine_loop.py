@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hyperion.tools.delegate import CodingAgentDelegate, DelegateResult, DelegateStatus
-from hyperion.workflows.bug_rca import nodes
-from hyperion.workflows.bug_rca.nodes import (
+from rootrecall.tools.delegate import CodingAgentDelegate, DelegateResult, DelegateStatus
+from rootrecall.workflows.bug_rca import nodes
+from rootrecall.workflows.bug_rca.nodes import (
     LOCALIZE_SCHEMA,
     REPAIR_SCHEMA,
     node_delegate_localize_loop,
@@ -54,7 +54,7 @@ def _fake_cfg(max_localize=2, max_repair=2):
 
 
 def _cfg(monkeypatch, **kw):
-    monkeypatch.setattr("hyperion.platform.config.get_app_config", lambda: _fake_cfg(**kw))
+    monkeypatch.setattr("rootrecall.platform.config.get_app_config", lambda: _fake_cfg(**kw))
 
 
 def _state(**kw):
@@ -84,7 +84,7 @@ def _patch_observe_validate(monkeypatch, patch_seq, validate_seq):
     val = list(validate_seq)
     monkeypatch.setattr(nodes, "_observe_patch", lambda code_dir: obs.pop(0) if obs else "")
     monkeypatch.setattr(
-        "hyperion.services.workspace.validate.validate_patch",
+        "rootrecall.services.workspace.validate.validate_patch",
         lambda patch, forward_dir=None, reverse_dir=None, timeout=60.0: val.pop(0),
     )
 
@@ -200,7 +200,7 @@ def test_observe_empty_short_circuits(monkeypatch):
     _cfg(monkeypatch, max_repair=2)
     monkeypatch.setattr(nodes, "_observe_patch", lambda code_dir: "")  # 全程空
     monkeypatch.setattr(
-        "hyperion.services.workspace.validate.validate_patch",
+        "rootrecall.services.workspace.validate.validate_patch",
         lambda **k: pytest.fail("空 patch 不该喂进 validate_patch"),
     )
     out = asyncio.run(node_delegate_repair_loop(_state(prompt="修它", output_schema=REPAIR_SCHEMA)))

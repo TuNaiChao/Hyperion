@@ -10,7 +10,7 @@ from __future__ import annotations
 
 def test_aggregate_stats(monkeypatch):
     """聚合:确定性分桶统计(theme/tier/high_security/hot_modules)+ 高安全 PR 列表。"""
-    from hyperion.workflows.patch_report import _aggregate
+    from rootrecall.workflows.patch_report import _aggregate
 
     monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cross summary", "trend text", [{"file": "a.c", "line": 1}]))
     findings = [
@@ -33,7 +33,7 @@ def test_aggregate_stats(monkeypatch):
 
 def test_render_patch_report_sections():
     """渲染:跨 PR 综合 + 每 PR deep-dive + sources 段齐全。"""
-    from hyperion.workflows.patch_report.report import render_patch_report
+    from rootrecall.workflows.patch_report.report import render_patch_report
 
     state = {
         "codebase": "cb",
@@ -54,7 +54,7 @@ def test_render_patch_report_sections():
 
 def test_verify_passes_when_file_in_changed_files():
     """citation 的 file 在 PR 的 changed_files 里 → Verifier 通过(✅)。"""
-    from hyperion.workflows.patch_report.report import verify_and_append
+    from rootrecall.workflows.patch_report.report import verify_and_append
 
     state = {"findings": [{"title": "PR1", "changed_files": ["a.c"],
                            "citations": [{"file": "a.c", "line": 2, "symbol": "f", "claim": "x"}]}],
@@ -66,7 +66,7 @@ def test_verify_passes_when_file_in_changed_files():
 
 def test_verify_flags_invented_file():
     """citation 引用了 changed_files 里没有的文件 → 标可疑(防 LLM 编造)。"""
-    from hyperion.workflows.patch_report.report import verify_and_append
+    from rootrecall.workflows.patch_report.report import verify_and_append
 
     state = {"findings": [{"title": "PR1", "changed_files": ["a.c"],
                            "citations": [{"file": "INVENTED.c", "line": 1, "symbol": "x", "claim": "y"}]}],
@@ -82,14 +82,14 @@ _DIFF_A = "diff --git a/a.c b/a.c\n--- a/a.c\n+++ b/a.c\n@@ -1,1 +1,3 @@\n x\n+i
 
 
 def _art(diff: str):
-    from hyperion.services.patch.fetcher import PatchArtifact
+    from rootrecall.services.patch.fetcher import PatchArtifact
 
     return PatchArtifact(url="u", source_kind="github", diff=diff, changed_files=["a.c"])
 
 
 def test_verify_line_anchor_in_hunk():
     """citation.line 落在 diff hunk 改动区间 → 行锚定(✅,无未锚定)。"""
-    from hyperion.workflows.patch_report.report import verify_and_append
+    from rootrecall.workflows.patch_report.report import verify_and_append
 
     state = {
         "artifacts": [_art(_DIFF_A)],
@@ -105,7 +105,7 @@ def test_verify_line_anchor_in_hunk():
 
 def test_verify_line_anchor_out_of_hunk_flagged():
     """citation.line 不在 hunk 区间(a.c 改动是 [1,3],引 line 99)→ 标未锚定(软,不删)。"""
-    from hyperion.workflows.patch_report.report import verify_and_append
+    from rootrecall.workflows.patch_report.report import verify_and_append
 
     state = {
         "artifacts": [_art(_DIFF_A)],
@@ -120,7 +120,7 @@ def test_verify_line_anchor_out_of_hunk_flagged():
 
 def test_verify_no_artifacts_skips_line_check():
     """无 artifacts(没解到 hunk)→ 不做行锚定(不报行锚定率,回归旧 file-only 行为)。"""
-    from hyperion.workflows.patch_report.report import verify_and_append
+    from rootrecall.workflows.patch_report.report import verify_and_append
 
     state = {"findings": [{"title": "PR1", "changed_files": ["a.c"],
                            "citations": [{"file": "a.c", "line": 2, "symbol": "f", "claim": "x"}]}],
@@ -132,7 +132,7 @@ def test_verify_no_artifacts_skips_line_check():
 
 def test_aggregate_dedup_same_subject(monkeypatch):
     """两个 PR 改动文件完全重叠 + theme 同 → 判同主题:n_unique_subjects=1,1 组。"""
-    from hyperion.workflows.patch_report import _aggregate
+    from rootrecall.workflows.patch_report import _aggregate
     monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
@@ -147,7 +147,7 @@ def test_aggregate_dedup_same_subject(monkeypatch):
 
 def test_aggregate_dedup_no_overlap(monkeypatch):
     """不同文件 → 不去重:n_unique_subjects=2,无重复组。"""
-    from hyperion.workflows.patch_report import _aggregate
+    from rootrecall.workflows.patch_report import _aggregate
     monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c"], "modules": [], "summary": "s"},
@@ -160,7 +160,7 @@ def test_aggregate_dedup_no_overlap(monkeypatch):
 
 def test_aggregate_dedup_different_theme_not_merged(monkeypatch):
     """文件重叠但 theme 不同 → 不并(主题不同不算重复)。"""
-    from hyperion.workflows.patch_report import _aggregate
+    from rootrecall.workflows.patch_report import _aggregate
     monkeypatch.setattr(_aggregate, "_synthesize", lambda f, s: ("cs", "", []))
     findings = [
         {"title": "PR1", "theme": "security", "changed_files": ["a.c", "b.c"], "modules": [], "summary": "s"},
@@ -173,7 +173,7 @@ def test_aggregate_dedup_different_theme_not_merged(monkeypatch):
 
 def test_render_shows_unique_subjects():
     """报告渲染:有重复组时顶部展示 unique subjects 注记(底层 finding 不删)。"""
-    from hyperion.workflows.patch_report.report import render_patch_report
+    from rootrecall.workflows.patch_report.report import render_patch_report
     state = {
         "codebase": "cb",
         "findings": [],

@@ -19,9 +19,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.tools import tool
 from pydantic import PrivateAttr
 
-from hyperion.platform.runtime.factory import build_default_middlewares, create_hyperion_agent
-from hyperion.platform.runtime.middlewares.turn_budget import TurnBudgetConfig, TurnBudgetMiddleware
-from hyperion.workflows.deep_research._research import _recursion_limit_for
+from rootrecall.platform.runtime.factory import build_default_middlewares, create_rootrecall_agent
+from rootrecall.platform.runtime.middlewares.turn_budget import TurnBudgetConfig, TurnBudgetMiddleware
+from rootrecall.workflows.deep_research._research import _recursion_limit_for
 
 
 # ── 桩:不联网,永远吐一个 echo tool_call ──────────────────────────────
@@ -73,7 +73,7 @@ def test_recursion_limit_keeps_turn_budget_from_being_preempted():
     assert any(isinstance(m, TurnBudgetMiddleware) for m in middleware), "默认链该含 TurnBudget"
     recursion_limit = _recursion_limit_for(max_turns, len(middleware))
 
-    agent = create_hyperion_agent(model, [echo], system_prompt="probe", middleware=middleware, name="probe-tb")
+    agent = create_rootrecall_agent(model, [echo], system_prompt="probe", middleware=middleware, name="probe-tb")
     cfg = {"configurable": {"thread_id": "probe-tb"}, "recursion_limit": recursion_limit}
 
     # 跑到 TurnBudget strip 收尾(若 recursion_limit 太小 → .invoke 抛 GraphRecursionError → 测挂)

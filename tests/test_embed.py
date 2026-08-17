@@ -9,8 +9,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hyperion.services.code_index.chunker import CodeChunk
-from hyperion.services.code_index.embed import (
+from rootrecall.services.code_index.chunker import CodeChunk
+from rootrecall.services.code_index.embed import (
     DEFAULT_BASE_URL,
     DEFAULT_REMOTE_MODEL,
     RemoteEmbedder,

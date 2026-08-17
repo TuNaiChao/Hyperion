@@ -1,13 +1,13 @@
 """#58 chunker 超长符号切分测试(离线,不依赖网络 / 模型)。
 
 直接测 _symbol_to_chunks 的切分逻辑(核心算法)+ _chunk_one_file 的接线(循环换没换对)。
-真建索引(远端 embedder)的回归靠手动 `uv run hyperion index ... --force`(花钱 + 慢),不放单测。
+真建索引(远端 embedder)的回归靠手动 `uv run rootrecall index ... --force`(花钱 + 慢),不放单测。
 """
 
 from __future__ import annotations
 
-from hyperion.services.code_index.chunker import MAX_CHUNK_CHARS, _chunk_one_file, _symbol_to_chunks
-from hyperion.services.code_index.parser import Symbol
+from rootrecall.services.code_index.chunker import MAX_CHUNK_CHARS, _chunk_one_file, _symbol_to_chunks
+from rootrecall.services.code_index.parser import Symbol
 
 
 def _sym(

@@ -14,8 +14,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from hyperion.services.memory.ingest import LongDocChunker, PatchIngestPipeline, _parse_diff_hunks, ingest_document
-from hyperion.services.memory.schema import KnowledgeItem, Scope, SourceTier
+from rootrecall.services.memory.ingest import LongDocChunker, PatchIngestPipeline, _parse_diff_hunks, ingest_document
+from rootrecall.services.memory.schema import KnowledgeItem, Scope, SourceTier
 
 # ── LongDocChunker ────────────────────────────────────────────────────────────
 
@@ -114,7 +114,7 @@ def test_ingest_report_default_svc_resolution(tmp_path, monkeypatch):
     f = tmp_path / "x.md"
     f.write_text("# A\n内容足够长到能抽出东西的一段话。")
     fake = _FakeSvc()
-    monkeypatch.setattr("hyperion.services.memory.ingest.get_memory_service", lambda: fake)
+    monkeypatch.setattr("rootrecall.services.memory.ingest.get_memory_service", lambda: fake)
 
     stats = asyncio.run(ingest_document(f, scope=_scope(), repo="wpa"))
 
@@ -209,7 +209,7 @@ def _stub_model(json_reply: str) -> SimpleNamespace:
 
 def test_pipeline_run_assembles_bug_lesson(tmp_path, monkeypatch):
     # 真 run()(不 monkeypatch run):桩 _retrieval_bundle=None(跳过 retrieve)+ 桩 model 吐 JSON。
-    monkeypatch.setattr("hyperion.services.memory.ingest._retrieval_bundle", lambda: None)
+    monkeypatch.setattr("rootrecall.services.memory.ingest._retrieval_bundle", lambda: None)
     reply = ('{"summary": "NULL 解引用修复", "root_cause": "foo() 返回前未判 NULL", '
              '"blast_radius_files": ["src/foo.c"], "evidence": [{"file": "src/foo.c", "line": 12}]}')
     diff = "diff --git a/src/foo.c b/src/foo.c\n+++ b/src/foo.c\n@@ -10,3 +10,4 @@\n+    if (!p) return -1;\n"
@@ -230,7 +230,7 @@ def test_pipeline_run_assembles_bug_lesson(tmp_path, monkeypatch):
 
 def test_pipeline_run_degrades_when_llm_garbage(monkeypatch):
     # LLM 吐非 JSON → _summarize 返 None → 降级:summary 用文件名凑、evidence 用 hunk 兜底。
-    monkeypatch.setattr("hyperion.services.memory.ingest._retrieval_bundle", lambda: None)
+    monkeypatch.setattr("rootrecall.services.memory.ingest._retrieval_bundle", lambda: None)
     diff = "diff --git a/src/bar.c b/src/bar.c\n+++ b/src/bar.c\n@@ -5,2 +5,3 @@\n+    guard();\n"
 
     kis = PatchIngestPipeline(diff, repo="wpa", scope=_scope(), model=_stub_model("完全不是 JSON")).run()
@@ -246,7 +246,7 @@ def test_pipeline_run_degrades_when_llm_garbage(monkeypatch):
 
 def test_pipeline_run_no_model_uses_auto_summary(monkeypatch):
     # 无模型(_build_model 也返 None)→ 不调 LLM,降级摘要 + hunk 兜底 evidence,仍写一条。
-    monkeypatch.setattr("hyperion.services.memory.ingest._retrieval_bundle", lambda: None)
+    monkeypatch.setattr("rootrecall.services.memory.ingest._retrieval_bundle", lambda: None)
     monkeypatch.setattr(PatchIngestPipeline, "_build_model", lambda self: None)
     diff = "+++ b/x.c\n@@ -1,1 +1,2 @@\n+a\n"
 
@@ -260,7 +260,7 @@ def test_pipeline_run_no_model_uses_auto_summary(monkeypatch):
 def test_pipeline_run_stable_id_across_llm_variance(monkeypatch):
     # 同一个 .patch 摄取两次:LLM 措辞不同(summary 文本变)→ 但 id 必须相同(按 diff 算),
     # 这样 memorize 时走 bayesian 合并,而非 LLM 措辞不同 → 重复入库。
-    monkeypatch.setattr("hyperion.services.memory.ingest._retrieval_bundle", lambda: None)
+    monkeypatch.setattr("rootrecall.services.memory.ingest._retrieval_bundle", lambda: None)
     diff = "+++ b/x.c\n@@ -1,1 +1,2 @@\n+a\n"
     m1 = _stub_model('{"summary":"修法A的描述","root_cause":"rc1"}')
     m2 = _stub_model('{"summary":"完全不同的措辞B","root_cause":"rc2"}')

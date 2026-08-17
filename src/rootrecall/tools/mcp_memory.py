@@ -1,0 +1,988 @@
+"""RootRecall MCP server —— 把 RootRecall 的差异化能力做成工具,给 delegate(opencode)现场调。
+
+不是"MCP 驱动 delegate",而是"delegate 查 RootRecall":opencode 干活时经 MCP 调本服务暴露的
+工具(见 bug-rca-design.md §6 反向 MCP)。一组工具(harness 转向:精炼工具面,只做 coding agent
+做不好/做不了的 —— 记忆/代码情报/影响面/补丁验证/补丁落盘/报告落盘;定位推理+改代码+日志切片都留给 opencode 的 read/grep/awk):
+  - memory_recall     翻长期记忆(历史 bug 教训 / 代码库事实),带 file:line 溯源。
+  - memory_memorize   写一条记忆(ad-hoc;报告/补丁走 workflow 自动记)。
+  - memory_dump       把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)。
+  - search_codebase   语义+符号检索代码,**只回索引里真实存在的符号**(emit-concept 防幻觉)。
+  - blast_radius      改动影响面(结构图 BFS:改这些文件会波及谁;harness 转向 D0)。
+  - call_chain        符号中心的 N 跳调用链(仅 CALLS 边)+ PageRank 重要度(谁调它/它调谁;P1.5 caller/callee 进适配层)。
+  - repo_map          全仓 PageRank 排名符号地图(Aider repomap 式,塞进 token 预算;俯瞰「哪些函数结构上最核心」;#38)。
+  - cross_version_diff 同仓两 git ref 跨版本对比(base..head 提交门 + concern diff + 触及函数 + cherry 等价;feature 2b;git 为核图可选)。
+  - merge_eval         上游 commit 合入评估(逐 commit 三态:已修/建议合/冲突;patch-id 等价 + apply 检查;低优#1;git 为核图可选,全程 local-git)。
+  - validate_patch    补丁能否干净 apply(`git apply --check`,执行硬门零 LLM;harness 转向 D0)。
+  - export_patch      把补丁落盘成 .patch 文件(交付硬门 —— 聊天不算交付;空 diff 自检;harness 转向 D1)。
+  - export_report     把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘;空内容自检;harness 转向 D1)。
+
+防幻觉契约(§6.1 search_codebase):模型传一个**概念/自然语言**(不是猜的文件名/函数名),
+工具从**真实索引**里检索 → 只回**索引中确实存在**的 file:symbol:line。因为结果来自实际索引,
+模型拿不到一个编造的文件路径 —— 幻觉在结构上不可能。这正是 2026 主流(Claude Code 弃向量库
+改 agentic search / Cursor codebase indexing):agent 发概念,工具回验过的真实符号。
+
+入口:`rootrecall mcp serve [--codebase NAME]`。需 `uv sync --extra mcp`。
+  transport:stdio(默认,agent 拉起子进程 1:1)| http(`--transport http`,warm 长进程,
+             多 agent 共用,省 cold-boot —— 解 ③;端点 http://host:port/mcp)。
+--codebase:查哪个代码库的索引/记忆(= LanceDB 表名 + memory scope);不传则按
+            config.code_index.repo → 进程 cwd 目录名 兜底(opencode 常在项目根拉起 MCP)。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Literal
+
+from rootrecall.platform.config import get_app_config
+from rootrecall.services.memory.schema import Scope
+
+
+def _resolve_codebase(explicit: str | None) -> str:
+    """定查哪个代码库:--codebase > ROOTRECALL_CODEBASE env > config.code_index.repo > cwd 目录名。
+
+    ROOTRECALL_CODEBASE 由 delegate(opencode 父进程)注入、opencode 透传给 MCP 子进程
+    (local server 的 environment 字段不展开 {env:},靠进程 env 继承 —— 2026-08-03 源码核实)。
+    """
+    import os
+    if explicit:
+        return explicit
+    env_cb = os.environ.get("ROOTRECALL_CODEBASE")
+    if env_cb:
+        return env_cb
+    cfg = get_app_config()
+    repo = getattr(cfg.code_index, "repo", None)
+    if repo:
+        return repo
+    return Path.cwd().name
+
+
+def _render_audit_card(it) -> str:
+    """把一条 KnowledgeItem 渲染成体检用的溯源卡(大白话:这条记忆 + 它多可信 + 哪来的 + 还有效吗)。
+
+    和 RecallHit.render() 的区别:recall 是按相关性挑几条给 LLM 看(精简、带 score);
+    体检卡是给「审记忆库」用的 —— 一次把每条都摊开,重点看四个审计维度:
+      ① 置信度 confidence   —— 这条结论我们自己有多大把握(0..1);
+      ② 来源档 source_tier  —— 哪来的(委托 agent 最可信 / 工具检索最低);
+      ③ 溯源 evidence+commit_sha —— 能不能追到具体代码行/commit(溯源弱的高置信条目要补);
+      ④ 时效 valid_at/invalid_at —— 还有效吗,有没有被取代(bi-temporal,失效的标 STALE)。
+    access_count 顺带给(被反复召回 = 该不该升级 mental_model 的信号)。
+    """
+    # 溯源行:有 evidence 就列 file:line(最多 3 条),没 evidence 就空 —— 体检时一眼看出「这条有没有锚到代码」
+    if it.evidence:
+        ev = "; ".join(f"{e.file}:{e.line}" if e.line else e.file for e in it.evidence[:3])
+    else:
+        ev = ""
+    loc = f"  @{ev}" if ev else "  @无证据(file:line)"
+    # 置信度 + 来源档凑一行:体检的核心信号 —— 高置信 + 低来源档(如 tool)要警惕,低置信 + 高来源档可补强
+    conf = f"conf={it.confidence:.2f}" if it.confidence else "conf=—"
+    tier = f"tier={it.source_tier}"
+    sha = f"  sha={it.commit_sha[:8]}" if it.commit_sha else ""  # 有 commit 才标(溯源锚点;没有是体检发现的「溯源弱」信号之一)
+    # bi-temporal:失效点 / 被取代 → 标 STALE,体检时这些是「该清理/已过期」的条目
+    stale = ""
+    if it.invalid_at is not None:
+        stale = f"  STALE(invalid {it.invalid_at:%Y-%m-%d})"
+    elif it.superseded_by:
+        stale = f"  STALE(被 {it.superseded_by[:8]} 取代)"
+    # 被纠正(不是失效/取代,但结论已被另一条推翻)→ 标 CORRECTED,体检时看出「这条别再用,看纠正者」
+    if not stale and getattr(it, "corrected_by", None):
+        stale = f"  CORRECTED(by {it.corrected_by[:8]})"
+    # 记录时间 + 被召回次数:created_at 看新旧,access_count 看利用率(低置信却高 access = 待巩固)
+    dt = f"  {it.created_at:%Y-%m-%d}" if it.created_at else ""
+    acc = f"  hits={it.access_count}" if it.access_count else ""
+    # 条目 id(截断 8 位):体检/纠正链要用它 —— memory_memorize(corrects=[...]) 要传「在 dump 输出里看到的 id」,
+    # 不渲染 id = 闭环走不通(agent 拿不到被纠正条目 id,被逼去 grep SQLite)。与 sha/CORRECTED 同款对称。
+    kid = f"  id={it.id[:8]}" if it.id else ""
+    # 治理标签(Phase 3 A2:consolidate 五 pass 的产出):needs_review=未决矛盾 / merged_upstream=补丁已在上游
+    # (conf 已打折)/ stale=长期没人翻。体检时一眼看出「这条卡在哪个治理状态」,不用逐条猜。
+    tg = f"  [{','.join(it.tags)}]" if getattr(it, "tags", None) else ""
+    return f"- [{it.kind}] {it.summary}{loc}  {conf} {tier}{sha}{dt}{acc}{kid}{tg}{stale}".rstrip()
+
+
+def _honest_truncate(body: str, limit: int, *, how_to_refetch: str) -> str:
+    """诚实截断(踩坑 #19 同源治理,2026-08-14):超长才截,且明说截了多少、怎么补取。
+
+    旧病:图/git 类工具 body 一律 `[:8000]` 静默丢尾 —— agent 拿到被截的 JSON 不知道缺了
+    东西,基于残缺结果下结论(和 memory_dump 当年吞一半条目同一个病)。修法照抄
+    repo_overview / memory_dump 已验证的方子:截断时尾部拼 note,告诉 agent 截断了 +
+    指一条补取路径(通常是「收窄参数重调」,如减小 top_n / depth / max_commits)。
+
+    body 未超 limit → 原样返回(零开销,不加噪音)。
+    how_to_refetch: 补取指引,写给 agent 看的指令性短语(如 "重调并减小 depth/top_n")。
+    """
+    if len(body) <= limit:
+        return body
+    note = (f"\n[截断:返回超 {limit} 字符,已截掉尾部 {len(body) - limit} 字符,"
+            f"以上 JSON 可能不完整;{how_to_refetch}]")
+    return body[: limit - len(note)] + note
+
+
+def _retrieval_bundle():
+    """懒构造 (embedder, store, reranker)——code_index 检索三件套(search_codebase 用)。
+
+    reranker 可能为 None(provider=off)。2026-08-10 撤 code_nav @tool 层时从 tools/code_nav.py
+    搬来内联(embedder/store/reranker 工厂自身带缓存,无需额外 lru_cache)。
+    """
+    from rootrecall.services.code_index.embed import create_embedder
+    from rootrecall.services.code_index.retrieval import create_reranker
+    from rootrecall.services.code_index.store import LanceDBStore
+
+    cfg = get_app_config()
+    embedder = create_embedder(cfg.code_index.embedding)
+    vs_cfg = getattr(cfg.code_index, "vector_store", None)
+    vs_path = getattr(vs_cfg, "path", "data/code_index") if vs_cfg else "data/code_index"
+    store = LanceDBStore(vs_path)
+    reranker = create_reranker(getattr(cfg.code_index, "reranker", None))
+    return embedder, store, reranker
+
+
+def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
+    """构造 FastMCP server,暴露十六个 RootRecall 工具给 coding agent(opencode/codex/claude code)。
+
+    codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
+    memory_dump / search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
+    同一 server 进程可切多个仓),不传则用这里的默认 repo。
+    server 名 "rootrecall" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 rootrecall_search_codebase)。
+    host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
+       `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
+    """
+    from mcp.server.fastmcp import FastMCP
+
+    from rootrecall.services.memory import get_memory_service
+
+    repo = _resolve_codebase(codebase)
+    # host/port 只在给定时透传给 FastMCP(stdio 模式用不上,但给了也无害)
+    fastmcp_kwargs: dict = {}
+    if host is not None:
+        fastmcp_kwargs["host"] = host
+    if port is not None:
+        fastmcp_kwargs["port"] = port
+    mcp = FastMCP("rootrecall", **fastmcp_kwargs)
+    svc = get_memory_service()
+
+    # ── ① memory_recall:翻长期记忆(R1 已有,这里薄封一层 scope)────────────
+    @mcp.tool()
+    async def memory_recall(query: str, top_k: int = 5, kind: str | None = None,
+                            codebase: str | None = None) -> str:
+        """Recall from RootRecall's long-term memory: historical bug lessons / codebase facts
+        relevant to the query, each with file:line provenance + confidence + recency.
+
+        Call this BEFORE localizing/patching to reuse prior root-causes/fixes for this codebase.
+        kind: optional filter — "bug_lesson" returns only past patches/fixes (excludes
+              codebase facts); omit for all kinds. Multiplies fetch then filters, so the kind
+              filter won't starve results (absorbed the former patch_search tool).
+        codebase: override which codebase's memory to recall from (default = this server's
+              codebase). Pass when the bug you're investigating belongs to a different repo than
+              the server's default; recall is scope-isolated so it never crosses codebases.
+        """
+        # per-call codebase 覆盖(模板同 blast_radius 的 `codebase or repo`);不传 = 闭包默认 repo。
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
+        # memory-only 检索(svc.search = recall 关掉 code/structural 两路 + 不 bump)。
+        # 故意不调 svc.recall():那个会混进 code_index 的代码 chunk,而本工具的职责是翻「长期记忆」
+        # (bug_lesson / codebase_fact),代码检索另有 search_codebase 工具 —— 混进来既是职责重叠
+        # (踩坑#2 变体),也和本 docstring 矛盾,还会用无关 code chunk 稀释记忆信号。
+        # 给了 kind → 多取再按 kind 过滤(留余量);否则按 top_k 直取。
+        fetch_k = max(top_k * 3, top_k) if kind else top_k
+        hits = await svc.search(query, active_scope, top_k=fetch_k)
+        if kind:
+            hits = [h for h in hits if (h.kind or "") == kind][:top_k]
+        if not hits:
+            tag = f", kind={kind}" if kind else ""
+            return f"No memory found for '{query}' (codebase={active_repo}{tag})."
+        tag = f", kind={kind}" if kind else ""
+        out = [f"Recalled {len(hits)} (by relevance, codebase={active_repo}{tag}):"]
+        out += [h.render() for h in hits]
+        return "\n".join(out)
+
+    # ── ② memory_memorize:写一条记忆(报告/补丁走 workflow 自动记,这是 ad-hoc 入口)──
+    @mcp.tool()
+    async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson", "domain_knowledge"], summary: str,
+                              file: str | None = None, line: int | None = None,
+                              evidence: list[dict] | None = None,
+                              root_cause: str = "",
+                              fix_patch: str = "",
+                              symptom: str = "",
+                              blast_radius_files: list[str] | None = None,
+                              commit_sha: str | None = None,
+                              tags: list[str] | None = None,
+                              corrects: list[str] | None = None,
+                              kind_detail: Literal["module", "symbol", "architecture", "domain"] | None = None,
+                              confidence: float | None = None,
+                              source_url: str | None = None,
+                              codebase: str | None = None) -> str:
+        """Write one knowledge item into RootRecall's long-term memory (cross-session reuse).
+
+        kind: codebase_fact | bug_lesson | domain_knowledge. Prefer letting the bug_rca/patch_review
+        flow auto-memorize; use this only for ad-hoc facts/lessons a delegate discovers on-site.
+        domain_knowledge = domain/project knowledge (protocol semantics, wpa layer responsibilities) —
+        the semantic-memory layer, distinct from codebase-fact (code-anchored) and bug-lesson
+        (episode). It joins recall like any other kind (refutes misdiagnosis), but does NOT
+        auto-promote to mental_model (domain knowledge is evergreen, not a "graduating" rule).
+
+        For a patch/PR analysis (kind=bug_lesson): pass fix_patch (the unified diff). The item is then
+        content-addressed by the PATCH text (not the summary), so re-memorizing the same patch MERGES
+        (confidence bump) instead of duplicating. Pair with blast_radius_files + commit_sha + tags
+        (e.g. ["patch_insight"]) so the lesson is searchable and provenance-traceable. Put your
+        verdict (intent / correctness / merge recommendation) in summary + root_cause.
+        evidence: list of provenance anchors, each ``{"file": <path>, "line": <int?>, "snippet": <str?>}``.
+              Use this when a fact spans MULTIPLE file:line locations (e.g. an architecture fact that
+              references the entry function, the dispatch table, and an event handler). The legacy
+              ``file``+``line`` params cover the single-anchor case and are merged in if also passed;
+              prefer ``evidence`` for architecture/codebase-fact memories and leave file/line for the
+              single-anchor bug-lesson case.
+        kind_detail: finer classification for codebase_fact / domain_knowledge —
+              module | symbol | architecture | domain. Use ``architecture`` for onboarding-tour /
+              structural facts; use ``domain`` for domain_knowledge. Ignored for bug_lesson.
+        source_url: external provenance URL for domain_knowledge (the web source you researched the
+              protocol/domain fact from). When set, the item's source_tier is ``imported`` (web-sourced);
+              when unset, ``stated`` (a user's own technical note). Ignored for bug_lesson/codebase_fact
+              (their provenance is commit_sha + evidence file:line, code-anchored).
+        confidence: 0..1 override of the initial confidence (otherwise derived from source_tier:
+              delegate = 0.5). Set only when you have a real reason to weigh this above/below the
+              delegate default (e.g. a fact you inferred vs one you read directly).
+        corrects: list of knowledge-item IDs that THIS item corrects/supersedes. Use when your new
+              finding explicitly overturns a prior root-cause or conclusion — the old items stay
+              (append-only preserved for audit) but get a ``corrected_by`` backlink and are demoted
+              at retrieval time (recall scores them 0.3× lower). Pass the IDs you saw in
+              ``memory_recall`` or ``memory_dump`` output. Leave empty for ordinary facts/lessons.
+        codebase: override which codebase's memory to write into (default = this server's codebase).
+              Pass when the lesson belongs to a different repo than the server's default; the item is
+              scoped (id namespaced + filtered) by this codebase, so it won't pollute others.
+        """
+        from rootrecall.services.memory.schema import Evidence, KnowledgeItem, SourceTier, make_id
+
+        # per-call codebase 覆盖(模板同 blast_radius);不传 = 闭包默认 repo/scope。
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
+        blast_radius_files = blast_radius_files or []
+        tags = tags or []
+        corrects = corrects or []
+        # 给了 fix_patch → id 按补丁内容算(对齐 ingest.py:415),同补丁重复 memorize 走合并而非新增。
+        kid = make_id(active_scope, kind, fix_patch) if fix_patch else ""
+
+        # evidence 合并:新 evidence(多锚点,list[dict])+ 旧 file/line(单锚点,向后兼容)。
+        # 去重:同一 (file,line) 只留一条(架构事实常在 evidence 里重复列同一个入口)。
+        ev_list: list[Evidence] = []
+        seen_loc: set[tuple[str, int | None]] = set()
+        for e in (evidence or []):
+            if not isinstance(e, dict) or not e.get("file"):
+                continue
+            ef = str(e["file"])
+            el = e.get("line")
+            el = int(el) if isinstance(el, (int, str)) and str(el).strip().lstrip("-").isdigit() else None
+            if (ef, el) in seen_loc:
+                continue
+            seen_loc.add((ef, el))
+            ev_list.append(Evidence(file=ef, line=el, snippet=str(e.get("snippet") or "")))
+        if file and (file, line) not in seen_loc:
+            ev_list.append(Evidence(file=file, line=line))
+
+        item = KnowledgeItem(
+            id=kid,
+            kind=kind, repo=active_repo, scope=active_scope, summary=summary, root_cause=root_cause,
+            symptom=symptom, fix_patch=fix_patch,
+            # kind_detail codebase_fact/domain_knowledge 有意义(bug_lesson 不用);None → schema 默认(module)。
+            kind_detail=kind_detail if (kind in ("codebase_fact", "domain_knowledge") and kind_detail) else "module",
+            blast_radius_files=list(dict.fromkeys(blast_radius_files)),
+            commit_sha=commit_sha, tags=tags,
+            corrects=list(dict.fromkeys(corrects)),
+            evidence=ev_list,
+            source_url=source_url,
+            # confidence 显式给(0..1)才覆盖;None → schema 按 source_tier 算默认(delegate=0.5)。
+            confidence=confidence if confidence is not None else 0.5,
+            # source_tier 分层:domain_knowledge 按 source_url 有无分(网调=imported / 用户笔记=stated);
+            # bug/codebase_fact 维持 delegate(委托 agent 产出,最可信)。
+            source="mcp",
+            source_tier=(SourceTier.imported if source_url else SourceTier.stated)
+            if kind == "domain_knowledge" else SourceTier.delegate,
+        )
+        n = await svc.memorize([item], active_scope)
+        extra = f" corrects={len(corrects)}" if corrects else ""
+        url_extra = f" source_url={source_url}" if source_url else ""
+        return f"memorized id={item.id} kind={kind} codebase={active_repo} ({n} merged/added){extra}{url_extra}"
+
+    # ── ②b memory_dump:把记忆库摊开做体检(浏览/审计,区别于 recall 的 query 式检索)──
+    # recall 是「按 query 相关性挑几条」(得先知道问啥);memory_dump 是「一次把全量摊开看」——
+    # 体检记忆库:「关于这个仓我们到底记了啥 / 每条多可信 / 哪来的 / 还有效吗」。这是可审计知识库的入口。
+    # 包 MemoryService.list_items(已是契约,0 新服务代码),每条渲染成带溯源的体检卡(_render_audit_card)。
+    @mcp.tool()
+    async def memory_dump(kind: str | None = None, include_invalid: bool = False,
+                          codebase: str | None = None,
+                          limit: int = 60, offset: int = 0) -> str:
+        """Dump (browse/audit) RootRecall's long-term memory for a codebase — every knowledge item with
+        its confidence + provenance + bi-temporal status. NOT a relevance search.
+
+        The opposite of memory_recall (which finds a few items by query relevance): memory_dump lists
+        ALL items so you can audit the knowledge base — "what do we actually know about this repo" /
+        "how trustworthy is each memory" / "which are stale or superseded". Each item renders as a
+        provenance card: summary / kind / confidence / source_tier / evidence file:line / commit_sha /
+        valid_at / access_count, with stale (invalid_at / superseded_by) items flagged STALE.
+
+        Use this for a memory health-check (what's high vs low confidence, what lacks provenance, what's
+        stale, where there are unresolved conflicts between high-confidence items).
+        kind:            optional filter — codebase_fact | bug_lesson | mental_model (omit = all).
+        include_invalid: also show soft-deleted / superseded items (default False = active only).
+        codebase:        override which codebase's memory to dump (default = this server's codebase).
+        limit/offset:    pagination — the dump returns at most ``limit`` items starting at ``offset``
+                  (default first 60). A health-check needs the WHOLE picture, so if there are more
+                  items (header says "showing 1-60 of N, more → memory_dump(offset=60)"), PAGE THROUGH
+                  the rest by bumping offset rather than auditing an incomplete slice.
+        """
+        active_repo = codebase or repo
+        active_scope = Scope(owner="default", codebase=active_repo)
+        items = await svc.list_items(active_scope, kind=kind, include_invalid=include_invalid)
+        if not items:
+            tag = f", kind={kind}" if kind else ""
+            inv = ", include_invalid" if include_invalid else ""
+            return f"No memory for codebase={active_repo}{tag}{inv}."
+        total = len(items)
+        # 分页:体检要全量,但单次返回过大撑爆上下文。默认 60 条/页,agent 按需翻页(offset += limit)。
+        page = items[offset:offset + limit]
+        tag = f", kind={kind}" if kind else ""
+        header = (f"Memory dump: {total} items (codebase={active_repo}{tag}"
+                  f"{', +invalid' if include_invalid else ''})")
+        # 健康概要(Phase 3 A2:治理标签聚合,header 一行看全局):consolidate 五 pass 打的标签
+        # 按类计数(needs_review=未决矛盾 / merged_upstream=补丁已在上游 / stale=长期没翻)。
+        # agent 不翻页也能先拿到「库里有没有治理信号」的总量;0 个标签时这行省掉(不输出噪音)。
+        tag_counts: dict[str, int] = {}
+        for it in items:
+            for t in getattr(it, "tags", None) or []:
+                tag_counts[t] = tag_counts.get(t, 0) + 1
+        if tag_counts:
+            summary_bits = " ".join(f"{t}={n}" for t, n in sorted(tag_counts.items()))
+            header += f"  health: {summary_bits}"
+        # 还有下一页 → 显式提示翻页(诚实信号,不静默截断:体检漏看一半会误判健康度)。
+        if total > offset + limit:
+            header += (f"  [showing {offset + 1}-{offset + len(page)} of {total},"
+                       f" more → memory_dump(offset={offset + limit})]")
+        elif offset > 0:
+            header += f"  [showing {offset + 1}-{offset + len(page)} of {total}]"
+        out = [header] + [_render_audit_card(it) for it in page]
+        return "\n".join(out)[:12000]
+
+    # ── ③ search_codebase:语义+符号检索(防幻觉:只回索引里真实存在的符号)──────
+    @mcp.tool()
+    async def search_codebase(query: str, top_k: int = 5, codebase: str | None = None) -> str:
+        """Semantic + symbol search over this codebase's index (BM25 + vector + RRF + rerank).
+
+        Pass a CONCEPT / natural-language query (e.g. "p2p scan result routing", "radio work
+        lifecycle free"), NOT a guessed file/function name. Returns ONLY symbols that REALLY EXIST
+        in the indexed codebase — each with file:line + symbol + score + first line. Because the
+        result comes straight from the actual index, you cannot be handed a hallucinated path.
+
+        Cheaper + more precise than grepping the whole tree by hand. Needs the codebase indexed
+        (`uv run rootrecall index <path> <name>`); returns a "not indexed" hint otherwise.
+        codebase: override which codebase's index to search (default = this server's codebase).
+              Pass when the code you're looking for lives in a different repo than the server's
+              default; the index is table-per-repo, so each codebase is searched in isolation.
+        """
+        from rootrecall.services.code_index.retrieval import retrieve
+        # per-call codebase 覆盖(模板同 blast_radius);不传 = 闭包默认 repo。
+        active_repo = codebase or repo
+        try:
+            embedder, store, reranker = _retrieval_bundle()  # 模块级检索单例(embedder/store/reranker)
+        except Exception as e:  # noqa: BLE001 —— 依赖没装好给可操作错误串,不抛崩整个 server
+            return f"search_codebase 初始化失败(检查 config.code_index / .env): {e}"
+
+        try:
+            if store.count(active_repo) == 0:  # 表不存在或为空
+                return (f"代码库 '{active_repo}' 还没建索引(表空)。先建:"
+                        f"`uv run rootrecall index <仓库路径> {active_repo}`。")
+        except Exception:
+            return (f"代码库 '{active_repo}' 还没建索引。先建:"
+                    f"`uv run rootrecall index <仓库路径> {active_repo}`。")
+
+        try:
+            result = retrieve(query, active_repo, embedder, store, reranker, top_k=top_k)
+        except Exception as e:  # noqa: BLE001
+            return f"检索失败: {e}"
+
+        if not result.hits:
+            return f"未找到与 '{query}' 相关的代码(检索路径 {result.out_mode},codebase={active_repo})。"
+        out = [f"检索路径 {result.out_mode} · top-{len(result.hits)}(均为索引内真实符号,codebase={active_repo})"]
+        for h in result.hits:
+            first = h.text.splitlines()[0][:120] if h.text.splitlines() else ""
+            out.append(f"\n{h.file}:{h.start_line}-{h.end_line}  ({h.kind} {h.symbol})  score={h.score:.3f}\n  {first}")
+        return "\n".join(out)
+
+    # ── ⑤ blast_radius:改动影响面(结构图 BFS —— 改这些文件会波及谁)──────────
+    # harness 转向:把 CodeGraph.impact_radius 暴露成工具,让 agent 改代码前查"动了这些会断哪"。
+    @mcp.tool()
+    async def blast_radius(changed_files: list[str], codebase: str | None = None) -> str:
+        """Structural blast-radius: given a set of changed files, return what else gets hit
+        (callers / callees / dependents via code-graph BFS) — the "if I touch these, what breaks" view.
+
+        Pass the file paths a patch/PR modifies. Graph-driven, no LLM. Needs the codebase graph built
+        (`uv run rootrecall index <path> <name>`); returns a "not built" hint otherwise.
+        codebase: override which codebase's graph (default = this server's codebase).
+        """
+        try:
+            from rootrecall.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"blast_radius 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        if not changed_files:
+            return "未传 changed_files(传会被改动的文件路径列表)。"
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.impact_radius(list(changed_files))
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run rootrecall index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算影响面失败({target}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"blast-radius(codebase={target},输入 {len(changed_files)} 文件):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整波及面:分批传 changed_files(每次几个文件)重调')}")
+
+    # ── ⑤b call_chain:符号中心的 N 跳调用链(仅 CALLS 边 + PageRank;P1.5 caller/callee 进适配层)
+    # 和 blast_radius 互补:blast_radius = 文件种子·全边·「改这些会波及谁」(blast);
+    # call_chain = 符号种子·仅 CALLS 边·「这个函数的调用上下文 + 谁结构上重要」(chain)。
+    # bug-RCA / 调研里 agent 定位根因、判断改动影响时最想要的「调用链」视图;图驱动,零 LLM。
+    @mcp.tool()
+    async def call_chain(symbol: str, direction: str = "both", depth: int = 2,
+                         top_n: int = 15, codebase: str | None = None) -> str:
+        """Call chain for a function: who calls it / what it calls (N hops along CALL edges only),
+        each node ranked by PageRank importance.
+
+        Pass a function/method name (bare like ``wpa_supplicant_init`` or qualified
+        ``wpa_supplicant.c::wpa_supplicant_init``). Returns the N-hop caller/callee subtree along CALL
+        edges only, each node with file:line, hop count, and a PageRank score (a function called by many
+        important functions scores higher). Use it to understand a function's call context when localizing
+        a root cause or assessing a change — "how does execution reach here, and which callers matter".
+
+        Complement to blast_radius: blast_radius is file-seed + all-edge "what breaks if I touch these";
+        call_chain is symbol-seed + CALLS-only "who calls / is called by this function, ranked".
+        direction: callers (who calls it) / callees (what it calls) / both (default).
+        depth:     hop count (default 2, capped at 5 to bound large graphs).
+        top_n:     max nodes per direction after sorting (hop asc, pagerank desc); default 15.
+        codebase:  override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a "not built" hint otherwise.
+        """
+        try:
+            from rootrecall.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"call_chain 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.call_chain(symbol, direction=direction, depth=depth, top_n=top_n)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run rootrecall index <仓库路径> {target}`。")
+        except ValueError as e:  # symbol 解析不到 / direction 非法 → 友好串,不抛
+            return f"call_chain 没法算({target}, symbol={symbol}): {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"算调用链失败({target}, symbol={symbol}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"call-chain(codebase={target}, symbol={symbol}, direction={direction}, "
+                f"depth={depth}):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整链:减小 top_n/depth 或换 direction(callers/callees 单向)重调')}")
+
+    # ── ⑤c cross_version_diff:跨版本对比(同仓两 git ref 间;git 为核,图可选富化)────
+    # 回答「旧版本(base)→ 新版本(head),我关心的 concern 改了啥 / 修了没」:
+    # base..head 提交门 + concern 的 git diff + (有图)触及函数 + git cherry 等价摘要。
+    # 确定性事实,零 LLM(「修没修」判断归 agent)。比 blast_radius/call_chain 强:没图也能跑 git 核。
+    @mcp.tool()
+    async def cross_version_diff(base_ref: str, head_ref: str, repo_path: str,
+                                 concern_files: list[str] | None = None,
+                                 concern_symbols: list[str] | None = None,
+                                 top_commits: int = 30,
+                                 codebase: str | None = None) -> str:
+        """Cross-version diff between two git refs of the same repo: what changed base..head,
+        especially around your concern. Returns intervening commits (deterministic gate),
+        the concern's git diff (so you can read the fix), optional touched-functions (graph),
+        and a git-cherry patch-equivalence summary. Deterministic, no LLM — the 'is it fixed /
+        how to port' judgment is yours, using this output + search_codebase + call_chain.
+
+        base_ref/head_ref: two git refs in the SAME repo (e.g. '5.50'/'5.85', or 'HEAD~5'/'HEAD').
+        repo_path: absolute path to the repo working tree (cwd for git). concern_files/symbols:
+        scope to these (symbols resolved via the graph if available). top_commits: commit cap.
+        codebase: override which codebase's graph is used for enrichment (default = server's).
+        Needs only the git repo; graph is optional enrichment (runs git core even without it).
+        """
+        from rootrecall.services.code_index.code_graph import CodeGraph
+        from rootrecall.services.code_index.code_graph import cross_version_diff as _cvd
+        target = codebase or repo
+        # 图可选:开得到就富化,开不到(未建 / CRG 未装)→ None,git 核照跑
+        graph = None
+        try:
+            graph = CodeGraph.open(target)
+        except Exception:  # noqa: BLE001 —— FileNotFoundError/ImportError 都降级,不致命
+            pass
+        try:
+            result = _cvd(base_ref, head_ref, repo_path=repo_path, concern_files=concern_files,
+                          concern_symbols=concern_symbols, graph=graph, top_commits=top_commits)
+        except ValueError as e:  # 坏 ref / 非 git 仓 / repo_path 无效 → 友好串,不抛
+            return f"cross_version_diff 没法算(repo={repo_path}, {base_ref}..{head_ref}): {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"跨版本对比失败(repo={repo_path}, {base_ref}..{head_ref}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"cross-version-diff(repo={repo_path}, codebase={target}, "
+                f"{base_ref}..{head_ref}):\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要完整 diff:传 concern_files/concern_symbols 收窄范围,或减小 top_commits 重调')}")
+
+    # ── ⑤e merge_eval:上游 commit 合入评估(逐 commit 三态:已修/建议合/冲突;git 为核图可选)
+    # 维护 fork 时,把上游一段 commit 范围逐个评估「该不该合入」:patch-id 等价(已修,git --cherry-mark)
+    # + 能否干净 apply(冲突)+ 触及文件/函数(CRG 可选)。确定性地板;「相不相关」归 agent(CRG 查)。
+    # 全程 local-git:上游须先 fetch 进本仓让 ref 可见(agent 跑 git remote add + fetch)。
+    @mcp.tool()
+    async def merge_eval(upstream_base_ref: str, upstream_head_ref: str, fork_ref: str,
+                         repo_path: str, concern_files: list[str] | None = None,
+                         max_commits: int = 50, codebase: str | None = None) -> str:
+        """Upstream-commit merge evaluation: for each commit in an upstream range, decide whether to
+        backport it into the fork. Deterministic per-commit tri-state (no LLM): already_fixed (a git
+        patch-id-equivalent commit already exists in the fork, via git --cherry-mark), recommend_merge
+        (not in fork, applies cleanly), conflict (not in fork, apply fails), uncertain. Also returns
+        touched files/functions.
+
+        This is the deterministic FLOOR — the 'is the fork actually affected / does it need this fix'
+        relevance judgment is YOURS, using touched files/functions + search_codebase + call_chain
+        ('can apply' != 'fork needs it'; a fork may lack the bug/feature entirely).
+
+        Fully local-git. YOU must first fetch the upstream into the repo so the refs resolve:
+        `git -C <repo> remote add upstream <url> && git -C <repo> fetch upstream --no-tags` (idempotent;
+        your job, not this tool's). Conflict check is zero-touch (`git merge-tree --write-tree`, git
+        2.38+): no checkout of fork_ref and no clean worktree needed — it merges in the object db.
+        Only on git < 2.38 it falls back to `git apply --check` against the CURRENT worktree (then do
+        checkout fork_ref + clean tree first; the fallback is flagged in the note).
+
+        upstream_base_ref/upstream_head_ref: upstream commit range (two git refs in repo_path, e.g.
+            last-sync-point and upstream/master). fork_ref: fork branch to compare against (e.g. release/eagle).
+        repo_path: absolute path of the repo working tree (cwd for git). concern_files: scope to commits
+            touching these files. max_commits: scan cap (default 50). codebase: graph for touched-function
+            enrichment (optional; default = this server's codebase).
+        Needs only the git repo; graph is optional enrichment (runs without it).
+        """
+        from rootrecall.services.code_index.code_graph import CodeGraph
+        from rootrecall.services.code_index.code_graph import merge_eval as _me
+        target = codebase or repo
+        # 图可选:开得到就富化,开不到(未建 / CRG 未装)→ None,git 核照跑
+        graph = None
+        try:
+            graph = CodeGraph.open(target)
+        except Exception:  # noqa: BLE001 —— FileNotFoundError/ImportError 都降级,不致命
+            pass
+        try:
+            result = _me(upstream_base_ref, upstream_head_ref, fork_ref=fork_ref, repo_path=repo_path,
+                         concern_files=concern_files, max_commits=max_commits, graph=graph)
+        except ValueError as e:  # 坏 ref / 非 git 仓 / repo_path 无效 → 友好串,不抛
+            return (f"merge_eval 没法算(repo={repo_path}, fork={fork_ref}, "
+                    f"{upstream_base_ref}..{upstream_head_ref}): {e}")
+        except Exception as e:  # noqa: BLE001
+            return (f"合入评估失败(repo={repo_path}, fork={fork_ref}, "
+                    f"{upstream_base_ref}..{upstream_head_ref}): {e}")
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        s = result.get("summary", {})
+        return (f"merge-eval(repo={repo_path}, fork={fork_ref}, codebase={target}, "
+                f"{upstream_base_ref}..{upstream_head_ref}): "
+                f"total={s.get('total', 0)} | already_fixed={s.get('already_fixed', 0)} "
+                f"| recommend_merge={s.get('recommend_merge', 0)} | conflict={s.get('conflict', 0)} "
+                f"| uncertain={s.get('uncertain', 0)}\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要逐 commit 详情:传 concern_files 或缩小 ref 范围分批重调')}")
+
+    # ── ⑤f when_introduced:bug 引入 commit 定位(SZZ 式;🟡#7,第 16 个 MCP 工具)──
+    # 纯 git(零 LLM、零图依赖)——pickaxe(-S)或行历史(-L)出候选表,哪条真引入缺陷
+    # 归 agent 语义裁决(确定性地板 + LLM 天花板,与 merge_eval 同分工)。
+    @mcp.tool()
+    async def when_introduced(repo_path: str, symbol: str | None = None,
+                              file: str | None = None, line: int | None = None,
+                              line_end: int | None = None, max_commits: int = 20) -> str:
+        """Find which commits introduced a bug's defective logic (SZZ-style), anchored at a
+        symbol or file:line from your root-cause analysis. Deterministic candidate list, no LLM.
+
+        Two anchor modes (pick ONE):
+        - symbol → `git log -S <symbol>` pickaxe: commits whose diff ADDED/REMOVED that string.
+          The introducing commit is usually the OLDEST one with added>0, removed==0; paired
+          added/removed in between are usually refactors/moves, not introductions.
+        - file + line (optional line_end) → `git log -L` line history: commits that touched that
+          line range (rename-following, so line drift is handled). Line numbers = CURRENT worktree.
+
+        Returns candidates newest-first: sha / date / author / subject / added / removed counts.
+        Picking which candidate ACTUALLY introduced the defect (vs moved existing code) is YOUR
+        semantic judgment — `git show <sha>` each: the introducing commit's message/diff often
+        reveals the root cause's intent (a useful cross-check for your hypothesis).
+
+        repo_path: absolute path of the repo working tree. file: with symbol = pathspec narrowing
+            (short symbols like "scan" hit a lot — always narrow); with line = REQUIRED
+            repo-relative path. max_commits: candidate cap (default 20; oldest-introducer may be
+            beyond cap — raise it and re-call). Searches the current checkout only (no --all).
+        """
+        from rootrecall.services.code_index.code_graph import when_introduced as _wi
+        try:
+            result = _wi(repo_path, symbol=symbol, file=file, line=line,
+                         line_end=line_end, max_commits=max_commits)
+        except ValueError as e:  # 坏锚点 / 非 git 仓 / 文件不存在 → 友好串,不抛
+            return f"when_introduced 没法算(repo={repo_path}): {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"引入 commit 定位失败(repo={repo_path}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        anchor = result.get("anchor", {})
+        a = (f"symbol={anchor.get('symbol')}" if anchor.get("symbol")
+             else f"{anchor.get('file')}:{anchor.get('line')}"
+             f"{'-' + str(anchor['line_end']) if anchor.get('line_end') != anchor.get('line') else ''}")
+        return (f"when-introduced(repo={repo_path}, mode={result.get('mode')}, {a}):"
+                f" {len(result.get('commits', []))} candidates (newest-first)\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要更全的候选:加大 max_commits 重调;要更准:配 file 收窄 symbol 或改用 file+line 锚点')}")
+
+    # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
+    # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);
+    # repo_map = 全仓最重要符号俯瞰图(卫星图),委托前给 agent 全局视角 / 调研「关键模块」骨架。
+    @mcp.tool()
+    async def repo_map(map_tokens: int = 2048, codebase: str | None = None) -> str:
+        """Whole-repo symbol map ranked by PageRank importance (Aider-style repo map), packed into a token budget.
+
+        Returns a bird's-eye view of which functions are structurally most central across the WHOLE repo
+        (not one symbol's neighborhood — that's call_chain). Runs PageRank over the full call graph: a
+        function called by many important functions ranks higher (= a core hub). Top symbols are greedily
+        packed into ``map_tokens`` (default 2048), grouped by file into a tree. Use it to give yourself a
+        global view before localizing a root cause, or as the 'key modules' skeleton for a research report.
+
+        Complement to call_chain: call_chain is one symbol's call context (flashlight down one path);
+        repo_map is the whole-repo importance overview (satellite map). Also distinct from hub_nodes
+        (degree-based top-15 flat list) — repo_map is PageRank (centrality) based, larger, and tree-grouped.
+        map_tokens: token budget for the map (default 2048).
+        codebase:   override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a 'not built' hint otherwise.
+        """
+        try:
+            from rootrecall.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"repo_map 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            result = cg.repo_map(map_tokens=map_tokens)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run rootrecall index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算仓库地图失败({target}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        return (f"repo-map(codebase={target}, map_tokens={map_tokens}):"
+                f" {result.get('n_symbols', 0)} symbols / {result.get('n_files', 0)} files"
+                f"{' (truncated by budget)' if result.get('truncated') else ''}\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要更小的地图:减小 map_tokens 重调(top_symbols 字段已含前 10 名摘要)')}")
+
+    # ── ⑤e repo_overview:单仓架构总览(社区/模块边界 + hub/bridge 节点 + 耦合告警)──
+    # onboarding 导览 skill 的主数据源。三个工具三种俯瞰,互补不打架:
+    #   repo_overview = 卫星图看「城市怎么分区」(社区/模块边界 + 哪个路口是枢纽 hub
+    #                   + 哪个是咽喉 bridge + 哪两区耦合太紧该报警);
+    #   repo_map      = 看全城「最重要的 50 家店」(PageRank 排名符号);
+    #   call_chain    = 手电筒照一条路(一个符号的调用上下文)。
+    # 全是纯图查询(无 LLM),图驱动防幻觉 —— 讲「这仓分几大模块」靠社区检测,不是模型瞎编。
+    @mcp.tool()
+    async def repo_overview(
+        top_n: int = 15, max_communities: int = 30, codebase: str | None = None
+    ) -> str:
+        """Single-repo architectural overview: module boundaries + hub/bridge nodes + coupling warnings.
+
+        Wraps four CodeGraph methods in one call (pure graph queries, no LLM): communities (Leiden
+        module boundaries), hub_nodes (highest in+out degree — most-depended-on cores), bridge_nodes
+        (highest betweenness — architectural chokepoints), and architecture_overview (cross-community
+        coupling edges + high-coupling >10-edge warnings). Returns them as sections of one dict so a
+        newcomer-tour agent gets the whole structural snapshot in one tool call.
+
+        Use this to answer "what does this codebase look like architecturally" / "what are the core
+        modules and hubs" — the phase-1 structural view of an onboarding tour. Distinct from repo_map
+        (PageRank symbol tree, which functions matter) and call_chain (one symbol's neighborhood):
+        repo_overview is the module-coupling / community-layout view (how the modules are divided).
+
+        Output ordering matters: hubs / bridges / warnings / cross-edges come FIRST, communities LAST.
+        Communities are the bulkiest (each carries its member list) and the least individually
+        important, so they sit at the truncation edge. On a large repo (hundreds of communities) only
+        the largest `max_communities` are summarized (size + a few sample members, not the full member
+        list) so the hubs/bridges that onboarding actually needs never get crowded out.
+        top_n:           how many hub_nodes / bridge_nodes to return (default 15 each).
+        max_communities: cap on how many communities to include, largest-first (default 30).
+                         The header still reports the true total community count.
+        codebase:        override which codebase's graph (default = this server's codebase).
+        Needs the codebase graph built; returns a 'not built' hint otherwise.
+        """
+        try:
+            from rootrecall.services.code_index.code_graph import CodeGraph
+        except Exception as e:  # noqa: BLE001 —— code-review-graph 未装给可操作提示
+            return (f"repo_overview 不可用:结构图后端未装。装它: `uv sync --extra code-review-graph`\n  ({e})")
+        target = codebase or repo
+        try:
+            cg = CodeGraph.open(target)
+            arch = cg.architecture_overview()         # {communities, cross_community_edges, warnings}
+            # communities 复用 arch 已经取好的(architecture_overview 内部已调 get_communities,省一次调用)
+            communities = arch.get("communities", [])
+            hubs = cg.hub_nodes(top_n=top_n)          # 被依赖最多的核心枢纽
+            bridges = cg.bridge_nodes(top_n=top_n)    # 架构瓶颈/咽喉(betweenness 最高)
+        except FileNotFoundError:
+            return (f"代码库 '{target}' 的结构图未建(data/structgraph/{target}/graph.db 不在)。"
+                    f"先建:`uv run rootrecall index <仓库路径> {target}`。")
+        except Exception as e:  # noqa: BLE001
+            return f"算仓库架构总览失败({target}): {e}"
+        import json
+
+        n_total_comm = len(communities)   # 真实社区总数(不受 max_communities 影响,header 诚实报)
+        # —— 大仓瘦身:社区是最 bulky 的(每个带 member 列表),也是单条最不重要的。
+        # 只留最大的 max_communities 个,且把 members 压成 count + 几个样本(不堆全量 qn)。
+        communities_sorted = sorted(
+            communities, key=lambda c: c.get("size", len(c.get("members", []))), reverse=True
+        )
+        comm_capped = communities_sorted[:max_communities]
+        communities_trimmed = [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "level": c.get("level"),
+                "cohesion": c.get("cohesion"),
+                "size": c.get("size", len(c.get("members", []))),
+                "dominant_language": c.get("dominant_language", ""),
+                "description": c.get("description", ""),
+                # 不堆全量 member(大社区几十上百个 qn 撑爆截断)→ 只给 count + 前 5 个样本。
+                "member_count": len(c.get("members", [])),
+                "sample_members": c.get("members", [])[:5],
+            }
+            for c in comm_capped
+        ]
+        # 跨社区边也可能上百上千条 → 截 top 20(按出现顺序,CRG 已统计);warnings 本就少不动。
+        cross_edges = arch.get("cross_community_edges", [])[:20]
+        warnings = arch.get("warnings", [])          # 高耦合(>10 边)社区对,list[str]
+
+        # —— body 顺序:hub/bridge/warning/cross-edge 在前,communities 在末。
+        # 这样即便末尾 communities 被截断,架构最关键的「核心枢纽/咽喉/耦合告警」也不会丢
+        # (onboarding e2e 暴露:旧版 communities 撑满截断 → hub/bridge 取不到被迫绕路)。
+        result = {
+            "codebase": target,
+            "hub_nodes": hubs,
+            "bridge_nodes": bridges,
+            "warnings": warnings,
+            "cross_community_edges": cross_edges,
+            "communities": communities_trimmed,
+        }
+        body = json.dumps(result, ensure_ascii=False, default=str)
+
+        # 诚实截断(治静默丢):超长才截,且明说截在哪、怎么补取。
+        LIMIT = 12000
+        truncated = len(body) > LIMIT
+        if truncated:
+            # 末尾是 communities,截断丢的是社区清单(最不重要),给出补取路径。
+            # 没有 communities 专用 MCP 工具 —— 指向调大 max_communities 重取 repo_overview。
+            note = (f"\n[截断:返回超 {LIMIT} 字符,末尾 communities 可能不全;共 {n_total_comm} 社区,"
+                    f"本调用含 {len(communities_trimmed)}。要更多社区:重调 repo_overview 加大 max_communities]")
+            body = body[:LIMIT - len(note)] + note
+
+        comm_suffix = f"(本调用含 {len(communities_trimmed)} / 共 {n_total_comm})" if n_total_comm > len(communities_trimmed) else ""
+        return (f"repo-overview(codebase={target}, top_n={top_n}):"
+                f" {n_total_comm} communities{(' ' + comm_suffix) if comm_suffix else ''}"
+                f" / {len(hubs)} hubs / {len(bridges)} bridges"
+                f"{f' / {len(warnings)} 高耦合告警' if warnings else ''}\n{body}")
+
+    # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
+    # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
+    @mcp.tool()
+    async def validate_patch(patch: str, repo_path: str) -> str:
+        """Execution gate (non-LLM): does this unified-diff patch apply cleanly to the repo working tree?
+
+        Runs `git apply --check` forward (strict → --3way → patch -p1 fallback) — a deterministic hard
+        gate before trusting a patch. Returns applies + method + git diagnostic. Use it to confirm a
+        patch/PR you're about to merge, or a fix you just wrote, actually fits the target repo.
+        repo_path: absolute path of the repo working tree to check against. (No reverse check here —
+        that needs the already-patched tree; the bug_rca workflow has the full forward+reverse validate.)
+        """
+        from pathlib import Path
+
+        from rootrecall.services.workspace.validate import validate_patch as _validate
+
+        if not Path(repo_path).is_dir():
+            return f"repo_path 不是目录: {repo_path}"
+        try:
+            r = _validate(patch, forward_dir=repo_path)  # reverse_dir=None:本工具只 forward --check
+        except Exception as e:  # noqa: BLE001
+            return f"validate_patch 执行失败: {e}"
+        applies = bool(r.get("verified"))
+        method = r.get("forward_method")
+        log = (r.get("log") or "").strip()[-600:]
+        flag = "✅ 能干净 apply" if applies else "❌ apply 失败(路径/格式/context 不匹配)"
+        return f"{flag}\nmethod={method}  applies={applies}\n诊断:\n{log}"
+
+    # ── ⑦ export_patch:把补丁落盘成 .patch 文件(交付硬门 —— 聊天回复不算交付)────────
+    # bug-RCA 跑完,agent 的改动若只在聊天里 = 没交付。这步把 git diff 写成磁盘文件,且自检
+    # 非空(治"agent 改错树 / 假装改完"——纯 bash `git diff > file` 会静默吞掉空 diff,2026 调研:
+    # deer-flow 用结构化 present_files tool + 事后交付验证,正是治这个)。格式 unified diff(git diff),
+    # 对齐整条管线(validate 用 git apply / ingest 解析 unified diff / report 渲染 ```diff);不污染 repo
+    # (无需建 commit —— format-patch 留生产级迭代)。落 data/bug_rca/<repo>.patch(最新一份快照,
+    # 同 bug_rca workflow 约定;同仓重跑覆盖,历史在记忆库)。
+    # apply 验证**不在这做** —— forward --check 对"已改过的树"必失败(见 validate.py:context 已变,
+    # 反向 --check 才证必要);那是 validate_patch(第⑥步,对干净树)的活。export 只保证"有非空 diff 落盘"。
+    @mcp.tool()
+    async def export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str:
+        """Finalize your fix as an on-disk .patch file — a bug-RCA run is NOT complete until the
+        patch is on disk (chat is not a deliverable).
+
+        Captures ALL your uncommitted changes in repo_path (``git add -A && git diff --cached``,
+        including new files), writes the unified diff to ``<out_dir>/<repo-name>.patch``, and REFUSES
+        to write an empty diff — catches "edited the wrong tree / changes not saved / gitignored",
+        failures a bare ``git diff > file`` silently swallows. Run ``validate_patch`` first to confirm
+        the diff applies; this tool only guarantees a non-empty patch lands on disk at the canonical path.
+
+        repo_path: absolute path of the repo whose working tree holds your fix.
+        out_dir:   output directory (default ``data/bug_rca`` = "latest snapshot" location, matching
+                   the bug_rca workflow convention; created if missing).
+        """
+        import subprocess
+        from pathlib import Path
+
+        repo = Path(repo_path)
+        if not repo.is_dir():
+            return f"repo_path 不是目录: {repo_path}"
+
+        def _git(args: list[str]) -> tuple[int, str, str]:
+            p = subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True, text=True, timeout=60,
+            )
+            return p.returncode, p.stdout, p.stderr
+
+        try:
+            rc, _, err = _git(["rev-parse", "--is-inside-work-tree"])
+            if rc != 0:
+                return f"repo_path 不是 git 工作树: {(err or '').strip()[-300:]}"
+            # git add -A 再 diff --cached:含新增文件(对齐 bug_rca workflow 的 observe 约定)。
+            # 副作用:会 stage repo_path 的改动(可 git reset 撤;agent 已在改其工作树,同量级)。
+            _git(["add", "-A"])
+            rc, diff, err = _git(["diff", "--cached"])
+            if rc != 0:
+                return f"git diff 失败: {(err or diff).strip()[-300:]}"
+        except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001 —— git 不可用给可操作错误
+            return f"export_patch 执行失败(git 不可用?): {e}"
+
+        if not diff.strip():
+            return ("❌ 空 diff:git 看不到你的改动。可能改错了树(repo_path 指错)、改动没保存、"
+                    "或被 .gitignore 忽略。export_patch 不写空补丁 —— 回去确认你真的改对了文件。")
+
+        repo_name = repo.name
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        patch_path = out / f"{repo_name}.patch"
+        patch_path.write_text(diff, encoding="utf-8")
+        n = len(diff.splitlines())
+        return f"✅ 已落盘\npath={patch_path}\nlines={n}  (unified diff;apply 验证见 validate_patch)"
+
+    # ── ⑨ export_report:把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘)────
+    # 跟 export_patch 对称:补丁内容是 git 生成的(工具自己 diff),报告内容是 agent 生成的(传 content)。
+    # bug-RCA 跑完,agent 若只在聊天里吐报告 = 没交付(跟"只在聊天里说改好了"同理)。这步把报告写成磁盘文件,
+    # 自检非空(治"agent 假装写报告 / 传空串糊弄")。落 data/bug_rca/<repo>-rca.md(对齐 orchestrator 的
+    # render_report 约定;同仓重跑覆盖,历史在记忆库)。报告是**最终交付物**,排在 memorize 之后写 ——
+    # 要含 memorize 返回的 id(证明教训已沉淀),才算完整闭环。
+    @mcp.tool()
+    async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca",
+                            agents_md: bool = False) -> str:
+        """Finalize your analysis report as an on-disk .md file — a bug-RCA run is NOT complete until
+        the report is on disk (same deliverable bar as the patch; chat is not a deliverable).
+
+        Writes your markdown report to ``<out_dir>/<repo-name>-rca.md`` and REFUSES empty/trivial
+        content — catches "forgot to write a report / passed a placeholder". Write the patch first
+        (``export_patch``, step ⑦) AND memorize the lesson (``memorize``, step ⑧) first, then write
+        this report so it can cite the on-disk ``.patch`` path and the returned memorize id.
+
+        content:   the full markdown report (root cause + evidence + patch summary + validate result +
+                   patch path + memorize id).
+        repo_path: absolute path of the repo (used only to derive the report filename).
+        out_dir:   output directory (default ``data/bug_rca``; created if missing).
+        agents_md: ALSO write an AGENTS.md next to the report (``<repo_path>/AGENTS.md`` — INTO the
+                   repo root). AGENTS.md is the agent-facing README convention (agents.md; opencode /
+                   claude code / cursor read it natively) — onboarding/research findings become context
+                   that ANY agent auto-loads next time it works in that repo. OPT-IN (default off —
+                   never write files into the user's repo unasked); the skill passes it when the user
+                   asked for it. Content is derived FROM your report: architecture overview + key
+                   entry points + naming conventions + known pitfalls. Keep it LEAN (ETH Zurich 2026:
+                   verbose AGENTS.md slows agents down) — a distilled digest, not a copy: ≤60 lines,
+                   no evidence tables / no per-step narration / no report-only sections.
+        """
+        from pathlib import Path
+
+        if not content or not content.strip():
+            return ("❌ 空报告:没传内容(或只传空白)。报告跟补丁一样是交付物 —— 写好根因/证据/补丁要点/"
+                    "validate 结果/patch 路径/memorize id 再调。export_report 不写空报告。")
+        # 报告落盘不强依赖 git / repo 目录存在(内容自包含),只取 repo_path 的目录名做文件名;
+        # 空路径兜底 "report",绝不因 repo_path 小瑕疵挡住报告上盘(交付物宁可落盘)。
+        name = Path(repo_path).name if repo_path and repo_path.strip() else ""
+        repo_name = name or "report"
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        report_path = out / f"{repo_name}-rca.md"
+        report_path.write_text(content, encoding="utf-8")
+        n = len(content.splitlines())
+        msg = f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
+        # AGENTS.md 产出(#5,2026-08-17):报告同源数据蒸馏成「给 agent 看的 README」写进仓根。
+        # 默认关 —— 不问自写入用户仓违背最小惊讶;skill 按用户显式要求才传 agents_md=True。
+        # 不覆盖已有内容:仓里已有 AGENTS.md(手写或别的工具产)→ 拒写 + 提示,保护用户文件。
+        if agents_md:
+            target = Path(repo_path) / "AGENTS.md"
+            if target.exists():
+                return (msg + f"\n⚠️ AGENTS.md 未写:{target} 已存在(手写/其他工具产物,不覆盖;"
+                        "要更新先人工确认再删它重跑)。")
+            target.write_text(f"# AGENTS.md\n\n<!-- 由 RootRecall export_report 生成(蒸馏自同目录导览/调研报告);"
+                              f"agent-facing README,保持精简。 -->\n\n{content}", encoding="utf-8")
+            msg += f"\nAGENTS.md 已写:{target}({len(content.splitlines())} 行,蒸馏版)"
+        return msg
+
+    # ── ⑩ fetch_patch:PR 链接 → diff + meta(P-A 1a,取快递)────────────────────
+    # 给一个 GitHub PR 链接,抓回 diff + title/body/changed_files/merge_commit_sha。opencode 能 curl,
+    # 但这里带 token 鉴权(私有/限速)+ 失败重试 + 结构化拆包(踩坑#2 辩护:agent 通用 curl 不知 token/remotes)。
+    @mcp.tool()
+    async def fetch_patch(url: str) -> str:
+        """Fetch a GitHub PR's diff + metadata (title/body/changed_files/merge_commit_sha).
+
+        Give a PR URL (github.com/<owner>/<repo>/pull/<num>). Returns the unified diff plus PR metadata
+        so you can then ``validate_patch`` / assess it. Uses GITHUB_TOKEN if set
+        (private repos / rate limits). Network errors / 404 / non-GitHub URL → friendly error string.
+        """
+        from rootrecall.services.patch.fetcher import from_config
+
+        try:
+            art = await from_config().fetch(url)
+        except Exception as e:  # noqa: BLE001 - 网络错/404/非 GitHub URL 给可操作串,不崩整个调用
+            return f"fetch_patch 失败({url}): {e}"
+        meta = (f"title: {art.title}\nmerge_commit_sha: {art.merge_commit_sha}\n"
+                f"changed_files({len(art.changed_files)}): {', '.join(art.changed_files[:20])}")
+        if art.body:
+            meta += f"\nbody: {art.body[:500]}"
+        return f"source={art.source_kind}  url={art.url}\n{meta}\n\n--- diff ---\n{art.diff}"
+
+    # ── ⑪ ensure_repo:本地没有 → auto-clone(P-A 1a,借样机)────────────────────
+    # 鉴定要一台"样机"(代码仓)。本地没有 → 按 config.patch.git.remotes 配的地址 clone。
+    # 踩坑#2 辩护:opencode 会 git clone,但只去公网;用户的"自定义 git 连接"(内网镜像/SSH)它不知道。
+    @mcp.tool()
+    async def ensure_repo(name_or_url: str) -> str:
+        """Resolve a codebase to a local path, auto-cloning if missing.
+
+        Give a repo name (looked up in ``config.patch.git.remotes``), a git URL, or an existing local
+        path. Returns the local absolute path; reuses an existing clone in ``data/repos/<name>``
+        (idempotent — won't re-clone). Use before ``validate_patch`` when the repo
+        isn't already local.
+        """
+        from rootrecall.services.repos.resolver import ensure_repo as _ensure
+
+        try:
+            path, cloned = _ensure(name_or_url)
+        except Exception as e:  # noqa: BLE001 - clone 失败(认证/不存在/网络)给可操作串,不崩
+            return f"ensure_repo 失败({name_or_url}): {e}"
+        tag = "新 clone" if cloned else "命中本地(未 clone)"
+        return f"✅ repo_path={path}  ({tag})"
+
+    return mcp
+
+
+def main() -> None:
+    """MCP server 入口(stdio 默认)。`rootrecall mcp serve` 或 `python -m rootrecall.tools.mcp_memory` 调。
+
+    http(streamable-http)模式走 CLI `rootrecall mcp serve --transport http`(cmd_mcp 里建带 host/port 的 server)。
+    """
+    build_server().run()
+
+
+if __name__ == "__main__":
+    main()
