@@ -2,7 +2,7 @@
 
 > *Light on every root cause.*
 
-**给系统软件代码库(C 为主,如 wpa_supplicant / bluez)做「带记忆的 bug 根因定位 + 深度调研」的领域 harness —— 记忆 + 代码情报 + 日志取证 + 补丁验证 + 标准流程 skill,作为 MCP tool/skill server 供 opencode(主)/ codex / claude code 调用。** RootRecall 不自行调度 coding agent 执行固定管线;读码、改代码等重活由成熟 coding agent 承担,RootRecall 负责召回与组装精确上下文、提供工具和标准流程、沉淀并检索记忆。
+**给系统软件代码库(C 为主,如 wpa_supplicant / bluez)做「带记忆的 bug 根因定位 + 深度调研」的领域 harness —— 记忆 + 代码情报 + 日志取证 + 补丁验证 + 标准流程 skill,作为 MCP tool/skill server 供 opencode 调用。** RootRecall 不自行调度 coding agent 执行固定管线;读码、改代码等重活由 opencode 承担,RootRecall 负责召回与组装精确上下文、提供工具和标准流程、沉淀并检索记忆。
 
 ## 能做什么:8 个 skill
 
@@ -26,33 +26,31 @@
 ## 快速开始
 
 ```bash
-# 1. 克隆并安装(系统工具 Linux/macOS 自适应 + Python 依赖 + Claude 记忆软链)
 git clone https://github.com/TuNaiChao/RootRecall.git
 cd RootRecall
-bash scripts/setup.sh
-
-# 2. 填密钥
-cp .env.example .env   # 然后编辑填 API key(只查非空,不打印值)
-
-# 3. 验证配置 + 模型加载
-uv run rootrecall models
-
-# 4. 给代码库建索引(向量索引 + 结构图一次到位;--no-graph 只建向量,快)
-uv run rootrecall index <仓库路径> <索引名>
-
-# 5. 起 MCP 工具服务,给 coding agent 接
-uv run rootrecall mcp serve                                # stdio(本地 1:1,默认)
-uv run rootrecall mcp serve --transport http --port 8765   # streamable-http(warm 长进程,多 agent 共用)
-uv run rootrecall mcp serve --codebase bluez               # 指定默认库(多仓场景)
+bash scripts/quickstart.sh
 ```
 
-**接入 coding agent:**
+脚本依次做五件事,可重复执行(已配置的部分自动跳过):
 
-- **opencode**(主):仓库根的 `opencode.json` 软链到 [config/opencode_rootrecall.json](config/opencode_rootrecall.json)(单一配置源,修改只改后者)—— 注册 rootrecall MCP、放行 `rootrecall*` 工具、内置 `rootrecall-bug-rca` 等 10 个 agent block;skill 放 [.claude/skills/](.claude/skills/),opencode 自动发现。
-- **codex**:[config/codex_rootrecall.toml](config/codex_rootrecall.toml)(`[mcp_servers.rootrecall]` 带下划线)。
-- **claude code / 其他标准 MCP client**:按各自方式注册 stdio MCP server,skill 走 `.claude/skills/`(agentskills.io 跨平台)。
+1. 装系统工具 + Python 依赖(调 `scripts/setup.sh`,Linux/macOS 自适应;已装过则跳过,`--force` 重装);
+2. 交互填写 `.env` 密钥(必填 2 个:DeepSeek LLM + DashScope embedding/reranker;输入不回显,不打印值);
+3. 验证模型配置(`rootrecall models`);
+4. (可选)给目标代码库建索引 —— 检索类工具需要,记忆类不需要;
+5. opencode 接线自检 + 启动指引。
 
-> 前置:opencode / codex 从本仓库根目录启动 —— MCP command 用 `uv run` 按 cwd 解析 .venv,skill 从项目的 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量。
+## 在 opencode 里使用
+
+脚本跑完后,在本仓库根目录启动 `opencode` 即可:
+
+- 仓库根的 `opencode.json` 软链到 [config/opencode_rootrecall.json](config/opencode_rootrecall.json)(单一配置源,修改只改后者)—— 注册 rootrecall MCP、放行 `rootrecall*` 工具、内置 `rootrecall-bug-rca` 等 10 个 agent block;
+- 8 个 skill 在 [.claude/skills/](.claude/skills/),opencode 自动发现;
+- **必须从本仓库根目录启动** —— MCP command 用 `uv run` 按 cwd 解析 `.venv`,skill 从 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量。
+
+试用(在 opencode 里直接问):
+
+- 「为什么 wpa 的 P2P 会话会泄漏?」→ `bug-rca`
+- 「这个仓库整体架构怎么组织?新人怎么上手?」→ `onboarding`
 
 多仓库支持:检索 / 记忆类工具均接受 per-call `codebase` 参数,建多个索引即可在多个仓之间切换;记忆全局共享,条目以 codebase 标签隔离。
 
@@ -60,7 +58,7 @@ uv run rootrecall mcp serve --codebase bluez               # 指定默认库(多
 
 ```mermaid
 flowchart TB
-    AGENT["用户的 coding agent<br/>opencode(主)/ codex / claude code"]
+    AGENT["opencode<br/>(coding agent)"]
     SKILLS["8 个 skill · 标准流程<br/>bug-rca · patch-review · upstream-merge · backport<br/>compare · onboarding · domain-research · memory-health-check"]
     SERVER["RootRecall MCP server · rootrecall mcp serve<br/>16 个 MCP 工具:记忆 3 · 代码情报 8 · 硬门 3 · PR 抓取 2"]
 
@@ -90,7 +88,7 @@ flowchart TB
     class CLI cli
 ```
 
-一个 MCP server、8 个 skill、16 个工具,对所有 agent 通用。RootRecall 不替代 agent,只提供工具与流程。
+一个 MCP server、8 个 skill、16 个工具。RootRecall 不替代 opencode,只提供工具与流程。
 
 ## 16 个 MCP 工具
 
