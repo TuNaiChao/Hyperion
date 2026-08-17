@@ -10,7 +10,7 @@ metadata:
 
 # P1/P2 高优先 4 项落地交接(2026-08-14,commit 7535527)
 
-来源:2026-08-14 P1/P2 两支柱全面分析(docs/code-research-module-analysis.md + bug-rca-module-analysis.md)产出的 backlog(docs/p1-p2-improvement-backlog.md)🔴 1–4,当日全部落地。
+来源:2026-08-14 P1/P2 两支柱全面分析(docs/code-research-module-analysis.md + bug-rca-module-analysis.md)产出的 backlog(docs/p1-p2-improvement-backlog.md,该文件 2026-08-17 已删,🔴🟡 全落地后收口;git 历史可查)🔴 1–4,当日全部落地。
 
 ## 四项改动
 

@@ -143,7 +143,7 @@ flowchart TB
 
 - **skill 路由矩阵**(8 个 skill 的判据 + 易混对):[docs/skill-routing-matrix.md](docs/skill-routing-matrix.md)
 - **三支柱模块分析**:bug 定位 [docs/bug-rca-module-analysis.md](docs/bug-rca-module-analysis.md) · 代码调研 [docs/code-research-module-analysis.md](docs/code-research-module-analysis.md) · 记忆 [docs/memory-module-analysis.md](docs/memory-module-analysis.md)
-- **改进 backlog**:[docs/p1-p2-improvement-backlog.md](docs/p1-p2-improvement-backlog.md)
+- **参考文档**:MCP 工具 [docs/mcp-tools.md](docs/mcp-tools.md) · 配置 [docs/configuration.md](docs/configuration.md) · CLI [docs/cli.md](docs/cli.md)
 - **工作约定 + 仓库地图 + 命令**:仓库根 [CLAUDE.md](CLAUDE.md)
 
 ## 技术栈

@@ -141,7 +141,7 @@ RootRecall 的代码调研就是给代码库建一套**导航系统**,三层能�
 | 混合检索(BM25 + 向量 + RRF)→ cross-encoder 精排 | ✅ 工业标准两段式完整,带四级降级可观测 |
 | [AGENTS.md](https://agents.md/) 惯例(60k+ 仓采用,agent 开工自动读的"README") | ✅ `export_report(agents_md=True)` opt-in 产出——默认关(不问自写用户仓 = 越界)、已有拒写不覆盖、内容是 agent 蒸馏的 ≤60 行精简版(冗长反而拖累 agent)而非死模板 |
 
-**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。截断治理(诚实截断)与 AGENTS.md 产出已补齐,剩余改进是触发级的(语言覆盖 / 查询形态 boosting 等),见[两支柱改进待办](p1-p2-improvement-backlog.md)。
+**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。截断治理(诚实截断)与 AGENTS.md 产出已补齐,剩余改进是触发级的(语言覆盖 / 查询形态 boosting 等,记 CLAUDE.md「低优 backlog」)。
 
 ---
 

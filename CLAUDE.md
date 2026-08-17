@@ -40,7 +40,7 @@ RootRecall/
 │   ├── tools/        # ✅ MCP 工具(mcp_memory,16 个给 coding agent)+ delegate(R2,降级参考)
 │   └── cli.py        # ✅ 入口(models/index/lsp/memory/mcp/bug-rca/research/patch-report)
 ├── config/           # config.yaml(模型/沙箱/记忆/委托)+ opencode_rootrecall.json(opencode agent+MCP)
-├── docs/             # 模块分析×3 + p1-p2-backlog + skill-routing-matrix + 踩坑记录(21 坑)
+├── docs/             # 模块分析×3 + 参考×3(mcp-tools/configuration/cli)+ skill-routing-matrix + 踩坑记录(面试版)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)
 ├── .claude/memory/   # Claude Code 项目记忆(随 git 跨机)

@@ -135,7 +135,7 @@ P2 的差异化在于**每个环节都接记忆**(详细机制见[记忆模块�
 | [SZZ-Agent](https://www.researchgate.net/publication/403379901_How_and_Why_Agents_Can_Identify_Bug-Inducing_Commits)(SZZ 出候选 + agent 裁决"哪个 commit 引入了 bug",2026) | ✅ 同款分工已落地——`when_introduced` 双锚点(pickaxe 符号 / `-L` 行历史)出候选表,引入者裁决归 agent;真仓探针:hostap `scan_only_handler` → 唯一候选 `66fe0f70` = 金标引入点分毫不差 |
 | blast radius / impact analysis(2026 业界做成 PR 实时信号) | ✅ `blast_radius` 图驱动波及面,patch-review 在用 |
 
-**结论**:办案纪律(证伪循环 + 多假设淘汰)、硬门(apply 梯子)、记忆闭环(先验 → 修法 → 沉淀 → 纠正)三件套都已在 2026 主流线上,且"带记忆的 bug-RCA"在系统软件垂直场景是差异化定位。原待办的三处收尾(多候选假设纪律 / auto-query 召回硬化 / bug 引入 commit 定位)已全部落地,剩余改进是触发级的(候选根因置信数值化等),见[两支柱改进待办](p1-p2-improvement-backlog.md)。
+**结论**:办案纪律(证伪循环 + 多假设淘汰)、硬门(apply 梯子)、记忆闭环(先验 → 修法 → 沉淀 → 纠正)三件套都已在 2026 主流线上,且"带记忆的 bug-RCA"在系统软件垂直场景是差异化定位。原待办的三处收尾(多候选假设纪律 / auto-query 召回硬化 / bug 引入 commit 定位)已全部落地,剩余改进是触发级的(候选根因置信数值化等,记 CLAUDE.md「低优 backlog」)。
 
 ---
 
