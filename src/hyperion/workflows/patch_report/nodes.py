@@ -81,13 +81,12 @@ async def node_analyze(state: PatchReportState) -> dict:
 
     repo_root = state["repo_root"]
     codebase = state["codebase"]
-    deep = bool(state.get("deep"))
     sem = asyncio.Semaphore(max(1, state.get("concurrency") or 3))
 
     async def _one(art):
         async with sem:
             try:
-                return await _analyze_one_pr(art, repo_root=repo_root, codebase=codebase, deep=deep)
+                return await _analyze_one_pr(art, repo_root=repo_root, codebase=codebase)
             except Exception as e:  # noqa: BLE001 - 单 PR 分析失败不连坐
                 logger.warning("analyze 失败 %s: %s", getattr(art, "url", "?"), e)
                 return PRFinding(url=getattr(art, "url", ""), title=getattr(art, "title", ""),

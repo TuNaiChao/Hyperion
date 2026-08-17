@@ -28,7 +28,7 @@ allowed-tools:
 
 1. **确认 fork 现状**:问清本地 fork 仓路径 + fork 对照分支(`fork_ref`,如 `release/eagle`)。没有本地仓 → `ensure_repo` clone(注意:必须是**非浅克隆**,有历史才能跑 cherry/patch-id 比对)。
 2. **拉上游到本地**(用户定方向:本地分析):`bash` 跑 `git -C <repo> remote add upstream <url>`(幂等:已存在则跳过)→ `git -C <repo> fetch upstream --no-tags`。或上游单独 clone 到临时目录再对比。
-3. **切到 fork 干净态【硬门】** `bash` 跑 `git -C <repo> checkout <fork_ref>` 并确认 worktree 干净(`git status --porcelain` 空)—— merge_eval 的 apply 检查针对当前 worktree,fork 态必须就位且无脏改动,否则三态会失真。
+3. **确认 fork_ref 在本地可解析**:`git -C <repo> rev-parse --verify <fork_ref>` 通即可。冲突检查是零 touch 的(`merge-tree --write-tree`,git ≥ 2.38,在对象库里试合并)——**不需要** checkout fork_ref、worktree 脏也不影响三态(仅老 git 回退 `apply --check` 时才要切干净态,note 会提示)。
 4. **定上游范围**:确认 `upstream_base_ref..upstream_head_ref`(如「上次同步点」..`upstream/master` 最新)。范围太大 → 用 `concern_files` 收窄到 fork 关心的模块。
 5. **跑三态表【硬门】** `merge_eval(upstream_base_ref, upstream_head_ref, fork_ref, repo_path, concern_files?, codebase?)` —— 拿到逐 commit 的 `already_fixed`/`recommend_merge`/`conflict`/`uncertain`。这是确定性地板(patch-id 等价 + apply 检查),**不**判断相关性。
 6. **查相关性(对 recommend_merge 逐个)**:能合 ≠ fork 需要它。对每个 `recommend_merge` 的 commit:`call_chain`/`blast_radius`(触及的函数/文件)/`search_codebase` 看 fork 真有这个 bug 吗、改动触及的代码 fork 在用吗。不相关 → 标 `not_relevant`(从建议合里剔除)。
@@ -53,7 +53,7 @@ allowed-tools:
 
 - **只评估不修改** —— `bash` 只跑读类 git(`fetch` 拉上游除外);不 `apply`/`cherry-pick`/`merge`/`reset`/写文件。改 fork 是用户的活。
 - **merge_eval 过(能 apply)≠ fork 需要它** —— 三态的 `recommend_merge` 只表示「fork 没等价、能干净打上」;**必须再查相关性**(步骤 6)才决定是否真建议合,否则把无关改动塞进 fork。
-- **apply 检查针对当前 worktree** —— 调 merge_eval 前必须 `checkout fork_ref` + worktree 干净(步骤 3),否则三态失真。
+- **冲突检查零 touch(2026-08-17 起)** —— merge_eval 用 `merge-tree --write-tree` 在对象库判冲突,不依赖 checkout/worktree 状态;仅 git < 2.38 回退 `apply --check` 对当前 worktree(note 会提示,那时才需要切干净态)。
 - **编译 / 正确性不自动验证** —— 工具只到 apply;能否编译、修对,用户自验。
 - **未经验证不 memorize** —— 评估是确定性比对 + 读码推理,不算坐实;memorize 推迟到用户验证通过后(可跨 session)。
 

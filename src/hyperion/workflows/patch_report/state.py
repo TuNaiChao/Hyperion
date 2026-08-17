@@ -30,7 +30,6 @@ class PatchReportState(TypedDict, total=False):
     codebase: Required[str]  # 仓名(CRG db 目录 / 记忆 scope.codebase)
     prs: Required[list[str]]  # PR URL 列表
     owner: NotRequired[str]  # 记忆 scope.owner(默认 "default")
-    deep: NotRequired[bool]  # 高风险/security 子集走 ReAct 深审(默认 light)
     concurrency: NotRequired[int]  # 并发(默认 3,GitHub 限速友好)
     # 各步产物
     scope: Any  # ingest 产:Scope(owner, codebase)

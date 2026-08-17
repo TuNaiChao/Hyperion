@@ -358,6 +358,39 @@ def test_export_report_writes_file(tmp_path):
     assert report_file.read_text(encoding="utf-8") == report_md
 
 
+def test_export_report_agents_md_opt_in(tmp_path):
+    """#5 AGENTS.md 产出:默认关(不传 → 仓根无 AGENTS.md,不问自写用户仓);传 agents_md=True → 写仓根。
+
+    两层行为:① 默认 off —— repo_root 连 AGENTS.md 都不碰(最小惊讶);② opt-in —— 写
+    <repo_path>/AGENTS.md(带生成头注释),已有 AGENTS.md 不覆盖(保护手写/别的工具产物)。
+    """
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    out_dir = tmp_path / "out"
+    report_md = "# 导览\n\n模块 A 是核心入口。\n"
+    mcp = build_server()
+    # ① 默认关:不写 AGENTS.md
+    out = _call(mcp, "export_report",
+                {"content": report_md, "repo_path": str(repo), "out_dir": str(out_dir)})
+    assert "已落盘" in out and "AGENTS.md" not in out, out
+    assert not (repo / "AGENTS.md").exists()
+    # ② opt-in:写仓根
+    out2 = _call(mcp, "export_report",
+                 {"content": report_md, "repo_path": str(repo),
+                  "out_dir": str(out_dir), "agents_md": True})
+    assert "AGENTS.md 已写" in out2, out2
+    agents = repo / "AGENTS.md"
+    assert agents.is_file()
+    body = agents.read_text(encoding="utf-8")
+    assert body.startswith("# AGENTS.md") and "Hyperion export_report 生成" in body
+    assert "模块 A 是核心入口" in body  # 同源内容
+    # ③ 已有不覆盖
+    out3 = _call(mcp, "export_report",
+                 {"content": report_md, "repo_path": str(repo),
+                  "out_dir": str(out_dir), "agents_md": True})
+    assert "未写" in out3 and "已存在" in out3, out3
+
+
 # ════════════════════════ memory_recall kind 过滤(patch_search 已并入 recall)════════════════════════
 
 def test_memory_recall_kind_filter():

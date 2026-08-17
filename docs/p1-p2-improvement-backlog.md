@@ -54,6 +54,9 @@
 
 ### 5. onboarding/compare 产出 AGENTS.md(新功能,对齐 2026 惯例)
 
+> **✅ 已落地(2026-08-17)**:`export_report` 加 `agents_md: bool = False` 参数(opt-in)—— 传 True 时同源内容加生成头注释写 `<repo_path>/AGENTS.md`(仓根),**默认关**(不问自写入用户仓 = 越界);**已有 AGENTS.md 拒写不覆盖**(保护手写/别的工具产物)。onboarding/compare SKILL step6 + agent prompt 同步「用户显式要求才传 + 蒸馏 ≤60 行精简版(ETH Zurich 2026:冗长 AGENTS.md 拖累 agent);compare 只写用户指定的目标仓」。3 断言单测(默认关不碰仓根/opt-in 写+头注释/已有拒写)。
+
+
 **场景**:onboarding 报告目前只落 report.md(给人看);[AGENTS.md](https://agents.md/) 是 2026 业界惯例(60k+ 仓采用),opencode / claude code / cursor 原生读取——"给 agent 看的 README"。
 
 **价值**:把"调研结论"变成**任何 agent 下次开工自动注入的上下文**,和记忆系统形成"文件层 + DB 层"双保险。改动小(报告渲染加一个模板),差异卖点大(调研产物直接可被机器消费)。
@@ -63,6 +66,9 @@
 **验证**:onboarding e2e 后检查生成的 AGENTS.md 内容与报告一致性。
 
 ### 6. merge_eval 升 `git merge-tree --write-tree`(触发 backlog #60)
+
+> **✅ 已落地(2026-08-17,原 backlog #60)**:apply 检查优先 `git merge-tree --write-tree <fork_ref> <commit>`(git ≥ 2.38)——**对象库零 touch 判冲突,不依赖 worktree 状态**,三态不再押在「agent 先 checkout fork_ref + 保持干净」的调用姿势上;rc=0 干净 / rc=1 冲突 / rc>1 uncertain。merge-tree 不可用(老 git/跑挂)→ 回退老 `git apply --check` 对当前 worktree + note 明示「三态可能失真」。工具 docstring / upstream-merge SKILL step3+硬约束 / agent prompt 三处文案同步(step3 从「切 fork 干净态【硬门】」降为「rev-parse 可解析即可」)。新增脏树单测:停 main + a.py 脏 + 不 checkout fork,新判 recommend_merge 正确(老路此姿势必失真);既有三态/空范围测回归绿。探针先坐实 git 2.50 行为:merge-tree 冲突 rc=1(管道会吃 rc,`$?` 直读)、输出首行树 oid + 冲突文件在后。
+
 
 **问题**:apply 检查对**当前工作树**跑,三态判定的正确性押在"agent 先 checkout fork_ref + 保持干净"的自觉上([code_graph.py:315-317](../src/hyperion/services/code_index/code_graph.py#L315-L317) caveat 自认)。backport e2e 已把姿势升级为 worktree 隔离,但工具本身没修。
 
@@ -89,6 +95,9 @@
 **验证**:wpa / bluez 真仓上对一个已知引入 commit 的 bug 跑,候选表里有金标。
 
 ### 8. patch_report 的 `deep=True`:删参或实现(建议先删)
+
+> **✅ 已删(2026-08-17)**:五接触点(graph.run 签名+docstring / nodes 读 state / _analyze 形参+docstring / state.py 字段 / CLI `--deep` 参数+透传)全清,三处注释留痕「真需要逐 PR 深审时按 deep_research 子 agent 模式实现」。剩余 "deep" 全是 deepin 打包无关词。patch_report 16 测回归绿。
+
 
 **问题**:docstring 自认"deep 留 stretch"([_analyze.py:44](../src/hyperion/workflows/patch_report/_analyze.py#L44)),参数透传但空壳——违背"诚实信号"原则。
 

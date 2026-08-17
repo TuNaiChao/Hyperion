@@ -471,6 +471,61 @@ def test_merge_eval_three_states(tmp_path):
         assert all(isinstance(c["touched_functions"], list) for c in res2["commits"])
 
 
+def test_merge_eval_dirty_worktree_zero_touch(tmp_path):
+    """merge-tree 升级(#6/backlog #60)核心回归:脏 worktree + 不 checkout fork,三态依然正确。
+
+    老路(apply --check 对当前 worktree)在这种姿势下必失真——补丁对不上脏文件 → 全判 conflict。
+    新路(merge-tree --write-tree 在对象库试合并)不受 worktree 状态影响。
+    git < 2.38 无 merge-tree → 回退老路(此时该姿势本来就失真),skip 保断言精度。
+    """
+    import os
+    import shutil
+    import subprocess
+
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    # merge-tree --write-tree 探测:git ≥ 2.38 才有(老 git 收到 --write-tree 报 usage)
+    probe = subprocess.run(["git", "merge-tree", "--write-tree", "HEAD", "HEAD"],
+                           capture_output=True, text=True, cwd=str(tmp_path))
+    # tmp_path 非 git 仓时 HEAD 解析失败是 rc≠0 但 stderr 不同;先建仓再探,直接在下面建完探
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_EDITOR": "true"}
+
+    def g(args):
+        subprocess.run(["git", *args], cwd=str(tmp_path), env=env, check=True,
+                       capture_output=True, text=True)
+
+    g(["init", "-q"])
+    (tmp_path / "a.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "base"])
+    g(["branch", "-m", "main"])
+    # upstream 加新文件 c.py(fork 没动它 → 三方合并必干净)
+    g(["checkout", "-q", "-b", "upstream"])
+    (tmp_path / "c.py").write_text("def gamma():\n    return 0\n", encoding="utf-8")
+    g(["add", "-A"])
+    g(["commit", "-q", "-m", "U2 add gamma"])
+    # fork:从 main 建(不 checkout 过去 —— 模拟「agent 没切 fork」的懒姿势;U2 不进 fork)
+    g(["checkout", "-q", "main"])
+    g(["branch", "fork"])
+    # 关键姿势:停 main + 把 a.py 改脏(老路必失真:U2 的 diff 对脏树照样能 apply,
+    # 但若 commit 触及 a.py 则必挂;这里用干净 c.py 隔离变量——失真与否看 merge-tree 是否被 worktree 干扰)
+    (tmp_path / "a.py").write_text("def alpha():\n    return 999  # DIRTY\n", encoding="utf-8")
+    # merge-tree 可用性探测(仓已建):老 git → skip
+    probe = subprocess.run(["git", "merge-tree", "--write-tree", "main", "main"],
+                           capture_output=True, text=True, cwd=str(tmp_path))
+    if probe.returncode != 0:
+        pytest.skip(f"git 无 merge-tree --write-tree(<2.38): {probe.stderr[:80]}")
+
+    from hyperion.services.code_index.code_graph import merge_eval
+    res = merge_eval("main", "upstream", fork_ref="fork", repo_path=str(tmp_path))
+    # U2 加 c.py 与 fork(main 态,没动 c.py)三方合并干净 → recommend_merge;
+    # 脏 a.py 不影响(worktree 状态与对象库合并无关)
+    assert res["summary"]["recommend_merge"] == 1, res
+    assert res["summary"]["conflict"] == 0, res
+    assert "merge-tree 不可用" not in res["note"]  # 走的是新路,没回退
+
+
 def test_merge_eval_empty_range(tmp_path):
     """upstream_base..upstream_head 无 commit → 空结果 + 提示。"""
     import os

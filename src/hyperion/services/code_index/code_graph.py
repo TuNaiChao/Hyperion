@@ -312,9 +312,11 @@ def merge_eval(upstream_base_ref: str, upstream_head_ref: str, *,
     max_commits:逐 commit 扫描上限(默认 50,防巨大 range 烧时间)。
     graph:可选 CodeGraph(有才做 touched_functions 富化;per-commit CRG 映射较慢,超阈值自动跳过)。
 
-    ⚠️ apply 检查 caveat:``applies_cleanly`` 是把 commit 的 diff 跑 ``git apply --check`` 对**当前
-    worktree** —— 故调用前须 ``git checkout <fork_ref>`` 且 worktree 干净(skill 负责叮嘱 agent)。
-    生产级无 touch 检测升 ``git merge-tree --write-tree``(git 2.38+),记 backlog。
+    ⚠️ apply 检查的实现(2026-08-17 升级,原 backlog #60):优先 ``git merge-tree --write-tree
+    <fork_ref> <commit>`` 零 touch 判冲突 —— 不依赖当前 worktree 状态(不用先 checkout fork_ref、
+    worktree 脏也不影响结果),返回码 0=干净 / 1=冲突(树对象写进对象库,不碰工作树/索引;两边都
+    不动被 merge 的 ref)。git < 2.38 或 merge-tree 失败 → 回退老路:commit diff 跑 ``git apply
+    --check`` 对当前 worktree(那时才需要 checkout + 干净树),回退会在 note 里说明。
 
     返回 ``{repo, fork_ref, upstream_range, commits:[...], summary:{...}, note}``。
     失败(非 git 仓 / ref 不存在 / repo_path 无效)→ 抛 ``ValueError``,工具层转友好串。
@@ -326,12 +328,25 @@ def merge_eval(upstream_base_ref: str, upstream_head_ref: str, *,
         if not _SAFE_GIT_REF.match(ref):
             raise ValueError(f"非法 git ref(只允许字母数字 _ . / ~ ^ @ {{ }} -): {ref!r}")
 
+    # merge-tree 探测(一次性,循环外):git ≥ 2.38 支持 `merge-tree --write-tree`;老 git 收到
+    # --write-tree 直接 usage 报错(rc≠0 且 stderr 带 usage)。探测用已验证存在的 fork_ref 对
+    # 自身 merge(恒干净),rc=0 → 可用;否则记 note + 回退 apply --check 老路。
+    try:
+        mt_probe = subprocess.run(["git", "merge-tree", "--write-tree", fork_ref, fork_ref],
+                                  cwd=str(repo), capture_output=True, text=True, timeout=_GIT_TIMEOUT)
+        mt_available = mt_probe.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        mt_available = False
+
     # 解析三 ref → sha(顺带验存在;不存在 git 报错 → _run_git 转 ValueError)
     base_sha = _run_git(repo, ["rev-parse", "--verify", upstream_base_ref]).strip()
     head_sha = _run_git(repo, ["rev-parse", "--verify", upstream_head_ref]).strip()
     fork_sha = _run_git(repo, ["rev-parse", "--verify", fork_ref]).strip()
 
     notes: list[str] = []
+    if not mt_available:
+        notes.append("merge-tree 不可用(git < 2.38?),apply 检查回退 git apply --check 对当前 "
+                     "worktree —— 结果依赖 checkout 状态,三态可能失真。")
     pathspec = sorted(concern_files) if concern_files else None
 
     # 1) 上游范围内的 commit(upstream_base..upstream_head,concern 收窄)
@@ -376,20 +391,37 @@ def merge_eval(upstream_base_ref: str, upstream_head_ref: str, *,
     for sha, subject in raw_commits:
         equivalent_in_fork = sha in equiv
 
-        # apply 检查:commit 的 diff(parent..commit)跑 git apply --recount --check 对当前 worktree。
-        # 扫描用 strict 一步(不走 3way/patch 梯子 —— 这是扫描不是真 apply)。归一化防踩坑#15 末尾换行。
+        # apply 检查(优先 merge-tree,回退 apply --check):
+        #   merge-tree --write-tree <fork_ref> <commit> 在对象库里试合并(不碰 worktree/索引),
+        #   rc=0 干净 / rc=1 冲突 —— 三态不再依赖「先 checkout fork_ref + worktree 干净」的调用姿势。
+        #   merge-tree 不可用(老 git)或跑挂 → 走老路:commit diff 跑 git apply --recount --check 对
+        #   当前 worktree(归一化防踩坑#15 末尾换行);再挂 → None(uncertain)。
         applies_cleanly: bool | None
-        try:
-            diff = _run_git(repo, ["diff", "--no-color", f"{sha}^", sha])
-            diff = diff.replace("\r\n", "\n").replace("\r", "\n")
-            if not diff.endswith("\n"):
-                diff += "\n"
-            ar = subprocess.run(["git", "apply", "--recount", "--check"], input=diff,
-                                cwd=str(repo), capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=60)
-            applies_cleanly = ar.returncode == 0
-        except (ValueError, subprocess.SubprocessError):
-            applies_cleanly = None  # commit 无父 / git 挂 → 拿不准,标 uncertain
+        if mt_available:
+            try:
+                mt = subprocess.run(["git", "merge-tree", "--write-tree", "--name-only",
+                                     fork_ref, sha],
+                                    cwd=str(repo), capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=_GIT_TIMEOUT)
+                if mt.returncode in (0, 1):
+                    applies_cleanly = mt.returncode == 0
+                else:
+                    applies_cleanly = None  # rc>1 = 真错误(如 ref 解析挂),拿不准
+            except (OSError, subprocess.SubprocessError):
+                applies_cleanly = None
+        else:
+            applies_cleanly = None
+            try:
+                diff = _run_git(repo, ["diff", "--no-color", f"{sha}^", sha])
+                diff = diff.replace("\r\n", "\n").replace("\r", "\n")
+                if not diff.endswith("\n"):
+                    diff += "\n"
+                ar = subprocess.run(["git", "apply", "--recount", "--check"], input=diff,
+                                    cwd=str(repo), capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=60)
+                applies_cleanly = ar.returncode == 0
+            except (ValueError, subprocess.SubprocessError):
+                applies_cleanly = None  # commit 无父 / git 挂 → 拿不准,标 uncertain
 
         # touched_files(git diff-tree 廉价、无 header 污染)
         try:

@@ -52,15 +52,16 @@ def build_graph():
 
 
 async def run(prs: list[str], *, repo: str, codebase: str,
-              owner: str = "default", deep: bool = False,
+              owner: str = "default",
               concurrency: int = 3) -> dict:
     """跑 patch_report workflow,返回最终 state(含 report_path / findings)。
 
     prs        :PR URL 列表(GitHub `github.com/.../pull/N`;Gerrit 同接口)。
     repo       :代码仓根(CRG 图 + validate_patch + verify 都用它;需先 `hyperion index` 建图)。
     codebase   :仓库名(CRG db 目录名 / 记忆 scope.codebase)。
-    deep       :高风险/security 子集走 ReAct 深审(默认 light ~1 LLM/PR)。
     concurrency:并发抓取/分析(GitHub 限速友好,默认 3)。
+    (曾有 deep 参数留 stretch,2026-08-14 删——空壳违背诚实信号原则;真需要逐 PR 深审时
+    按 deep_research 的子 agent 模式实现,见 docs/p1-p2-improvement-backlog.md #8。)
     """
     graph = build_graph()
     initial: PatchReportState = {
@@ -68,7 +69,6 @@ async def run(prs: list[str], *, repo: str, codebase: str,
         "codebase": codebase,
         "prs": list(prs),
         "owner": owner,
-        "deep": deep,
         "concurrency": concurrency,
     }
     return await graph.ainvoke(initial)

@@ -545,8 +545,10 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
         Fully local-git. YOU must first fetch the upstream into the repo so the refs resolve:
         `git -C <repo> remote add upstream <url> && git -C <repo> fetch upstream --no-tags` (idempotent;
-        your job, not this tool's). Before calling, `git -C <repo> checkout <fork_ref>` and ensure a
-        clean worktree — applies_cleanly checks apply against the CURRENT worktree.
+        your job, not this tool's). Conflict check is zero-touch (`git merge-tree --write-tree`, git
+        2.38+): no checkout of fork_ref and no clean worktree needed — it merges in the object db.
+        Only on git < 2.38 it falls back to `git apply --check` against the CURRENT worktree (then do
+        checkout fork_ref + clean tree first; the fallback is flagged in the note).
 
         upstream_base_ref/upstream_head_ref: upstream commit range (two git refs in repo_path, e.g.
             last-sync-point and upstream/master). fork_ref: fork branch to compare against (e.g. release/eagle).
@@ -875,7 +877,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # render_report 约定;同仓重跑覆盖,历史在记忆库)。报告是**最终交付物**,排在 memorize 之后写 ——
     # 要含 memorize 返回的 id(证明教训已沉淀),才算完整闭环。
     @mcp.tool()
-    async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca") -> str:
+    async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca",
+                            agents_md: bool = False) -> str:
         """Finalize your analysis report as an on-disk .md file — a bug-RCA run is NOT complete until
         the report is on disk (same deliverable bar as the patch; chat is not a deliverable).
 
@@ -888,6 +891,15 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                    patch path + memorize id).
         repo_path: absolute path of the repo (used only to derive the report filename).
         out_dir:   output directory (default ``data/bug_rca``; created if missing).
+        agents_md: ALSO write an AGENTS.md next to the report (``<repo_path>/AGENTS.md`` — INTO the
+                   repo root). AGENTS.md is the agent-facing README convention (agents.md; opencode /
+                   claude code / cursor read it natively) — onboarding/research findings become context
+                   that ANY agent auto-loads next time it works in that repo. OPT-IN (default off —
+                   never write files into the user's repo unasked); the skill passes it when the user
+                   asked for it. Content is derived FROM your report: architecture overview + key
+                   entry points + naming conventions + known pitfalls. Keep it LEAN (ETH Zurich 2026:
+                   verbose AGENTS.md slows agents down) — a distilled digest, not a copy: ≤60 lines,
+                   no evidence tables / no per-step narration / no report-only sections.
         """
         from pathlib import Path
 
@@ -903,7 +915,19 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         report_path = out / f"{repo_name}-rca.md"
         report_path.write_text(content, encoding="utf-8")
         n = len(content.splitlines())
-        return f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
+        msg = f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
+        # AGENTS.md 产出(#5,2026-08-17):报告同源数据蒸馏成「给 agent 看的 README」写进仓根。
+        # 默认关 —— 不问自写入用户仓违背最小惊讶;skill 按用户显式要求才传 agents_md=True。
+        # 不覆盖已有内容:仓里已有 AGENTS.md(手写或别的工具产)→ 拒写 + 提示,保护用户文件。
+        if agents_md:
+            target = Path(repo_path) / "AGENTS.md"
+            if target.exists():
+                return (msg + f"\n⚠️ AGENTS.md 未写:{target} 已存在(手写/其他工具产物,不覆盖;"
+                        "要更新先人工确认再删它重跑)。")
+            target.write_text(f"# AGENTS.md\n\n<!-- 由 Hyperion export_report 生成(蒸馏自同目录导览/调研报告);"
+                              f"agent-facing README,保持精简。 -->\n\n{content}", encoding="utf-8")
+            msg += f"\nAGENTS.md 已写:{target}({len(content.splitlines())} 行,蒸馏版)"
+        return msg
 
     # ── ⑩ fetch_patch:PR 链接 → diff + meta(P-A 1a,取快递)────────────────────
     # 给一个 GitHub PR 链接,抓回 diff + title/body/changed_files/merge_commit_sha。opencode 能 curl,

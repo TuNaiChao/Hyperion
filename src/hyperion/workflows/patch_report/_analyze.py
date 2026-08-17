@@ -32,7 +32,7 @@ THEME_LABELS = {
 }
 
 
-async def _analyze_one_pr(art, *, repo_root: str, codebase: str, deep: bool = False) -> PRFinding:
+async def _analyze_one_pr(art, *, repo_root: str, codebase: str) -> PRFinding:
     """★ 单 PR → cited PRFinding。
 
     1. apply 门:validate_patch(能否干净打到 repo)。
@@ -41,7 +41,9 @@ async def _analyze_one_pr(art, *, repo_root: str, codebase: str, deep: bool = Fa
     3. cited-reporter:收证(diff + 风险 + apply)+ 一次 LLM → {summary(锚 file:line), citations, theme(8 类)}。
     4. 安全分层:theme=security → 至少 relevant(叠 CRG 安全词 + risk);theme 与 tier 对齐(治脱节 bug)。
     5. modules:改动函数的 community_id(按 module 分桶用)。
-    CRG 缺/图没建 → 降级(无 risk/modules,继续 LLM 总结)。deep(ReAct 子 agent 深挖)留 stretch。
+    CRG 缺/图没建 → 降级(无 risk/modules,继续 LLM 总结)。
+    (曾有 deep 参数留 stretch,2026-08-14 删——空壳违背诚实信号原则;真需要逐 PR 深审时
+    按 deep_research 的子 agent 模式实现,见 docs/p1-p2-improvement-backlog.md #8。)
     """
     # 1. apply 门
     from hyperion.services.workspace.validate import validate_patch

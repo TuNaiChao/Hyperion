@@ -38,7 +38,7 @@ allowed-tools:
 3. **俯瞰架构【阶段 1·结构快照】**(仅重跑路径):`repo_overview(codebase=<codebase>)` 一次拿全**社区清单(模块边界)+ hub_nodes(核心枢纽)+ bridge_nodes(架构瓶颈)+ 耦合告警(哪两个模块边太多)**;`repo_map(codebase=<codebase>)` 拿 PageRank 符号俯瞰图(最重要的函数)。读出:这仓分几大模块、哪些是核心 hub、哪些是架构瓶颈(bridge)、哪两个模块高耦合(>10 边告警)。这是「先看项目形状再读码」,比一上来就扎进源文件快得多。
 4. **挑一条旅程 + 端到端走【阶段 4·核心】**(仅重跑路径):挑主旅程入口 —— 默认 `repo_overview` hub_nodes 排第一的(全仓被依赖最多的入口);用户指定了主题就 `search_codebase(query=<主题概念>, codebase=<codebase>)` 定位用户要的那条旅程入口。从入口 `call_chain(symbol=<入口函数>, codebase=<codebase>)` 多跳展开,看清整条旅程涉及的函数链。**逐节点 `read` 完整函数体**,讲清每步做什么(状态转换 / 资源申请释放 / 错误处理)。这是「trace one real user journey end-to-end」,也是新人最容易上手的一条主线。顺手记下命名约定、错误处理风格、日志方式(读码时自然发现),每条都要带 file:line。
 5. **聚导览级结论【短路路径也走这】**:把(重跑得出的、或 recall 命中直接复用的)结构快照 + 旅程走读聚成**导览级解读** —— 系统分成几大模块(为什么这么分)+ 核心入口是哪个(为什么是它)+ 一条主旅程怎么走(每步 file:line)+ 架构风险点(高耦合对 / bridge 瓶颈)+ 新人最该先读哪几个文件。不要只罗列符号,要讲清「为什么」。
-6. **落导览报告**:`export_report` 落盘导览报告 .md。**每条结论必须附 file:line**,对齐 cited-reporter 防幻觉。
+6. **落导览报告**:`export_report` 落盘导览报告 .md。**每条结论必须附 file:line**,对齐 cited-reporter 防幻觉。**用户显式要求 AGENTS.md 时**(如「生成 AGENTS.md」「让以后的 agent 自动了解这仓」):同一调用传 `agents_md=True`,并在 content 里蒸馏出 ≤60 行的 agent 版(架构速览 + 核心入口 + 命名约定 + 已知坑,精不要全——冗长的 AGENTS.md 反而拖累 agent);默认不传,不问自写入用户仓 = 越界。
 7. **memorize(仅重跑路径才记)**:重跑得出的新结论才 `memorize(kind=codebase_fact, kind_detail=architecture, summary=<架构导览 + 因果>, evidence=[<file:line + 代码片段>], codebase=<codebase>, confidence=<你的把握>)`。**短路路径不要 memorize**(recall 已命中的事实 DB 里有了,重复记浪费调用,且按 summary 算 id 会去重——不污染但白花一步)。这条事实读码即坐实,**不需等用户验证**。
 
 ## 工具(按需调)
