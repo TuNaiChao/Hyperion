@@ -82,8 +82,8 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 
 ### 纠正章 —— 纠正关系闭环
 
-这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:180-188](../src/hyperion/services/memory/schema.py#L180-L188)):
-- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/hyperion/services/memory/schema.py#L187))
+这是记忆模块里**设计最精巧的一块**,两个字段分工明确([schema.py:178-188](../src/hyperion/services/memory/schema.py#L178-L188)):
+- `corrects` —— 新条说"我纠正了谁"(临时指令,写入时消费掉回填旧条,不入库;[schema.py:187](../src/hyperion/services/memory/schema.py#L187) 字段定义)
 - `corrected_by` —— 旧条上"我被谁纠正了"(持久化,检索降权 0.3,仍可见作参考)
 
 **为什么不复用 `superseded_by`:** 这是关键设计。superseded_by 绑定 `active`,设了会让旧条从 active 视图**消失**;但"被纠正" ≠ "失效"——被推翻的旧根因仍要能检索到、体检能看到(审计可追溯),只是排到纠正者后面。所以独立 `corrected_by` 解耦。场景:bug 根因被推翻(A 派"abort-failure"是错的,B 派"scan-only 竞态"纠正它)→ B.corrects=[A.id],写入时自动回填 A.corrected_by=B.id → recall 时 A 被降权排后面,但还能看到,讲清思路演变。
@@ -239,7 +239,7 @@ Hyperion 的记忆模块就是给 agent 装一本**跨会话、能自己变聪�
 | 中文 BM25(jieba 两侧分词) | 有 | — | — | — |
 | 外部依赖 | SQLite(零外部) | Neo4j(重) | 向量库 | 自管 |
 
-**结论**:基础架构已经是 2026 一线水平(bi-temporal + 纠正链 + 来源加权 + append-only + 四类 taxonomy + 三路融合 + 五 pass 巩固),且在"代码库 bug-RCA"这个垂直生态位有**通用 agent memory 没有的差异化王牌**:① file:line + sha 代码锚点溯源;② 记忆 / 代码 / 结构同召回;③ 带溯源 + 治理标签的可审计团队记忆(Mem0 / Cognee 都没有的记忆体检)。原来的短板(consolidate 太薄)已补齐——keeps / merges / evicts 三件事全落地,且全部是"只标不删"的软治理。
+**结论**:基础架构已经是 2026 一线水平(bi-temporal + 纠正链 + 来源加权 + append-only + 四类 taxonomy + 三路融合 + 五 pass 巩固),且在"代码库 bug-RCA"这个垂直生态位有**通用 agent memory 没有的差异化王牌**:① file:line + sha 代码锚点溯源;② 记忆 / 代码 / 结构同召回;③ 带溯源 + 治理标签的可审计团队记忆(Mem0 / Cognee 都没有的记忆体检)。原来的短板(consolidate 太薄)已补齐——keeps / merges / evicts 三件事全落地,且全部是"只标不删"的软治理。领域知识进 recall 的价值命题已有真数据实证:网调入库的 domain_knowledge 条目在 recall 中以最高分命中、排在一组 bug_lesson 前——给 bug-RCA 多一层证伪依据,正是治"锚定显眼日志行"误诊的设计意图。
 
 **配套的记忆体检**:`memory_dump` 工具把全库摊开成带溯源的体检卡(confidence / tier / evidence / sha / 双时间轴 / 治理标签),memory-health-check skill 在标签之上语义读健康信号(溯源弱 / 待巩固 / 已过期 / 未决矛盾)——双层结构:确定性工具自动打标,agent 做语义判断。
 

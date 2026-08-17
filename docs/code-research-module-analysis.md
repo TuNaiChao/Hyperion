@@ -72,7 +72,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 | **Leiden 社区检测** | 按调用密度自动聚出"模块" | 按道路密度自动划城区,不需要人工标注哪个文件属于哪个模块 |
 | **betweenness(介数)** | 找"咽喉":多社区之间的必经之路 | 跨区主干道——堵一条全线瘫 |
 
-### 六个 MCP 工具(全部纯图 / 纯 git 查询,零 LLM)
+### 七个 MCP 工具(全部纯图 / 纯 git 查询,零 LLM)
 
 | 工具 | 回答什么问题 | 机制 |
 |---|---|---|
@@ -81,7 +81,8 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 | `call_chain` | "X 的上下游调用链?" | 符号种子 + 有界 BFS(深度封顶 5 防大图爆炸)+ PageRank 排序 |
 | `blast_radius` | "改这些文件会波及谁?" | 图上 BFS 波及面;带路径解析容错(agent 给相对路径也能对上图里的绝对路径,否则静默返空) |
 | `cross_version_diff` | "同仓两个版本间改了啥?" | 纯 git:提交清单 + patch 等价性 + 关注文件 diff,**零 LLM 确定性事实** |
-| `merge_eval` | "上游这批 commit 该不该合进 fork?" | patch-id 等价判"已修" / apply 检查判"能合 / 冲突",三态判定(P2 详述) |
+| `merge_eval` | "上游这批 commit 该不该合进 fork?" | patch-id 等价判"已修" / merge-tree 对象库试合并判"能合 / 冲突"(零 touch),三态判定(P2 详述) |
+| `when_introduced` | "这段缺陷逻辑哪个 commit 带进来的?" | 纯 git 双锚点:pickaxe(`-S` 符号)或行历史(`-L`,改名跟随)出候选表带 added/removed 计数,引入者裁决归 agent(SZZ 式分工,P2 详述) |
 
 **分层检索**是刻意的:`repo_map` 管符号层(哪个函数重要),`repo_overview` 管架构层(模块边界 + 枢纽 + 耦合告警),`call_chain` 管路径层(端到端怎么走)。问哪层用哪个工具,不混。
 
@@ -126,7 +127,7 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 2. **cited-reporter 契约**:子 agent 的产出格式强制"每条结论 + file:line 引用",只允许断言工具真实返回过的符号。
 3. **Verifier 回查**:报告落盘前逐条核验引用,四档判级([_verify.py:32-38](../src/hyperion/workflows/deep_research/_verify.py#L32-L38))——strict(文件 + 符号 + 行号全对)/ near(±5 行容差)/ file(只查到文件)/ bad(疑似编造,标红列出)。产出 Existence@Line 比例当报告质量指标。
 
-**诚实截断**:工具返回大结果时明说"截在哪、怎么补取"(如 repo_overview 超 12000 字符时提示调大参数重调),不静默丢尾。
+**诚实截断**:工具返回大结果时明说"截在哪、怎么补取",不静默丢尾。两级手段:结构化收口(repo_overview 大仓社区按 size 取前 30、成员只留计数 + 样本,从源头控制体积)+ 真超长才截并带 note(五个列表型工具统一 `_honest_truncate`);列表型工具(blast_radius / call_chain / cross_version_diff / merge_eval / repo_map)可调参数收缩重取。
 
 ---
 
@@ -138,9 +139,9 @@ Hyperion 的代码调研就是给代码库建一套**导航系统**,三层能力
 | [Microsoft Code Researcher](https://www.marktechpost.com/2025/06/14/microsoft-ai-introduces-code-researcher-a-deep-research-agent-for-large-systems-code-and-commit-history/)(深度调研 agent,RL 训练代码图多跳遍历策略) | 🟡 方向一致(call_chain 多跳 + 引用式报告),遍历策略靠 skill 指令而非训练——单机工具的现实取舍 |
 | [Tree-sitter 知识图谱 MCP(arXiv 2026)](https://arxiv.org/html/2603.27277v1)(结论:最优架构 = 图检索 + RepoMap/PageRank 混合) | ✅ 正是检索层 + 结构图层的双路设计 |
 | 混合检索(BM25 + 向量 + RRF)→ cross-encoder 精排 | ✅ 工业标准两段式完整,带四级降级可观测 |
-| [AGENTS.md](https://agents.md/) 惯例(60k+ 仓采用,agent 开工自动读的"README") | ❌ 空白——onboarding 报告只落给人看的 report.md,没有产出 agent 可直接消费的 AGENTS.md(改进项见待办文档) |
+| [AGENTS.md](https://agents.md/) 惯例(60k+ 仓采用,agent 开工自动读的"README") | ✅ `export_report(agents_md=True)` opt-in 产出——默认关(不问自写用户仓 = 越界)、已有拒写不覆盖、内容是 agent 蒸馏的 ≤60 行精简版(冗长反而拖累 agent)而非死模板 |
 
-**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。差距集中在收尾完整度(截断治理 / AGENTS.md 产出 / 语言覆盖),见[两支柱改进待办](p1-p2-improvement-backlog.md)。
+**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。截断治理(诚实截断)与 AGENTS.md 产出已补齐,剩余改进是触发级的(语言覆盖 / 查询形态 boosting 等),见[两支柱改进待办](p1-p2-improvement-backlog.md)。
 
 ---
 

@@ -47,7 +47,7 @@ allowed-tools:
 | `hyperion_validate_patch(patch, repo_path)` | 细查单个 commit 的 apply | 传该 commit 的 `git show` diff |
 | `hyperion_memory_recall(query)` | 评估前后 | 翻同类上游变更 / 历史 backport 决策 |
 | `hyperion_memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传上游 sha;决策作 summary |
-| `bash` | 拉 upstream / 切 fork_ref | **只许** `fetch`/`log`/`show`/`checkout fork_ref`/`status`/`diff`(读类);**禁** `apply`/`cherry-pick`/`merge`/`reset`/写类 |
+| `bash` | 拉 upstream / 查 refs | **只许** `fetch`/`log`/`show`/`rev-parse`/`status`/`diff`(读类);**禁** `apply`/`cherry-pick`/`merge`/`reset`/`checkout`/写类 |
 
 ## 硬约束
 
@@ -79,7 +79,7 @@ notes: apply 过 ≠ fork 需要它;编译 / 正确性必须由用户自验;back
 
 - 把 `recommend_merge`(能合)当"该合" —— 能合只算 fork 没等价、打得上;是否真相关要你查(步骤 6),无关改动一律标 `not_relevant` 排除。
 - 改用户的 fork(只评估;`apply`/`cherry-pick`/`merge`/写文件都不要)。
-- 调 merge_eval 前没 `checkout fork_ref` + 没清 worktree —— apply 检查针对当前 worktree,fork 态没就位三态会失真。
+- 调 merge_eval 前 `checkout fork_ref` / 切分支 —— 冲突检查是零 touch 的(merge-tree 对象库试合并),切分支既没必要还动用户现场;fork_ref 用 `rev-parse --verify` 验可解析即可。
 - 范围太大不给 `concern_files` 收窄 —— 全上游历史扫一遍既慢又淹没重点。
 - **未经验证就 memorize** —— 等用户 backport 并验证通过后再记。
 - 不读 commit 涉及的代码就下相关性结论 —— 用 `call_chain`/`blast_radius`/`search_codebase`/`read` 把改动放进上下文再看。

@@ -70,7 +70,7 @@
 > **✅ 已落地(2026-08-17,原 backlog #60)**:apply 检查优先 `git merge-tree --write-tree <fork_ref> <commit>`(git ≥ 2.38)——**对象库零 touch 判冲突,不依赖 worktree 状态**,三态不再押在「agent 先 checkout fork_ref + 保持干净」的调用姿势上;rc=0 干净 / rc=1 冲突 / rc>1 uncertain。merge-tree 不可用(老 git/跑挂)→ 回退老 `git apply --check` 对当前 worktree + note 明示「三态可能失真」。工具 docstring / upstream-merge SKILL step3+硬约束 / agent prompt 三处文案同步(step3 从「切 fork 干净态【硬门】」降为「rev-parse 可解析即可」)。新增脏树单测:停 main + a.py 脏 + 不 checkout fork,新判 recommend_merge 正确(老路此姿势必失真);既有三态/空范围测回归绿。探针先坐实 git 2.50 行为:merge-tree 冲突 rc=1(管道会吃 rc,`$?` 直读)、输出首行树 oid + 冲突文件在后。
 
 
-**问题**:apply 检查对**当前工作树**跑,三态判定的正确性押在"agent 先 checkout fork_ref + 保持干净"的自觉上([code_graph.py:315-317](../src/hyperion/services/code_index/code_graph.py#L315-L317) caveat 自认)。backport e2e 已把姿势升级为 worktree 隔离,但工具本身没修。
+**问题**(已修,留档):apply 检查曾对**当前工作树**跑,三态判定的正确性押在"agent 先 checkout fork_ref + 保持干净"的自觉上。backport e2e 已把姿势升级为 worktree 隔离,工具本身当时没修。
 
 **改法**:`git merge-tree --write-tree`(git 2.38+)零 touch 判冲突——工具从"依赖调用姿势"变成"自洽正确"。已有的 backlog #60,此处触发。
 

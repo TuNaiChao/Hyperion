@@ -49,9 +49,11 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 ### 证伪纪律(对抗误诊,从真踩坑提炼)
 
+- **多假设清单**:定位先列 2-3 个候选根因(按记忆先验 + 日志线索),逐个找证据 / 反证,按证据强度**淘汰制**而非认定制——单候选思维 = 锚定。全部候选被淘汰才回头扩大搜索。e2e 实证:报告里出现「候选淘汰记录」,B / C 候选各有时序 / 证据被淘汰,根因与金标逐点吻合。
 - **时序检查**:现象不得早于 purported 根因。早于 = 抓到的大概率是症状,回去往更早查。
 - **别用残缺证据证伪先验**:日志切片可能漏了更早事件,不能断言"X 没发生过"。
 - **日志是线索,代码是确定答案**:真根因(状态机 / 分支逻辑 / 持久化状态)用 `search_codebase` 在源码里确定,重心放代码。
+- **候选难分胜负时查引入史**:根因锚定到符号 / file:line 后 `when_introduced` 出引入 commit 候选表,引入 commit 的 message / diff 常直接暴露缺陷意图——辅助证据路,不是硬门。
 
 这套纪律对应 2026 业界的 hypothesis-testing 流向([CogniGent](https://arxiv.org/html/2601.12522v2):多 agent 假设检验定位;[DoVer](https://huggingface.co/papers):假设生成 + 主动验证)——方向一致,Hyperion 用"菜谱纪律"而非"多 agent 编排"实现,是单机 harness 的现实取舍。
 
@@ -74,9 +76,8 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 `merge_eval(upstream_base, upstream_head, fork_ref, repo_path)`([code_graph.py:281](../src/hyperion/services/code_index/code_graph.py#L281))回答"上游一批 commit 该不该合进 fork":
 
 - **already_fixed**:用 `git log --cherry-pick --right-only` 对称差(底层 patch-id 等价)取反集——范围内**不在**"还没等价进 fork"名单里的 commit 就是已修。比逐个算 patch-id 高效,不用扫 fork 全史。
-- **recommend_merge / conflict**:逐 commit 取 diff 跑 strict apply 检查,干净 → 建议合,失败 → 冲突。
+- **recommend_merge / conflict**:逐 commit `git merge-tree --write-tree <fork_ref> <commit>` **在对象库里试合并**(rc=0 干净 / rc=1 冲突),不碰工作树、不需要 checkout——三态不再押在"agent 先切到 fork 且树干净"的调用姿势上;git < 2.38 或 merge-tree 跑挂 → 回退老路(commit diff 跑 `git apply --check`,对当前工作树,note 明示"三态可能失真")。
 - **uncertain**:取不到父 commit 等异常。
-- 已知边界(记 backlog):apply 检查对**当前工作树**跑,调用前须 checkout fork_ref 且树干净(skill 负责叮嘱 agent);生产级升 `git merge-tree`(零 touch)。
 
 ### 配套小工具
 
@@ -92,7 +93,7 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 |---|---|---|---|---|
 | `bug-rca` | 故障 → 修复 | 定位 + 修复 + 迭代 | `validate_patch`(apply) | 用户真机验证后 |
 | `patch-review` | 鉴定一个补丁 / PR | 干啥 / 贴得上吗 / 波及谁 / 该不该合 | `validate_patch` | 用户验证通过后 |
-| `upstream-merge` | 上游一批 commit 合不合进 fork | `merge_eval` 三态表 + 相关性判断 | worktree 干净态 + 三态表 | 用户 backport 并验证后 |
+| `upstream-merge` | 上游一批 commit 合不合进 fork | `merge_eval` 三态表 + 相关性判断 | 三态表(fork_ref rev-parse 可解析即可,零 touch) | 用户 backport 并验证后 |
 | `backport` | v25 已修 → 改独立发行版线 v20 | 跨版本回移植 | **判 v20 有无同一 bug**(纯语义)+ `validate_patch` | 用户真机验证后 |
 
 **backport 的特殊性**值得单独说:两条独立发行版线**没有共同 git 祖先**,patch-id 等价判定失效,所以刻意**不用** merge_eval——判"v20 有没有同一个 bug"是纯语义判断,靠 grep 定位 v20 对应函数 + read 函数体对照 v25 的 fix-point。这是全模块唯一"核心判定零工具"的场景,也是人在环最重的地方。
@@ -128,13 +129,13 @@ P2 的差异化在于**每个环节都接记忆**(详细机制见[记忆模块�
 
 | 业界实践 | 本项目现状 |
 |---|---|
-| [CogniGent](https://arxiv.org/html/2601.12522v2)(多 agent 假设检验定位,2026) | 🟡 证伪纪律已内建(时序检查 / 找反证 / 残缺证据不可证伪),单假设锚定风险仍在——多候选假设清单是待补纪律 |
+| [CogniGent](https://arxiv.org/html/2601.12522v2)(多 agent 假设检验定位,2026) | ✅ 核心增益(多候选假设并行 + 各自证伪淘汰)已以"菜谱纪律"形态内建——多假设清单 + 淘汰制,e2e 实证候选淘汰记录生效 |
 | [AgentFL](https://www.alphaxiv.org/overview/2403.16362v1) / [LLM4FL](https://openreview.net/forum?id=z91EvZbSI1)(项目级定位:Context → Debugger → Verification) | ✅ 殊途同归——delegate 多阶段(localize → repair)曾做过,pivot 后 Debugger 角色归 opencode,Hyperion 保留取证工具 + 纪律 |
 | [CrashFixer](https://arxiv.org/html/2504.20412v1)(Linux kernel crash → 修复)、[AMD RGD MCP](https://gpuopen.com/learn/post-mortem-gpu-crash-debugging-with-llms/)(crash 工具链接 MCP) | ✅ 同一定位(系统软件 crash / 日志 → 根因),Hyperion 多出的 **带记忆 + 带溯源** 是这批工作没有的 |
-| [SZZ-Agent](https://www.researchgate.net/publication/403379901_How_and_Why_Agents_Can_Identify_Bug-Inducing_Commits)(SZZ 出候选 + agent 裁决"哪个 commit 引入了 bug",2026) | ❌ 空白——"这个 bug 是哪个 commit 引入的"未覆盖;引入 commit 的 message / diff 常直接暴露根因意图(待办文档收录) |
+| [SZZ-Agent](https://www.researchgate.net/publication/403379901_How_and_Why_Agents_Can_Identify_Bug-Inducing_Commits)(SZZ 出候选 + agent 裁决"哪个 commit 引入了 bug",2026) | ✅ 同款分工已落地——`when_introduced` 双锚点(pickaxe 符号 / `-L` 行历史)出候选表,引入者裁决归 agent;真仓探针:hostap `scan_only_handler` → 唯一候选 `66fe0f70` = 金标引入点分毫不差 |
 | blast radius / impact analysis(2026 业界做成 PR 实时信号) | ✅ `blast_radius` 图驱动波及面,patch-review 在用 |
 
-**结论**:办案纪律(证伪循环)、硬门(apply 梯子)、记忆闭环(先验 → 修法 → 沉淀 → 纠正)三件套都已在 2026 主流线上,且"带记忆的 bug-RCA"在系统软件垂直场景是差异化定位。待补的是三处收尾:多候选假设纪律(治单假设锚定)、auto-query 召回硬化、bug 引入 commit 定位工具——见[两支柱改进待办](p1-p2-improvement-backlog.md)。
+**结论**:办案纪律(证伪循环 + 多假设淘汰)、硬门(apply 梯子)、记忆闭环(先验 → 修法 → 沉淀 → 纠正)三件套都已在 2026 主流线上,且"带记忆的 bug-RCA"在系统软件垂直场景是差异化定位。原待办的三处收尾(多候选假设纪律 / auto-query 召回硬化 / bug 引入 commit 定位)已全部落地,剩余改进是触发级的(候选根因置信数值化等),见[两支柱改进待办](p1-p2-improvement-backlog.md)。
 
 ---
 
