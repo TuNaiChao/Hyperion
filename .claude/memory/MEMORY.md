@@ -9,7 +9,7 @@
 - [对齐 deer-flow,目标生产级非 demo](align-to-deerflow-production-grade.md) — 实现优先照齐 deer-flow;最小实现可起步但必须迭代到生产级。
 - [生产级补齐待办清单](backlog-production-grade.md) — "最小实现→生产级"跨阶段待办 #1–#44(完成 #22/#23/#38/#54/#57/#58;#55 obsolete;#60 待触发)。
 - [注释面向小白](comment-style-beginner-friendly.md) — 注释/docstring 用大白话+类比;区别于 skill/prompt(面向模型)。
-- [项目文档写作风格](doc-writing-style.md) — 2026-08-14:docs/*.md 面向小白+比喻+去噪音(不带时间戳)+ 本项目化(不说"你")。区别于注释(可带时间戳)+ skill(面向模型)。
+- [项目文档写作风格](doc-writing-style.md) — 2026-08-14:docs/*.md 面向小白+比喻+去噪音(不带时间戳)+ 本项目化(不说"你");README.md 例外——对外用专业表述不用比喻(2026-08-17)。区别于注释(可带时间戳)+ skill(面向模型)。
 - [新功能自跑 opencode e2e](new-feature-run-opencode-e2e.md) — 2026-08-14:做了新功能我自己跑 opencode e2e(不等用户自验);系统软件编译/复现仍用户自验。
 - [记忆模块分析+Phase1交接](memory-consolidation-phase1-handoff.md) — 2026-08-14:docs/ 记忆分析+路线图(新风格)+ consolidate 三 pass 化(矛盾检测/语义去重,对标 keeps/merges/evicts)+ e2e 抓 symptom 空回退 bug。51 passed。
 - [consolidate Phase2交接](memory-consolidation-phase2-handoff.md) — **2026-08-14 五 pass 收口**:B3 已合入上游(reverse-apply→标签+打折,不 set_invalid)+ B4 过期(只标不降权,防双杀);计数=当前态/写入=幂等。**e2e 抓 2 真 bug 同修**:标签竞写(快照覆盖洗掉 merged_upstream→_add_tag 写前重读)+ 矛盾误报(同文件≠同 bug→行号差≤5 收紧)。274 绿。

@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 9c2c0db8-4586-4c04-8e41-3770bae44cfd
-  modified: 2026-08-14T03:17:43.667Z
+  modified: 2026-08-17T06:10:21.326Z
 ---
 
 2026-08-14 用户定:以后写项目文档(.md,如 docs/ 下的分析 / 路线图)都按这种风格。
@@ -19,4 +19,4 @@ metadata:
 
 **Why**:文档要给团队 / 跨机 / 未来的自己看,必须自洽可读,不能带会话临时的措辞和时间戳噪音。
 
-**How to apply**:写任何 docs/*.md 默认套这套风格。区别于 [[skill-prompt-writing-style]](skill/prompt 受众是模型,指令性,不带项目内部知识;文档受众是人,带项目上下文)+ [[comment-style-beginner-friendly]](代码注释也面向小白,但注释可以带时间戳,文档不带)。
+**How to apply**:写任何 docs/*.md 默认套这套风格。**例外:README.md(2026-08-17 用户定)**——对外门面,用专业表述,不用比喻(「菜谱/手术刀/病案室」这类一律换成「skill/工具/知识库」);比喻风格只用于 docs/ 内部分析文档。区别于 [[skill-prompt-writing-style]](skill/prompt 受众是模型,指令性,不带项目内部知识;文档受众是人,带项目上下文)+ [[comment-style-beginner-friendly]](代码注释也面向小白,但注释可以带时间戳,文档不带)。
