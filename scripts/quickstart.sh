@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# RootRecall 一键配置:装依赖 → 交互填 .env 密钥 → 验证模型 → (可选)建索引 → opencode 接线自检。
-# 跑完在本仓库根目录启动 opencode,即可用全部功能(8 个 skill + 16 个 MCP 工具)。
+# RootRecall 一键配置:装依赖 → 交互填 .env 密钥 → 验证模型 → (可选)建索引 → (可选)接 bug 仓 → opencode 接线自检。
+# 跑完在本仓库根目录(或已接线的 bug/工作仓)启动 opencode,即可用全部功能(8 个 skill + 16 个 MCP 工具)。
 #
 # 用法:bash scripts/quickstart.sh [--force]
 #   --force  重跑完整 scripts/setup.sh(重装系统工具 + 依赖;默认 .venv 已存在时跳过该步)
@@ -88,8 +88,19 @@ else
   echo "  跳过(检索类工具用前再建: uv run rootrecall index <仓库路径> <索引名>)"
 fi
 
-# ── [5/5] opencode 接线自检 + 启动指引 ──────────────────────────────────
-echo "[5/5] opencode 接线自检"
+# ── [5/6] (可选)给 bug/工作仓接线:接完能在那个仓里直接启动 opencode ──────
+echo "[5/6] bug/工作仓接线(可选)"
+printf '要直接在某个 bug/工作仓里启动 opencode 吗?输入仓库绝对路径,多个用空格分隔(留空跳过):'
+read -r bug_dirs || bug_dirs=""
+if [ -n "$bug_dirs" ]; then
+  # shellcheck disable=SC2086  # 用户按空格分隔输入多个路径
+  bash scripts/wire_opencode.sh $bug_dirs
+else
+  echo "  跳过(要用时随时: bash scripts/wire_opencode.sh <bug仓路径>)"
+fi
+
+# ── [6/6] opencode 接线自检 + 启动指引 ──────────────────────────────────
+echo "[6/6] opencode 接线自检"
 ok=1
 if command -v opencode >/dev/null 2>&1; then
   echo "  ✅ opencode 已安装: $(command -v opencode)"
@@ -112,10 +123,10 @@ echo "  ✅ skill x ${skill_n}(.claude/skills/,opencode 自动发现)"
 echo ""
 echo "════════════════════════════════════════════════════════"
 if [ "$ok" -eq 1 ]; then
-  echo "✅ 配置完成!启动方式(必须在本仓库根目录 —— uv 按 cwd 找 .venv,skill 从"
-  echo "   .claude/skills/ 发现,.env 由 rootrecall 进程自加载,都不依赖 shell 环境变量):"
-  echo ""
-  echo "   cd $REPO && opencode"
+  echo "✅ 配置完成!opencode 启动位置二选一:"
+  echo "   ① 默认:cd $REPO && opencode"
+  echo "   ② 已接线的 bug/工作仓:cd <该仓> && opencode(MCP 经 cwd 锚到本仓根 —— uv 找得到"
+  echo "      .venv、data/ 不漂移;skill 走软链发现;.env 由 rootrecall 进程自加载)"
   echo ""
   echo "   试用示例:「为什么 wpa 的 P2P 会话会泄漏?」(bug-rca)/"
   echo "             「这个仓库整体架构怎么组织?」(onboarding)"

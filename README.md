@@ -31,21 +31,23 @@ cd RootRecall
 bash scripts/quickstart.sh
 ```
 
-脚本依次做五件事,可重复执行(已配置的部分自动跳过):
+脚本依次做六件事,可重复执行(已配置的部分自动跳过):
 
 1. 装系统工具 + Python 依赖(调 `scripts/setup.sh`,Linux/macOS 自适应;已装过则跳过,`--force` 重装);
 2. 交互填写 `.env` 密钥(必填 2 个:DeepSeek LLM + DashScope embedding/reranker;输入不回显,不打印值);
 3. 验证模型配置(`rootrecall models`);
 4. (可选)给目标代码库建索引 —— 检索类工具需要,记忆类不需要;
-5. opencode 接线自检 + 启动指引。
+5. (可选)给 bug/工作仓接线(`scripts/wire_opencode.sh`)—— 接完可在那个仓里直接启动 opencode;
+6. opencode 接线自检 + 启动指引。
 
 ## 在 opencode 里使用
 
-脚本跑完后,在本仓库根目录启动 `opencode` 即可:
+脚本跑完后,启动位置二选一:**本仓库根目录**(默认),或**已接线的 bug/工作仓**(quickstart 第 5 步接线,或随时 `bash scripts/wire_opencode.sh <bug仓>`):
 
 - 仓库根的 `opencode.json` 软链到 [config/opencode_rootrecall.json](config/opencode_rootrecall.json)(单一配置源,修改只改后者)—— 注册 rootrecall MCP、放行 `rootrecall*` 工具、内置 `rootrecall-bug-rca` 等 10 个 agent block;
 - 8 个 skill 在 [.claude/skills/](.claude/skills/),opencode 自动发现;
-- **必须从本仓库根目录启动** —— MCP command 用 `uv run` 按 cwd 解析 `.venv`,skill 从 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量。
+- **从本仓库根启动** —— MCP command 用 `uv run` 按 cwd 解析 `.venv`,skill 从 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量;
+- **从 bug/工作仓启动(需先接线)** —— 接线在目标仓放两根线:`.claude/skills` 软链(skill 项目级发现)+ 生成的 `opencode.json`(官方 `mcp.rootrecall.cwd` 字段把 MCP 服务器进程锚回本仓根,`.venv`/`data/`/`.env` 全部照旧解析)。
 
 试用(在 opencode 里直接问):
 
