@@ -23,6 +23,8 @@
 
 综合两者再给方案、再写代码。不要凭空造轮子。
 
+**接 skill 类需求先查路由矩阵**:用户问题该进 8 个 skill 里哪个,见 [docs/skill-routing-matrix.md](docs/skill-routing-matrix.md)(问题形态主表 + 6 组易混对判据 + 工具归属 + 组合场景);别凭感觉挑 skill,易混对(upstream-merge vs backport / compare vs backport / domain-research vs onboarding)都有明确判据。
+
 **实现时对齐 deer-flow,目标生产级(不是 demo):** 各功能优先照齐 deer-flow 对应代码的质量与边界处理;起步可做最小实现,但**必须排期迭代到生产级**。**本项目是生产级项目,不是 demo**——"最小实现"是阶段性手段,不是终点。每处简化都记入 `.claude/memory/backlog-production-grade.md`,后续补齐。
 
 ## 仓库地图
@@ -38,7 +40,7 @@ Hyperion/
 │   ├── tools/        # ✅ MCP 工具(mcp_memory,16 个给 coding agent)+ delegate(R2,降级参考)
 │   └── cli.py        # ✅ 入口(models/index/lsp/memory/mcp/bug-rca/research/patch-report)
 ├── config/           # config.yaml(模型/沙箱/记忆/委托)+ opencode_hyperion.json(opencode agent+MCP)
-├── docs/             # 已完成/ · 调研/ · 设计/(architecture + memory/bug-rca/deep-research + p1-code-understanding)
+├── docs/             # 模块分析×3 + p1-p2-backlog + skill-routing-matrix(8 skill 路由矩阵)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)
 ├── .claude/memory/   # Claude Code 项目记忆(随 git 跨机)
