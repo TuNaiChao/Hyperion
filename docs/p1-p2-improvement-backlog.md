@@ -72,6 +72,9 @@
 
 ### 7. `when_introduced` 工具——bug 引入 commit 定位(P2 唯一值得新增的 MCP 工具)
 
+> **✅ 已落地(2026-08-17,第 16 个 MCP 工具)**:双锚点模式 —— `symbol`(pickaxe `git log -S`,短名配 `file` pathspec 收窄)或 `file+line[,line_end]`(行历史 `git log -L`,改名/行漂移跟随);候选表时间倒序带 added/removed 计数(pickaxe 只数含 symbol 的 ± 行 → 引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移);`_honest_truncate` + note 明说裁决归 agent。真仓探针:hostap 上游 `scan_only_handler` → 唯一候选 `66fe0f70` "Add 'SCAN TYPE=ONLY' functionality"(demo2 金标 bug 机制的引入点,分毫不差);deepin bluez `sdp_extract_seqtype` → `ae4512f` Init commit + `c991dc26` 升级(浅史仓符合预期)。3 单测(pickaxe 引入者 / 行历史跟随 / 错误路径友好串)+ 全 mcp_tools 38 绿 + ruff clean。bug-rca SKILL 工具表 + 证伪纪律 + agent prompt 同步(候选难分胜负时查引入史,辅助证据非硬门;`memory_memorize` 的 `introduced_by` 参数按 backlog 原则没做——真需求再触发)。
+
+
 **场景**:用户问"这个 bug 是哪个 commit 引入的"。[SZZ-Agent](https://www.researchgate.net/publication/403379901_How_and_Why_Agents_Can_Identify_Bug-Inducing_Commits)(2026)证实的路线:SZZ 出候选 + agent 语义裁决。
 
 **双价值**:① 引入 commit 的 message / diff 常直接暴露根因意图(给假设循环加一路证据);② bug_lesson 记忆可带 `introduced_by` 溯源。

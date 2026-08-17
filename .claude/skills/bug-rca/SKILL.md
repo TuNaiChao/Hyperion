@@ -5,6 +5,7 @@ allowed-tools:
   - hyperion_memory_recall
   - hyperion_search_codebase
   - hyperion_blast_radius
+  - hyperion_when_introduced
   - hyperion_validate_patch
   - hyperion_export_patch
   - hyperion_memorize
@@ -35,6 +36,7 @@ allowed-tools:
 | `hyperion_memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文 |
 | `hyperion_search_codebase(query)` | 找入口符号——传概念,别传猜的文件名 | 只回真实存在的符号,不会编路径 |
 | `hyperion_blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |
+| `hyperion_when_introduced(repo_path, symbol=\|file+line)` | 候选难分胜负时——「这段缺陷逻辑哪个 commit 带进来的」 | 纯 git 候选表(时间倒序+added/removed);引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移;哪条真引入语义裁决(git show 逐条读);引入 commit 的 message/diff 常直接暴露根因意图——假设循环的辅助证据,不是硬门 |
 | `hyperion_validate_patch(patch, repo_path)` | 每版补丁都调 | 只验 **apply,不验修对** |
 | `hyperion_export_patch(repo_path)` | 每出一版补丁就调 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证 |
 | `hyperion_memorize(...)` | 验证通过后才调 | kind=bug_lesson |
@@ -52,7 +54,7 @@ allowed-tools:
 
 模型会锚定显眼日志行(ERROR/失败)误当根因。对抗:
 
-- **先列候选再淘汰,别认定**:定位阶段先列 **2-3 个候选根因**(按记忆先验 + 日志线索),逐个找证据/反证,按证据强度淘汰;单候选思维 = 锚定。全部候选被淘汰才回头扩大搜索(更早窗口/别的日志源/别的子系统)。
+- **先列候选再淘汰,别认定**:定位阶段先列 **2-3 个候选根因**(按记忆先验 + 日志线索),逐个找证据/反证,按证据强度淘汰;单候选思维 = 锚定。全部候选被淘汰才回头扩大搜索(更早窗口/别的日志源/别的子系统)。候选难分胜负时可查引入史:根因锚定到符号/file:line 后 `when_introduced` 出候选表,引入 commit 的 message/diff 常暴露缺陷意图(辅助证据路,非硬门)。
 - 立根因后,**先找推翻它的证据**,找不到再定论。
 - **时序检查**:现象不得早于 purported 根因。早于 = 你抓的大概率是症状(如"abort failed"其实是"扫描早完成、状态没清"的后果),回去往更早查。
 - **别用残缺证据证伪先验**:日志切片可能漏了更早事件时,不能断言"X 没发生过"。

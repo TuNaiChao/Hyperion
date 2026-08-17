@@ -444,6 +444,111 @@ def merge_eval(upstream_base_ref: str, upstream_head_ref: str, *,
     }
 
 
+def when_introduced(repo_path: str, *, symbol: str | None = None,
+                    file: str | None = None, line: int | None = None,
+                    line_end: int | None = None, max_commits: int = 20) -> dict:
+    """bug 引入 commit 定位(SZZ 式)——「这个 bug 是哪个 commit 带进来的?」。
+
+    给 agent **确定性候选**(零 LLM),哪条真引入归 agent 语义裁决(确定性地板 + LLM 天花板,
+    与 merge_eval 同分工;业界路线 = SZZ 出候选 + agent 裁决)。
+
+    干啥(面向小白)
+    ----------------
+    根因锚定到某符号或某行后,问「这段缺陷逻辑是哪次改动带进来的」。两种锚定模式(二选一):
+      - **pickaxe(symbol,可配 file 收窄)**:`git log -S <symbol>` 找 diff 里**增/删过该字符串**
+        的 commit —— 适合「根因锚在函数/标识符名上」(引入 commit 通常就是第一次 ADD 该符号的那条);
+      - **行历史(file + line[, line_end])**:`git log -L <l>,<l>:<file>` 追这一行(段)的
+        演化史 —— 适合「根因锚在 file:line 上」(-L 自带改名跟随,行号漂移不怕)。
+    返回候选表(时间倒序),每条带 sha/日期/作者/subject + added/removed 计数:
+      - pickaxe 模式:added/removed = 该 commit diff 中**含 symbol** 的 +/- 行数
+        (引入 commit 通常 added>0、removed==0;中间 added/removed 成对的多是重构搬移);
+      - 行历史模式:added/removed = 该 commit 在所追行段上的 +/- 行数。
+
+    候选只是地板:哪条真正引入**缺陷逻辑**(而非把既有逻辑换个位置)是语义判断 ——
+    逐条 `git show <sha>` 读 message + diff 裁决;引入 commit 的 message/diff 常直接暴露
+    根因意图,是假设循环的一路辅助证据。
+
+    repo_path:仓库工作树**绝对路径**(跑 git 的 cwd)。
+    symbol:pickaxe 字符串(函数名/标识符;**只查当前 checkout 分支**,不带 --all 防多分支重复)。
+    file:symbol 模式下作 pathspec 收窄(常见短名如 "scan" 会命中一片,务必配 file);
+          行历史模式下是**仓相对路径**,必填(与 line 配套)。
+    line / line_end:行历史的行号(段),line_end 缺省 = line(单行)。行号按**当前工作树**。
+    max_commits:候选封顶(默认 20,时间倒序取最新 N 条)。
+
+    失败(非 git 仓 / 锚点形态不对 / 文件不存在)→ 抛 ``ValueError``,工具层转友好串。
+    返回 ``{repo, mode, anchor, commits:[...], note}``。
+    """
+    repo = Path(repo_path).resolve()
+    if not repo.is_dir():
+        raise ValueError(f"repo_path 不是目录: {repo_path}")
+    # 锚点形态校验:pickaxe(symbol[,file])或行历史(file+line)二选一;file 单独给=全文件史太噪,拒。
+    if symbol and line:
+        raise ValueError("symbol 与 line 二选一:symbol 走 pickaxe(-S),file+line 走行历史(-L)")
+    if not symbol and not (file and line):
+        raise ValueError("缺锚点:传 symbol(pickaxe;短名配 file 收窄)或 file+line(行历史)")
+    if line and not file:
+        raise ValueError("line 需要 file 配套(行历史的锚是 file:line)")
+
+    # 记录分隔 \x1e 开头 + 字段分隔 \x1f;--patch/--no-color 让 diff 跟在头后面,
+    # 一趟 git 同时拿元数据和 +/- 计数(不用逐 commit 再 git show)。
+    fmt = "%x1e%H%x1f%aI%x1f%an%x1f%s"
+    if symbol:
+        mode = "pickaxe"
+        # -S 紧贴值(-S<sym>)防「-」开头被当选项;file 作 pathspec 收窄
+        args = ["log", "--no-merges", f"-S{symbol}", f"--max-count={max_commits}",
+                "--patch", "--no-color", f"--format={fmt}"]
+        if file:
+            args += ["--", file]
+    else:
+        mode = "line_history"
+        end = line_end or line
+        # -L 紧贴值(-L<l>,<end>:<file>);-L 输出自带所追行段的 diff,无需 --patch
+        args = ["log", "--no-merges", f"-L{line},{end}:{file}",
+                f"--max-count={max_commits}", "--no-color", f"--format={fmt}"]
+
+    out = _run_git(repo, args)
+
+    commits: list[dict] = []
+    for chunk in out.split("\x1e"):
+        chunk = chunk.strip("\n")
+        if not chunk:
+            continue
+        head, _, diff = chunk.partition("\n")
+        parts = head.split("\x1f")
+        if len(parts) < 4:
+            continue
+        added = removed = 0
+        for ln in diff.splitlines():
+            if ln.startswith(("+++", "---", "diff ", "@@")):
+                continue  # diff 头不是内容行
+            if ln.startswith("+") and (mode == "line_history" or symbol in ln):
+                added += 1
+            elif ln.startswith("-") and (mode == "line_history" or symbol in ln):
+                removed += 1
+        commits.append({"sha": parts[0], "date": parts[1], "author": parts[2],
+                        "subject": parts[3], "added": added, "removed": removed})
+
+    if not commits:
+        return {"repo": str(repo), "mode": mode,
+                "anchor": {"symbol": symbol, "file": file, "line": line,
+                           "line_end": line_end or line},
+                "commits": [],
+                "note": "没找到触及该锚点的 commit(字符串在历史中从未增删 / 行段无演化记录)。"
+                        "换个锚点重试:相邻行 / 函数名 / 更稳定的标识符。"}
+
+    notes = ["候选按时间倒序;哪条真正引入缺陷(而非重构搬移既有逻辑)是语义判断,归调用方:"
+             "逐条 git show <sha> 读 message+diff——引入 commit 通常是列表末尾(最老)added>0 且 "
+             "removed==0 的那条,中间 added/removed 成对的常是重构/搬移;引入 commit 的 "
+             "message/diff 常直接暴露缺陷意图(根因的辅助证据)。"
+             "只查了当前 checkout 分支(不带 --all)。"]
+    if len(commits) >= max_commits:
+        notes.append(f"命中 {max_commits} 条封顶,更老的引入 commit 可能没列出——加大 max_commits 重调。")
+    return {"repo": str(repo), "mode": mode,
+            "anchor": {"symbol": symbol, "file": file, "line": line,
+                       "line_end": line_end or line},
+            "commits": commits, "note": " | ".join(notes)}
+
+
 def _render_repomap_tree(files: dict, meta: dict, scores: dict) -> str:
     """把选中的符号按文件分组,渲染成 Aider 式的「仓库地图」树。
 

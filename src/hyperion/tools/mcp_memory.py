@@ -136,7 +136,7 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露十五个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十六个 Hyperion 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
     memory_dump / search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
@@ -582,6 +582,51 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                 f"| recommend_merge={s.get('recommend_merge', 0)} | conflict={s.get('conflict', 0)} "
                 f"| uncertain={s.get('uncertain', 0)}\n"
                 f"{_honest_truncate(body, 8000, how_to_refetch='要逐 commit 详情:传 concern_files 或缩小 ref 范围分批重调')}")
+
+    # ── ⑤f when_introduced:bug 引入 commit 定位(SZZ 式;🟡#7,第 16 个 MCP 工具)──
+    # 纯 git(零 LLM、零图依赖)——pickaxe(-S)或行历史(-L)出候选表,哪条真引入缺陷
+    # 归 agent 语义裁决(确定性地板 + LLM 天花板,与 merge_eval 同分工)。
+    @mcp.tool()
+    async def when_introduced(repo_path: str, symbol: str | None = None,
+                              file: str | None = None, line: int | None = None,
+                              line_end: int | None = None, max_commits: int = 20) -> str:
+        """Find which commits introduced a bug's defective logic (SZZ-style), anchored at a
+        symbol or file:line from your root-cause analysis. Deterministic candidate list, no LLM.
+
+        Two anchor modes (pick ONE):
+        - symbol → `git log -S <symbol>` pickaxe: commits whose diff ADDED/REMOVED that string.
+          The introducing commit is usually the OLDEST one with added>0, removed==0; paired
+          added/removed in between are usually refactors/moves, not introductions.
+        - file + line (optional line_end) → `git log -L` line history: commits that touched that
+          line range (rename-following, so line drift is handled). Line numbers = CURRENT worktree.
+
+        Returns candidates newest-first: sha / date / author / subject / added / removed counts.
+        Picking which candidate ACTUALLY introduced the defect (vs moved existing code) is YOUR
+        semantic judgment — `git show <sha>` each: the introducing commit's message/diff often
+        reveals the root cause's intent (a useful cross-check for your hypothesis).
+
+        repo_path: absolute path of the repo working tree. file: with symbol = pathspec narrowing
+            (short symbols like "scan" hit a lot — always narrow); with line = REQUIRED
+            repo-relative path. max_commits: candidate cap (default 20; oldest-introducer may be
+            beyond cap — raise it and re-call). Searches the current checkout only (no --all).
+        """
+        from hyperion.services.code_index.code_graph import when_introduced as _wi
+        try:
+            result = _wi(repo_path, symbol=symbol, file=file, line=line,
+                         line_end=line_end, max_commits=max_commits)
+        except ValueError as e:  # 坏锚点 / 非 git 仓 / 文件不存在 → 友好串,不抛
+            return f"when_introduced 没法算(repo={repo_path}): {e}"
+        except Exception as e:  # noqa: BLE001
+            return f"引入 commit 定位失败(repo={repo_path}): {e}"
+        import json
+        body = json.dumps(result, ensure_ascii=False, default=str)
+        anchor = result.get("anchor", {})
+        a = (f"symbol={anchor.get('symbol')}" if anchor.get("symbol")
+             else f"{anchor.get('file')}:{anchor.get('line')}"
+             f"{'-' + str(anchor['line_end']) if anchor.get('line_end') != anchor.get('line') else ''}")
+        return (f"when-introduced(repo={repo_path}, mode={result.get('mode')}, {a}):"
+                f" {len(result.get('commits', []))} candidates (newest-first)\n"
+                f"{_honest_truncate(body, 8000, how_to_refetch='要更全的候选:加大 max_commits 重调;要更准:配 file 收窄 symbol 或改用 file+line 锚点')}")
 
     # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
     # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);

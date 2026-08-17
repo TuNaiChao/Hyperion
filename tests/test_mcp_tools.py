@@ -721,6 +721,76 @@ def test_cross_version_diff_not_a_repo(tmp_path):
     assert "没法算" in out, out  # 非 git 仓 → rev-parse 失败 → ValueError → "没法算"
 
 
+# ════════════════════════ when_introduced 工具(🟡#7,第 16 个 MCP 工具)════════════════════════
+
+def _mk_introduced_repo(base):
+    """造一个 3-commit 小仓:c1 引入 bug 函数 → c2 只重构搬行(不动该函数)→ c3 加无关代码。
+
+    金标:pickaxe 锚 bug_func 只该命中 c1(added>0, removed==0);
+    行历史锚 c1 那一行也只该命中 c1。—— 验证「候选表含引入 commit + added/removed 计数语义」。
+    """
+    d = base / "repo"
+    d.mkdir()
+    def git(*a):
+        # -c 传身份/关 gpgsign(别碰全局 git config;仓里提交顺序即时间序,不另造日期)
+        subprocess.run(["git", "-C", str(d), "-c", "user.name=t", "-c", "user.email=t@t",
+                        "-c", "commit.gpgsign=false", *a], check=True, capture_output=True)
+    git("init", "-q", "--initial-branch=main")
+    (d / "mod.c").write_text("int bug_func(void) { return 1; }  // c1: 缺 range check,引入缺陷\n")
+    git("add", "mod.c")
+    git("commit", "-qm", "c1: add bug_func")
+    # c2:改同文件别的函数(不动 bug_func)——pickaxe + pathspec 下不该出现
+    (d / "mod.c").write_text(
+        "int other(void) { return 2; }\nint bug_func(void) { return 1; }  // c1: 缺 range check,引入缺陷\n")
+    git("add", "mod.c")
+    git("commit", "-qm", "c2: add other")
+    # c3:再加无关文件
+    (d / "x.c").write_text("int x;\n")
+    git("add", "x.c")
+    git("commit", "-qm", "c3: add x")
+    return d
+
+
+def test_when_introduced_pickaxe_finds_introducer(tmp_path):
+    """pickaxe(symbol+file):候选表含引入 commit c1,且 added>0 / removed==0;c2/c3 不在(没动该符号)。"""
+    import shutil
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    d = _mk_introduced_repo(tmp_path)
+    mcp = build_server()
+    out = _call(mcp, "when_introduced",
+                {"repo_path": str(d), "symbol": "bug_func", "file": "mod.c"})
+    assert "Traceback" not in out, out
+    assert "1 candidates" in out, out            # 只命中 c1
+    assert "c1: add bug_func" in out, out        # 引入 commit 在表里
+    assert '"added": 1' in out and '"removed": 0' in out, out  # 计数语义:纯引入
+    assert "语义判断" in out, out                # note:裁决归 agent(确定性地板+LLM 天花板)
+
+
+def test_when_introduced_line_history_finds_introducer(tmp_path):
+    """行历史(file+line):锚 bug_func 定义行(当前工作树行 2,c2 挪过)→ 只命中 c1(rename/挪行跟随)。"""
+    import shutil
+    if not shutil.which("git"):
+        pytest.skip("git 不在 PATH")
+    d = _mk_introduced_repo(tmp_path)
+    mcp = build_server()
+    out = _call(mcp, "when_introduced",
+                {"repo_path": str(d), "file": "mod.c", "line": 2})
+    assert "Traceback" not in out, out
+    assert "mode=line_history" in out, out
+    assert "c1: add bug_func" in out, out
+    assert "c2: add other" not in out, out       # c2 在行上方插入,不算触及该行段
+
+
+def test_when_introduced_bad_anchor(tmp_path):
+    """两锚点同给(symbol+line)→ ValueError → 工具转友好串「没法算」,不抛 traceback。"""
+    mcp = build_server()
+    out = _call(mcp, "when_introduced",
+                {"repo_path": str(tmp_path), "symbol": "x", "line": 1})
+    assert "Traceback" not in out, out
+    assert "没法算" in out, out
+
+
 # ════════════════════════ merge_eval 工具(低优 #1)════════════════════════
 
 def test_merge_eval_bad_ref(tmp_path):
