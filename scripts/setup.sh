@@ -29,10 +29,12 @@ echo "[2/3] Python 依赖(uv)"
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-# 裸 `uv sync`:只装核心依赖 + dev 组。optional extras(providers/memory/graph/embedding-local)
-# 一律不默认装——按需 opt-in,例如本地 embedding 要 `uv sync --extra embedding-local`(会拉 torch ~800MB)。
+# `uv sync` + 两个产品本体 extra:mcp(MCP server,`rootrecall mcp serve` 必需)
+# 和 code-review-graph(结构图,blast_radius/call_chain/repo_map/repo_overview 用)。
+# 其余 extras(providers/mem0/cognee/embedding-local)仍按需 opt-in——
+# 例如本地 embedding 要 `uv sync --extra embedding-local`(会拉 torch ~800MB)。
 # 默认走远端 embedding(openai_compatible,复用 langchain-openai,零额外依赖)。
-uv sync
+uv sync --extra mcp --extra code-review-graph
 
 echo "[3/3] Claude Code 记忆软链"
 bash "$(dirname "$0")/setup_claude.sh"

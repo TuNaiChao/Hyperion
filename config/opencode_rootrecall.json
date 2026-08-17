@@ -4,6 +4,9 @@
     "rootrecall": {
       "type": "local",
       "command": [
+        "uv",
+        "run",
+        "--no-sync",
         "rootrecall",
         "mcp",
         "serve"

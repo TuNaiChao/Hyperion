@@ -58,7 +58,7 @@ RootRecall/
 ## 命令
 
 ```bash
-uv sync                  # 装/同步 Python 依赖(两台机一致,靠 uv.lock)
+uv sync --extra mcp --extra code-review-graph   # 装/同步依赖(+MCP server / 结构图两个产品 extra;两台机一致,靠 uv.lock)
 uv run rootrecall models   # 列出配置的模型(验证 config + 工厂加载)
 uv run pytest            # 测试
 uv run ruff check .      # lint

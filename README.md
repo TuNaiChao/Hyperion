@@ -26,7 +26,9 @@
 ## 快速开始
 
 ```bash
-# 1. 装系统工具(Linux/macOS 自动适配)+ Python 依赖 + Claude 记忆软链
+# 1. 克隆并安装(系统工具 Linux/macOS 自适应 + Python 依赖 + Claude 记忆软链)
+git clone https://github.com/TuNaiChao/RootRecall.git
+cd RootRecall
 bash scripts/setup.sh
 
 # 2. 填密钥
@@ -50,21 +52,39 @@ uv run rootrecall mcp serve --codebase bluez               # 指定默认库(多
 - **codex**:[config/codex_rootrecall.toml](config/codex_rootrecall.toml)(`[mcp_servers.rootrecall]` 带下划线)。
 - **claude code / 其他标准 MCP client**:按各自方式注册 stdio MCP server,skill 走 `.claude/skills/`(agentskills.io 跨平台)。
 
+> 前置:opencode / codex 从本仓库根目录启动 —— MCP command 用 `uv run` 按 cwd 解析 .venv,skill 从项目的 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量。
+
 多仓库支持:检索 / 记忆类工具均接受 per-call `codebase` 参数,建多个索引即可在多个仓之间切换;记忆全局共享,条目以 codebase 标签隔离。
 
-## 架构(三层)
+## 架构
 
 ```
-用户的 coding agent(opencode / codex / claude code)
-   ↓ 加载 skill(标准流程)              ↓ 调 MCP 工具
-[ 8 个 skill:bug-rca · patch-review · upstream-merge · backport
-  compare · onboarding · domain-research · memory-health-check ]
-   ────────────────→  RootRecall MCP server(rootrecall mcp serve)
-                        16 个工具:记忆 3 · 代码情报 8 · 硬门 3 · PR 抓取 2
-                        ↓
-                code_index + CRG(代码情报)· MemoryService(记忆)· workspace(补丁验证)
-                        ↓
-                rootrecall CLI(基建:index / memory / mcp serve / bug-rca / research / patch-report)
+┌────────────────────────────────────────────────────────────────────────────┐
+│ 用户的 coding agent                                                        │
+│ opencode(主)/ codex / claude code                                          │
+└────────────────────────────────────────────────────────────────────────────┘
+       加载 skill(标准流程)                                调用 MCP 工具
+                 │                                         │
+                 ▼                                         ▼
+┌────────────────────────────────┐      ┌────────────────────────────────────┐
+│ 8 个 skill(标准流程)           │      │ RootRecall MCP server              │
+│                                │      │ rootrecall mcp serve               │
+│ bug-rca          patch-review  │      │ (stdio / streamable-http)          │
+│ upstream-merge   backport      │      │                                    │
+│ compare          onboarding    │      │ 16 个 MCP 工具                     │
+│ domain-research                │      │ 记忆 3 / 代码情报 8                │
+│ memory-health-check            │      │ 硬门 3 / PR 抓取 2                 │
+└────────────────────────────────┘      └────────────────────────────────────┘
+                                       │
+┌────────────────────┐      ┌────────────────────┐      ┌────────────────────┐
+│ code_index + CRG   │      │ MemoryService      │      │ workspace          │
+│ 代码情报           │      │ 记忆               │      │ 补丁验证           │
+└────────────────────┘      └────────────────────┘      └────────────────────┘
+                                       ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│ rootrecall CLI(基建)                                                       │
+│ index / memory / mcp serve / bug-rca / research / patch-report             │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
 
 一个 MCP server、8 个 skill、16 个工具,对所有 agent 通用。RootRecall 不替代 agent,只提供工具与流程。
