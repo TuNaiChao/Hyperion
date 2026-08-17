@@ -1,6 +1,6 @@
 ---
 name: pitfall-log
-description: "踩坑记录文档(docs/archive/踩坑记录.md)位置 —— 项目走过的弯路汇总(#1-#21);设计前先查、踩坑后往上加"
+description: "踩坑记录文档(docs/踩坑记录.md)位置 —— 项目走过的弯路汇总(#1-#21);设计前先查、踩坑后往上加"
 metadata:
   node_type: memory
   type: reference
@@ -8,7 +8,7 @@ metadata:
   modified: 2026-08-13T08:53:13.962Z
 ---
 
-`docs/archive/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。当前 #1–#21。
+`docs/踩坑记录.md` 是专门记录**走过的弯路 / 踩过的坑**的累积文档(每条五段:现象 → 弯路 → 根因 → 教训 → 现状)。当前 #1–#21。
 
 **何时查 / 何时写**:① 设计新模块前先翻一遍(避免重复踩已知坑);② 做了设计反转 / 删了已建代码 / 用户指出过度设计 / 调研推翻既有方案 时,往上加一条(模板在文档末尾)。
 
@@ -54,4 +54,4 @@ metadata:
 
 **#21(2026-08)**:测试仓 git 操作污染主仓 main —— Bash cwd 跨调用持久 + git init/commit 前 pwd 漏核。为跑 upstream-merge e2e 在 `/tmp/upstream_merge_e2e/base` 建测试仓(三分支三文件模拟 fork/upstream),某条 Bash 命令 cwd 漂到 **Hyperion 主仓本身**,`git init`/`commit`/`checkout -b fork` 全跑在 Hyperion → main 顶上压垃圾 commit `804f66e`(塞测试文件 extra.c/util.c + 本不提交的 Python语法.md/todo.md)+ 多个测试 fork 分支。reflog 实证真实历史(6a79586)一点没丢。修(用户确认后):main reset 回 6a79586 → 删 fork → 把 804f66e 唯一有价值的 hyperion-upstream-merge block 抠出干净重加(commit `6f076d2`)→ Python语法.md/todo.md 恢复为 untracked。根因:**Bash 工具 cwd 跨调用持久**(前条 opencode e2e 命令 cd 到 /tmp 启动 —— 但那本身也错,opencode 应在 Hyperion 根启动读 agent+MCP),后续建仓命令没在 git 前 pwd 确认 + mkdir 失败重试 cwd 漂移;**git init/commit 不校验"我在哪个仓"**(在已有仓目录跑不报错);**测试仓建 /tmp 反放大风险**(隔离前提是 cwd 真到那目录,漂了就污染最不该碰的 main)。教训:**Bash 里任何 git init/commit/checkout-b 前 pwd 确认 cwd**;**建测试仓全程用 `git -C <path>` 不 cd**(不 cd 就不漂);**opencode e2e 必须在 Hyperion 根启动 + 给 agent 绝对仓库路径**(踩坑#17,在测试仓启动会 fallback 默认 agent + 工具全不注册,本坑 e2e 第一次就踩这个);**main 上 git reset --hard 是 destructive 需用户确认**(自驱授权不延伸到重置主分支,先 git status 确认 worktree 干净)。关联 #4(MCP cwd 污染)、#17(opencode cwd 根)。现状:主仓已清,详见 docs/踩坑记录.md #21。
 
-**互补文档**:[docs/设计演变史.md](../../设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。
+**互补文档**:设计演变史(本机归档 docs-bak/archive/设计演变史.md) —— 本项目所有设计思路转变的演变脉络(从X→Y+为什么+依据),与踩坑记录互补(踩坑=弯路五段式,演变史=决策脉络)。

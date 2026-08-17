@@ -13,7 +13,7 @@ metadata:
 
 1. **`grep` / `glob`(LocalSandbox)** — `src/hyperion/platform/sandbox/local.py`。
    - 现状:字面子串 grep、`rglob` 无忽略清单、返回 `list`、无二进制/大文件/ReDoS/符号链接守卫。
-   - 对齐:移植 deer-flow [search.py](deer-flow/backend/packages/harness/deerflow/sandbox/search.py) 整文件(`find_glob_matches` / `find_grep_matches` / `GrepMatch` + `IGNORE_PATTERNS` + `should_ignore_name` + `is_binary_file` + ReDoS 行长守卫 + 符号链接 `is_relative_to` 守卫);`local.py` 改成薄包装;返回改 `tuple[list, bool]`(截断标志);grep 支持正则/literal/case/glob 过滤。
+   - 对齐:移植 deer-flow search.py(本机只读副本 deer-flow/backend/packages/harness/deerflow/sandbox/search.py) 整文件(`find_glob_matches` / `find_grep_matches` / `GrepMatch` + `IGNORE_PATTERNS` + `should_ignore_name` + `is_binary_file` + ReDoS 行长守卫 + 符号链接 `is_relative_to` 守卫);`local.py` 改成薄包装;返回改 `tuple[list, bool]`(截断标志);grep 支持正则/literal/case/glob 过滤。
    - 目标阶段:**P1**(代码理解服务,搜索是主力)。P0 demo 不直接暴露 grep/glob 给 agent,故可延后。
 
 2. **`str_replace` 大文件截断风险** — `src/hyperion/tools/sandbox.py:str_replace_tool`。
@@ -26,11 +26,11 @@ metadata:
    - 对齐:deer-flow 的中间件链(`deer-flow/backend/.../agents/lead_agent/agent.py:build_middlewares`,~30 项)。Hyperion 需要的子集:`ToolErrorHandlingMiddleware`(工具异常转 ToolMessage 不崩)、`ToolOutputBudgetMiddleware`(工具输出进上下文前的预算)、`ReadBeforeWriteMiddleware`(写前哈希门,配合 backlog 第 2 条)、`LoopDetectionMiddleware`(重复工具调用循环检测)、`TokenBudgetMiddleware`(per-run token 上限)、`SummarizationMiddleware`(上下文压缩)。
    - 目标阶段:**P2**(Bug-RCA 多步长链路需要这些护栏)起逐步加,按需逐个挂。
 
-4. **索引构建原子性 + 状态清单(P1.2)** — 见 [P1 报告 v2.2 §10](../../docs/设计/p1-code-understanding-design.md)。
+4. **索引构建原子性 + 状态清单(P1.2)** — 见 P1 报告 v2.2 §10(本机归档 docs-bak/设计/p1-code-understanding-design.md)。
    - 最小实现会裸写 LanceDB 表;生产级必须:**temp 表 `lancedb_tmp` + 全部成功后原子 rename**(中途崩不留半成品)+ 落盘 `index_manifest.json`(`repo_commit` / `model_fingerprint` / `schema_version` / `file_manifest`),检索前校验。增量更新用 `file_manifest` 文件级对账(非只看 mtime),处理重命名/移动防 chunk id 孤儿。
    - 目标阶段:**P1.2**(`index.py` 落地时直接做,别先裸写后补)。
 
-5. **评测行级映射 + 难度分层(P1.3)** — 见 [P1 报告 v2.2 §11](../../docs/设计/p1-code-understanding-design.md)。
+5. **评测行级映射 + 难度分层(P1.3)** — 见 P1 报告 v2.2 §11(本机归档 docs-bak/设计/p1-code-understanding-design.md)。
    - 最小实现会"对父/子提交各跑 parser 再 diff 符号列表"——**错的**:只改函数体几行的 fix,父子符号集合相同,diff 抓不到。生产级:**git diff 行 → 包住的最内层符号**;查询分 L1(含函数名)/L2(行为描述)/L3(跨模块)分档报 recall + 负例报 precision;退出标准定为 **L2 档 top-5 recall ≥ 0.6**。
    - 目标阶段:**P1.3**(搭评测时直接做)。
 
@@ -46,7 +46,7 @@ metadata:
 
 8. **Embedder 完整三态加载 + 冷却自愈(P1.2 生产级)** — `src/hyperion/services/code_index/embed.py`。
    - 现状:最小实现 `Embedder.__init__` 直连 `SentenceTransformer(...)`,单进程一次加载;sentence-transformers 自带模块级缓存;下载失败只抛普通异常。
-   - 对齐:借鉴 deer-flow tiktoken 懒加载模式([prompt.py:190-260](deer-flow/backend/packages/harness/deerflow/agents/memory/backends/deermem/deermem/core/prompt.py))—— 模块级缓存 + Lock、三态 sentinel(未加载 / 加载中 / 失败带时间戳)、加载中去重、**失败 600s 冷却自愈**(transient 网络故障免重启)、启动预热钩子(`warm()`,避免首请求被 ~1.2GB 下载阻塞)。模型下载体积远大于 tiktoken BPE,问题更严重。
+   - 对齐:借鉴 deer-flow tiktoken 懒加载模式(prompt.py:190-260(本机只读副本 deer-flow/backend/packages/harness/deerflow/agents/memory/backends/deermem/deermem/core/prompt.py))—— 模块级缓存 + Lock、三态 sentinel(未加载 / 加载中 / 失败带时间戳)、加载中去重、**失败 600s 冷却自愈**(transient 网络故障免重启)、启动预热钩子(`warm()`,避免首请求被 ~1.2GB 下载阻塞)。模型下载体积远大于 tiktoken BPE,问题更严重。
    - 目标阶段:**P1.2 之后**(单进程顺序建索引期最小实现够用;转长驻服务 / 并发检索时上)。
 
 9. **embedding CPU ONNX int8 提速(P1.2 生产级)** — `src/hyperion/services/code_index/embed.py`。
@@ -93,7 +93,7 @@ metadata:
 
 ## 借鉴 oh-my-pi(omp)的新能力项
 
-> 来源:2026-07-27 深读 omp(can1357/oh-my-pi)+ 2026 最佳实践,详见 [docs/调研/后续设计演进报告-oh-my-pi与最佳实践.md](../../docs/调研/后续设计演进报告-oh-my-pi与最佳实践.md)。下列每条标注:位置 / omp 参照(带行号)/ 目标阶段。原则同上:可最小起步,但须排期到生产级。与上文 #1–#16 有重叠处已标"升级 #N"。
+> 来源:2026-07-27 深读 omp(can1357/oh-my-pi)+ 2026 最佳实践,详见 docs/调研/后续设计演进报告-oh-my-pi与最佳实践.md(本机归档 docs-bak/调研/后续设计演进报告-oh-my-pi与最佳实践.md)。下列每条标注:位置 / omp 参照(带行号)/ 目标阶段。原则同上:可最小起步,但须排期到生产级。与上文 #1–#16 有重叠处已标"升级 #N"。
 
 17. **代码理解三层栈:LSP/clangd 层(升级检索为精确导航)** — 新增 `src/hyperion/services/code_nav/lsp.py`(暂定)。
     - 现状:P1.3 只有向量+BM25 模糊召回,做不了"这函数被谁调"这种确定性查询;tree-sitter 单文件切块碰不到系统头文件。
@@ -153,7 +153,7 @@ metadata:
 
 ## P1.4 落地后遗留的生产级补齐项(#28–#30)
 
-> 来源:2026-07-28 P1.4 实现时,对照 omp 边界处理识别出的、当期有意简化的点。详见 [docs/设计/p1-code-understanding-design.md §4.11](../../docs/设计/p1-code-understanding-design.md)。
+> 来源:2026-07-28 P1.4 实现时,对照 omp 边界处理识别出的、当期有意简化的点。详见 docs/设计/p1-code-understanding-design.md §4.11(本机归档 docs-bak/设计/p1-code-understanding-design.md)。
 
 28. **ast-grep 式结构化 AST 搜索(替 grep_symbol 的名匹配)** — `tools/code_nav.py` 或新 `tools/ast_search.py`。
     - 现状:P1.4 的 `grep_symbol` 只做名/子串匹配;模型要"找所有 `foo(bar)` 形态的调用"得自己揉正则,碰宏/重载易漏。
@@ -173,7 +173,7 @@ metadata:
 
 ## P1.5 落地后遗留的生产级补齐项(#31–#37)
 
-> 来源:2026-07-28 P1.5 实现 L2 精确导航(clangd/multilspy)时,对照 multilspy 源码 + clangd FAQ + 调研报告识别出的、当期有意简化的点。详见 [docs/设计/p1-code-understanding-design.md §5.12](../../docs/设计/p1-code-understanding-design.md)。**P1.5 主体已成**(fixture 实测 find_references 零漏召)。
+> 来源:2026-07-28 P1.5 实现 L2 精确导航(clangd/multilspy)时,对照 multilspy 源码 + clangd FAQ + 调研报告识别出的、当期有意简化的点。详见 docs/设计/p1-code-understanding-design.md §5.12(本机归档 docs-bak/设计/p1-code-understanding-design.md)。**P1.5 主体已成**(fixture 实测 find_references 零漏召)。
 
 31. **get_callees 聚合** — `tools/code_nav.py`。
     - 现状:P1.5 只做 callers(`find_references`);callee(这个函数调了谁)没做。
@@ -212,7 +212,7 @@ metadata:
 
 ## v2 产品重规划后的新借鉴项(#38–#44)
 
-> 来源:2026-07-28 产品重规划(编排 + 记忆 + 委托),高星参考项目调研。**阶段标注从 P→R**(R0 规划→R1 记忆→R2 bug-RCA MVP→R3 深度调研→R4 团队/PR→R5 生产化);上列 #1–#37 的技术债仍有效,只是阶段标签按新路线对齐(原 P2≈现 R2,原 P3≈现 R1 记忆,原 P5≈现 R3)。详见 [[agent-project-overview]] + [architecture.md §10](../../docs/设计/architecture.md)。
+> 来源:2026-07-28 产品重规划(编排 + 记忆 + 委托),高星参考项目调研。**阶段标注从 P→R**(R0 规划→R1 记忆→R2 bug-RCA MVP→R3 深度调研→R4 团队/PR→R5 生产化);上列 #1–#37 的技术债仍有效,只是阶段标签按新路线对齐(原 P2≈现 R2,原 P3≈现 R1 记忆,原 P5≈现 R3)。详见 [[agent-project-overview]] + architecture.md §10(本机归档 docs-bak/设计/architecture.md)。
 
 38. **Aider repo-map(P1 调研最高杠杆单点借鉴)** — ✅**已成(2026-08-11)**,第 12 个 MCP 工具 `repo_map`。
     - 对齐:[Aider-AI/aider](https://github.com/Aider-AI/aider) `aider/repomap.py` + `queries/<lang>/tags.scm`(~48k,Apache-2.0)。tree-sitter `tags.scm` 抽 defs+refs → networkx 建符号引用图 → **PageRank** → 按 token 预算(`map_tokens`)裁剪成"全仓最重要符号"地图。
@@ -256,7 +256,7 @@ metadata:
 45. **agent 运行时上下文管理 harness** — 新增 `src/hyperion/platform/runtime/`。
     - 决策来源(用户 2026-07-29):「Hyperion 要有 deer-flow 同等的运行时上下文管理,自己能跑长 agent;但 coding 能力仍委托 opencode/omp」。**边界**:coding 动作(读写/命令/补丁)→ 委托;agent 运行时(压历史/token 预算/截工具输出/并行子任务/断点续跑)→ **Hyperion 自建**。深度调研(R3)是 Hyperion 自己的长 agent、没法委托、上下文必爆,故 runtime 必须自建。
     - 对标:① deer-flow `backend/packages/harness/deerflow/` —— **不自造中间件 ABC**,直接继承 `langchain.agents.middleware.AgentMiddleware[State]`,override `before_model/after_model/wrap_model_call/wrap_tool_call`;`SummarizationMiddleware`(LLM 摘要+`REMOVE_ALL_MESSAGES`+独立 `summary_text` channel+多模型 fallback)、`TokenBudgetMiddleware`(累加 diff+warn+hard_stop 剥 tool_calls+BoundedDict)、`ToolOutputBudgetMiddleware`+`tool_output_synopsis`(阈值外化磁盘+纯函数 synopsis+5MB DoS 守门)、`SubagentExecutor`(持久 isolated loop+`SubagentResult.try_set_terminal` 锁+`MAX_CONCURRENT=3`);复用 LangGraph `SqliteSaver` checkpointer;不自造 ReAct,直接 `create_agent`。② OpenHands `Condenser→View→ConversationMemory` 3 层(R5 双层记忆参考)。
-    - 完整对标(带文件:行号):[deer-flow-runtime-参考.md](../../docs/调研/deer-flow-runtime-参考.md) + 设计 [runtime-harness-design.md](../../docs/设计/runtime-harness-design.md)。
+    - 完整对标(带文件:行号):deer-flow-runtime-参考.md(本机归档 docs-bak/调研/deer-flow-runtime-参考.md) + 设计 runtime-harness-design.md(本机归档 docs-bak/设计/runtime-harness-design.md)。
     - 分档:**R3 开场**搭最小骨架 5 件(`create_hyperion_agent` factory + `TokenBudgetMiddleware` 移植 + `ToolOutputBudget`+synopsis 整文件搬 + `HyperionState` schema + `SqliteSaver` checkpointer)—— runtime 的真实场景是 R3 深度调研(跑长 agent),R2 bug-RCA 七步不依赖、不验,故从 R2 末挪到 R3 开场边搭边验(用户 2026-07-30 决策);**R3 中**深度调研上场(Summarization + LoopDetection + DynamicContext + SubagentExecutor 并行查多模块);**R5** 生产化(checkpoint_patches 模式 + OpenHands 双层记忆 + 跨进程 sandbox ownership + alembic hybrid bootstrap)。
     - 与现有项关系:**吸收** #3(中间件链)、#20(TTSR)、#24(snapcompact 序列化预算)为 runtime 子能力;#43 委托的 ToolOutputBudget 是委托前置(omp 大输出召回前截断)。
     - 目标阶段:**R3开场骨架 → R3中上场 → R5补齐**(2026-07-30 从 R2 末挪到 R3:R2 不依赖/不验,边搭边验更踏实)。
@@ -269,7 +269,7 @@ metadata:
 
 47. **bug-RCA workflow R5 编排增强(并行/分支/循环)** — `src/hyperion/workflows/bug_rca/graph.py`。
     - 现状(R2):线性七步 StateGraph。**调研定稿(2026-07-29):R2 线性正确** —— Agentless 基线背书(线性拿 SWE-bench Lite 32%/$0.70)、deer-flow ReAct 不适用专用流水线、LangGraph "start simple"、delegate 节点已嵌 ReAct(opencode)。
-    - R5 四增强(蓝图见 [workflow-orchestration-参考.md](../../docs/调研/workflow-orchestration-参考.md) §4.2):
+    - R5 四增强(蓝图见 workflow-orchestration-参考.md(本机归档 docs-bak/调研/workflow-orchestration-参考.md) §4.2):
       (a) **superstep 并行** recall ∥ localize_pre(localize 拆粗+细后,任务数固定用 superstep 非 Send);
       (b) **localize T2L 式 refinement 循环**(`add_conditional_edges` 自指,`MAX_LOCALIZE_ITER=3`,对齐 T2L arXiv 2510.02389 evidence-guided);
       (c) **delegate multi-candidate**(`Send` 动态 fan-out N 候补丁 + `vote` 投票,N 运行时由 assemble 决定);
@@ -291,7 +291,7 @@ metadata:
     - 对标:deer-flow per-thread per-user sandbox + Agentless 多候选 + SWE-bench 每实例一容器。
     - 复用 deer-flow:`Sandbox`/`SandboxProvider` ABC + `LocalSandbox`(path mapping+pipe drain+进程组 timeout)+ `env_policy`(scrub key)+ `workspace_changes/{scanner,diff}.py`(前后扫描生成 unified diff)。
     - 隔离:默认本地目录(R2/R3),Docker 作 R5 可选(`AioSandboxProvider`)。Hyperion 场景(本地优先/一人/代码非完全不可信)本地够。
-    - 完整设计:[workspace-design.md](../../docs/设计/workspace-design.md)。
+    - 完整设计:workspace-design.md(本机归档 docs-bak/设计/workspace-design.md)。
     - 分档:**R2 末**最简形态(workspace + AGENTS.md 契约 + 方式B 指引,delegate cwd=workspace,可能同时解 delegate timeout);**R3** 完整七段 + candidate_patches + validate + LocalSandbox;**R5** Docker(AioSandbox + warm pool + 多架构镜像)。
     - 目标阶段:**R2末最简 → R3完整 → R5 Docker**。
 

@@ -147,7 +147,7 @@ code_index:
     index_retry_delay: 0.3     # 重试间隔(秒)
     compile_commands_dir: null # null = clangd 自动从源文件向上找;或写绝对路径强制指定 compile_commands.json 所在目录
 
-# 记忆核心(R1,★P3 差异化):MemoryService 契约 + 可换后端(见 docs/设计/memory-design.md)。
+# 记忆核心(R1,★P3 差异化):MemoryService 契约 + 可换后端(见 docs-bak/设计/memory-design.md)。
 # v1 默认 native —— 组合已有 code_index(语义)+ code-review-graph(结构,可选),不建第三个检索栈。
 # 切后端 = 丢 backends/<name>/ 文件夹 + 改 backend 名;mem0/cognee 作可选 extra(零锁死)。
 memory:
@@ -197,7 +197,7 @@ delegate:
 # ── agent 运行时 harness(R3)─────────────────────────────────────────
 # 面向小白:RootRecall 自己的 lead agent(深度调研那种长 agent)跑起来的护栏——
 # 断点续跑(checkpointer)+ token 预算闸(防烧爆)+ 工具输出外化(防单次工具返回撑爆上下文)。
-# 对标 deer-flow harness(自建 runtime,coding 活仍委托 opencode)。设计见 docs/设计/runtime-harness-design.md。
+# 对标 deer-flow harness(自建 runtime,coding 活仍委托 opencode)。设计见 docs-bak/设计/runtime-harness-design.md。
 # R3.0:runtime 只驱动 checkpointer(checkpoint.py 读 checkpoint_backend/path);
 #       token_budget/tool_output 子配置是声明式(中间件 R3.0 用默认值,CLI 启动时再 wire)。
 runtime:

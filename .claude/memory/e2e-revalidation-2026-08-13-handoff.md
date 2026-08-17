@@ -20,7 +20,7 @@ metadata:
 - **相关性查对(step⑥)**:`ad6f5de` 虽 recommend_merge(能合),但 agent 查 `new_upstream_func` 在 fork 无调用者 → 正确降到「可选/弱相关」。**核心教义抓到:apply 过 ≠ fork 需要它**。
 - **两边界守全**:只读(无 apply/cherry-pick/merge)+ 显式「🔒 未 memorize」。
 
-**⚠️ 事故(踩坑#21,已清)**:建 `/tmp` 测试仓时 Bash cwd 漂到 Hyperion 主仓,`git init/commit/checkout-b` 全跑在主仓 → main 压垃圾 commit `804f66e`(测试文件 + 本不提交的 Python语法.md/todo.md)+ 多测试 fork 分支。真实历史 reflog 未丢。**修复**(用户确认后):main reset 回 `6a79586` → 删 fork → 把 `804f66e` 唯一有价值的 upstream-merge block 抠出干净重加(`6f076d2`)→ 本地文件恢复 untracked。**教训**:git init/commit 前 pwd 确认 cwd;建测试仓全程用 `git -C <path>` 不 cd;opencode e2e 必须在 Hyperion 根启动(踩坑#17/#21)。详见 docs/archive/踩坑记录.md #21。
+**⚠️ 事故(踩坑#21,已清)**:建 `/tmp` 测试仓时 Bash cwd 漂到 Hyperion 主仓,`git init/commit/checkout-b` 全跑在主仓 → main 压垃圾 commit `804f66e`(测试文件 + 本不提交的 Python语法.md/todo.md)+ 多测试 fork 分支。真实历史 reflog 未丢。**修复**(用户确认后):main reset 回 `6a79586` → 删 fork → 把 `804f66e` 唯一有价值的 upstream-merge block 抠出干净重加(`6f076d2`)→ 本地文件恢复 untracked。**教训**:git init/commit 前 pwd 确认 cwd;建测试仓全程用 `git -C <path>` 不 cd;opencode e2e 必须在 Hyperion 根启动(踩坑#17/#21)。详见 docs/踩坑记录.md #21。
 
 **踩坑#17 复现 + 坐实**:opencode e2e 第一次在 `/tmp/upstream_merge_e2e`(测试仓目录)启动 → fallback 到默认 agent + `merge_eval tool not found`(工具全不注册)。opencode 读 **cwd 根** `opencode.json` symlink 才拿得到 agent + MCP。**正确姿势:在 Hyperion 根启动 opencode + 给 agent 仓库绝对路径**。这点对所有 skill e2e 都成立(onboarding/memory-health 同款)。
 
@@ -58,7 +58,7 @@ metadata:
 ## 改的文件(本轮)
 
 - `config/opencode_hyperion.json`(commit `6f076d2`)—— 补 `hyperion-upstream-merge` agent block。
-- `docs/archive/踩坑记录.md`(commit `bcf731d`)—— 记踩坑#21(测试仓 git 污染主仓)。
+- `docs/踩坑记录.md`(commit `bcf731d`)—— 记踩坑#21(测试仓 git 污染主仓)。
 - `.claude/memory/MEMORY.md` + `pitfall-log.md`(commit `bcf731d`)—— 索引 + #21 摘要。
 
 ## 验证

@@ -4,7 +4,7 @@
 
 ## RootRecall 是什么
 
-**给系统软件代码库做「带记忆的 bug 根因定位 + 深度调研」的领域 harness —— 记忆 + 代码情报 + 日志取证 + 补丁验证 + 标准流程 skill,作为 MCP tool/skill server 供 opencode(主)/ codex / claude code 调用。** 不再自己调度 coding agent 跑固定管线(老 bug-RCA orchestrator 降级留参考,见 [docs/设计/harness-pivot-design.md](docs/设计/harness-pivot-design.md));差异化在「记忆 + 持续学习 + 精准的工具与菜谱」,重活(读码/改代码)仍归成熟 coding agent(omp/opencode/codex/claude code)。三大支柱:
+**给系统软件代码库做「带记忆的 bug 根因定位 + 深度调研」的领域 harness —— 记忆 + 代码情报 + 日志取证 + 补丁验证 + 标准流程 skill,作为 MCP tool/skill server 供 opencode(主)/ codex / claude code 调用。** 不再自己调度 coding agent 跑固定管线(老 bug-RCA orchestrator 降级留参考,始末见本机归档 `docs-bak/设计/harness-pivot-design.md`);差异化在「记忆 + 持续学习 + 精准的工具与菜谱」,重活(读码/改代码)仍归成熟 coding agent(omp/opencode/codex/claude code)。三大支柱:
 
 1. **(P1)代码仓深度调研** — 任意语言仓库(git/本地)→ 详细准确的架构/模块文档;含开源 PR 持续跟踪 + 合入建议(R4)。
 2. **(P2)bug 根因定位** ★MVP — 源码 + 日志/漏洞报告 → 根因 + 补丁 + 分析报告;**重活委托** omp/opencode,RootRecall 负责召回+组装精确上下文+调度+沉淀。
@@ -12,7 +12,7 @@
 
 三者共享一个**平台 + 共享服务层**(代码理解、记忆、沙箱、检索、可观测),解决三大痛点:① 记忆跨会话;② 省 token(精炼 MCP 工具 + just-in-time 上下文,agent 按需取、不预塞全量);③ 流水线(一条命令跑完 / 一套 skill+工具复用)。Tagline:*Light on every root cause.*
 
-> v2(2026-07-28)产品重规划:从 v0.1"先建深地基再接场景"改为"编排 + 记忆 + 委托"。已建的 code_index(P1.0–P1.5)作为资产保留。完整架构见 [docs/设计/architecture.md](docs/设计/architecture.md);三支柱详细设计见 [memory-design.md](docs/设计/memory-design.md) / [bug-rca-design.md](docs/设计/bug-rca-design.md) / [deep-research-design.md](docs/设计/deep-research-design.md)。
+> v2(2026-07-28)产品重规划:从 v0.1"先建深地基再接场景"改为"编排 + 记忆 + 委托"。已建的 code_index(P1.0–P1.5)作为资产保留。v2 全套设计文档(architecture / memory / bug-rca / deep-research)在本机只读归档 `docs-bak/设计/`(未随 git);**随 git 的现状文档**是 docs/ 三篇模块分析(bug 定位 / 代码调研 / 记忆)+ [踩坑记录](docs/踩坑记录.md)。
 
 ## ⭐ 工作准则(必读)
 
@@ -40,7 +40,7 @@ RootRecall/
 │   ├── tools/        # ✅ MCP 工具(mcp_memory,16 个给 coding agent)+ delegate(R2,降级参考)
 │   └── cli.py        # ✅ 入口(models/index/lsp/memory/mcp/bug-rca/research/patch-report)
 ├── config/           # config.yaml(模型/沙箱/记忆/委托)+ opencode_rootrecall.json(opencode agent+MCP)
-├── docs/             # 模块分析×3 + p1-p2-backlog + skill-routing-matrix(8 skill 路由矩阵)
+├── docs/             # 模块分析×3 + p1-p2-backlog + skill-routing-matrix + 踩坑记录(21 坑)
 ├── example/          # demo1/demo2 金标准(输入 wpa + 日志/漏洞 → 补丁 + 报告)
 ├── scripts/          # setup.sh(系统工具) / setup_claude.sh(记忆软链)
 ├── .claude/memory/   # Claude Code 项目记忆(随 git 跨机)
@@ -78,7 +78,7 @@ bash scripts/setup.sh    # 装系统工具(Linux/macOS 自动适配)+ 记忆软�
 
 ## 路线(v2,2026-07-28 重规划)
 
-**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ + R3.2 深度调研 ✅代码完 2026-08-03,e2e 待跑)→ **R4** ~~团队/多用户(租户隔离 + 鉴权)~~ + **多库**(升级为地基,见下节)+ PR 跟踪(R4.1 PR 批量分析+聚合报告 ✅ 已完成)+ skills/MCP(MCP ✅ D0;skills S1-5 暂缓 YAGNI)→ ~~**R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)~~。⚠️ **2026-08-07 pivot 后复核:R4 租户/鉴权 + R5 全部取消,详见下节「路线复核」**。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_rootrecall-agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、RootRecallState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。详见 [architecture.md §8](docs/设计/architecture.md)。
+**R0** ✅规划落地(文档/裁剪)→ **R1** ✅记忆核心(MemoryService + native 后端 code_index+code-review-graph + MCP + CLI,2026-07-29)→ **R2** ✅bug-RCA MVP(委托 opencode **多阶段** localize→repair + **A+C**:自定义 agent + `steps` 强制收敛 + session 续接;2026-07-30 端到端 delegate 收敛达标,产出报告+补丁+记忆闭环;patch apply + 根因准确性留 R3)→ **R3** 代码仓深度调研 + **workspace_changes**(opencode edit + git diff 根治 patch 格式)+ 多候选/repro(根因准确性)+ runtime 骨架 + CRG(R3.0 runtime ✅ + R3.1 bug-RCA 工具驱动 ✅ + R3.2 深度调研 ✅代码完 2026-08-03,e2e 待跑)→ **R4** ~~团队/多用户(租户隔离 + 鉴权)~~ + **多库**(升级为地基,见下节)+ PR 跟踪(R4.1 PR 批量分析+聚合报告 ✅ 已完成)+ skills/MCP(MCP ✅ D0;skills S1-5 暂缓 YAGNI)→ ~~**R5** 生产化(沙箱 Docker + artifacts + 前端 + 可观测)~~。⚠️ **2026-08-07 pivot 后复核:R4 租户/鉴权 + R5 全部取消,详见下节「路线复核」**。**这些是规划内扩展面,非临时发现**:runtime 从 R3.0 起即保扩展口 —— `create_rootrecall-agent(middleware=...)` 接任意链、create_agent 自动合并 middleware 的 `state_schema`、RootRecallState 是 TypedDict,将来 skills/鉴权/沙箱/artifacts 等「加而不改」(中间件按 **pull-by-need** 加,链 >7 再移植 `@Next/@Prev`;记忆仍走自有 MemoryService,不抄 deer-flow MemoryMiddleware)。runtime 扩展口详见本机归档 `docs-bak/设计/architecture.md` §8。
 
 **三锁定决策:** ① 记忆 = 自有 MemoryService 契约 + v1 native 后端(组合 code_index+code-review-graph),cognee/mem0 可换;② bug-RCA 委托给 coding agent,抽象 `CodingAgentDelegate`,v1 默认 omp,opencode 可换;③ MVP 先 bug-RCA。详见各设计文档。
 
