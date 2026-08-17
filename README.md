@@ -58,33 +58,36 @@ uv run rootrecall mcp serve --codebase bluez               # 指定默认库(多
 
 ## 架构
 
-```
-┌────────────────────────────────────────────────────────────────────────────┐
-│ 用户的 coding agent                                                        │
-│ opencode(主)/ codex / claude code                                          │
-└────────────────────────────────────────────────────────────────────────────┘
-       加载 skill(标准流程)                                调用 MCP 工具
-                 │                                         │
-                 ▼                                         ▼
-┌────────────────────────────────┐      ┌────────────────────────────────────┐
-│ 8 个 skill(标准流程)           │      │ RootRecall MCP server              │
-│                                │      │ rootrecall mcp serve               │
-│ bug-rca          patch-review  │      │ (stdio / streamable-http)          │
-│ upstream-merge   backport      │      │                                    │
-│ compare          onboarding    │      │ 16 个 MCP 工具                     │
-│ domain-research                │      │ 记忆 3 / 代码情报 8                │
-│ memory-health-check            │      │ 硬门 3 / PR 抓取 2                 │
-└────────────────────────────────┘      └────────────────────────────────────┘
-                                       │
-┌────────────────────┐      ┌────────────────────┐      ┌────────────────────┐
-│ code_index + CRG   │      │ MemoryService      │      │ workspace          │
-│ 代码情报           │      │ 记忆               │      │ 补丁验证           │
-└────────────────────┘      └────────────────────┘      └────────────────────┘
-                                       ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ rootrecall CLI(基建)                                                       │
-│ index / memory / mcp serve / bug-rca / research / patch-report             │
-└────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    AGENT["用户的 coding agent<br/>opencode(主)/ codex / claude code"]
+    SKILLS["8 个 skill · 标准流程<br/>bug-rca · patch-review · upstream-merge · backport<br/>compare · onboarding · domain-research · memory-health-check"]
+    SERVER["RootRecall MCP server · rootrecall mcp serve<br/>16 个 MCP 工具:记忆 3 · 代码情报 8 · 硬门 3 · PR 抓取 2"]
+
+    subgraph SERVICES["共享服务层"]
+        SVC1["code_index + CRG<br/>代码情报"]
+        SVC2["MemoryService<br/>记忆"]
+        SVC3["workspace<br/>补丁验证"]
+    end
+
+    CLI["rootrecall CLI · 基建<br/>index / memory / mcp serve / bug-rca / research / patch-report"]
+
+    AGENT -->|"加载 skill"| SKILLS
+    AGENT -->|"调用 MCP 工具(stdio / http)"| SERVER
+    SKILLS -.->|"流程各环节调配套工具"| SERVER
+    SERVER --> SERVICES
+    SERVICES --> CLI
+
+    classDef agent fill:#E3F2FD,stroke:#1E88E5,color:#0D47A1
+    classDef skills fill:#E8F5E9,stroke:#43A047,color:#1B5E20
+    classDef server fill:#FFF8E1,stroke:#F9A825,color:#8D6E00
+    classDef svc fill:#F3E5F5,stroke:#8E24AA,color:#4A148C
+    classDef cli fill:#ECEFF1,stroke:#546E7A,color:#263238
+    class AGENT agent
+    class SKILLS skills
+    class SERVER server
+    class SVC1,SVC2,SVC3 svc
+    class CLI cli
 ```
 
 一个 MCP server、8 个 skill、16 个工具,对所有 agent 通用。RootRecall 不替代 agent,只提供工具与流程。
