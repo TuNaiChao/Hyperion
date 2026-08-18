@@ -41,4 +41,18 @@ metadata:
 - 真机冒烟(wpa 同款姿势,本仓根跑):建图→noop 跳过→改 a.py+加 c.py → 增量重解析 3+1 文件,新符号 zeta/epsilon 带跨文件调用边进图。
 - ⚠️ **cwd 陷阱**(冒烟抓的):cmd_index 的 `data/` 是相对路径,从 bug 仓 cwd 跑 index 会把 data/ 写进 bug 仓 → 图库文件被 `ls-files --others` 当未跟踪源码。文档用法(本仓根跑)没这问题;wire 接线的 cwd 锚定也不受影响。4 单测(全量兜底/增量+新符号/noop/非 git 退全量)+ 295 全绿。
 
+## 同事冷启动 e2e(2026-08-18 真机,全绿)
+
+模拟真同事:fresh clone 公开仓(GitHub https,拿到刚推的 4ccd0e5)→ 复制 .env → `uv sync --extra mcp --extra code-review-graph`(等价 setup.sh 的 uv 段;apt 段无头跑不了要 sudo,本批未动它)→ quickstart 无头全绿(密钥已配自动跳、步骤 4/5 空回车跳、软链+8 skill 自检过)→ 从克隆根 index 小仓 `e2e-v1`(向量 6 chunk+图)→ wire bug 目录 `--codebase e2e-v1`(git init/软链/生成配置三件套全对)→ bug 目录 `opencode mcp list` rootrecall ✓ connected。两个真会话(deepseek-v4-flash,agent=Sisyphus 来自用户全局插件):
+
+- **全量会话**:模型自报 16 个 `rootrecall_*` 工具名与 `_ALL_MCP_TOOLS` 分毫不差;真调 `memory_recall`(空库回 No memory found,符合预期)。
+- **minimal 会话**(生成的配置 environment 加 `ROOTRECALL_MCP_TOOLS=minimal`):自报恰好 7 个(minimal 集一字不差);`search_codebase` **不传 codebase** 命中 `e2e-v1` 默认库(--codebase 注入端到端生效,返回真实符号+分数)。
+
+e2e 附带发现(已修/记录):
+
+1. **README 前置缺口(已修)**:agent block 不钉模型 → 继承同事 opencode 全局默认;真 fresh 机器若没配过模型,会话起不来。前置行已补「先完成 opencode 默认模型配置」。
+2. opencode 侧工具名坐实为**下划线**形(`rootrecall_memory_recall`,会话 A 模型原话);SKILL.md 的 allowed-tools 写连字符形 `rootrecall-memory_recall` —— 当前无影响(权限模板 `*` 通配放行,历次 e2e 全绿),但将来若收紧通配会突然断,记观察不急改。
+3. 一次 `opencode run` 卡在 init 后未发 prompt(无子进程无 stream);stdin 封死 `</dev/null` 重跑即正常,老进程最终也 exit 0 —— 环境偶发非本项目代码,记录备查。
+4. setup.sh 的 apt 段无条件 sudo(「已装过跳过」只到 quickstart 的 .venv 层)—— 同事机首次装本就要 sudo,不算错,知悉即可。
+
 关联:[[opencode-only-positioning]](姿势③记档)、[[tier2-index-prerequisite-handoff]](index 一键建,其「跳过」表述已更新)、[[multi-codebase-per-call-handoff]](per-call codebase 地基)、[[pitfall-log]](#17/#21)。

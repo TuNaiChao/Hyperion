@@ -42,7 +42,7 @@ bash scripts/quickstart.sh
 
 ## 给同事安装
 
-前置:本机装好 opencode(opencode.ai);自备两个模型 key(DeepSeek + 阿里云百炼 DashScope,自行注册,不共用)。
+前置:本机装好 opencode(opencode.ai)并完成过一次默认模型配置(opencode 首次启动的模型引导,或全局配置里的 `model`/`provider` —— RootRecall 的 agent block 不钉模型,继承你的默认);自备两个模型 key(DeepSeek + 阿里云百炼 DashScope,自行注册,不共用 —— 这两个是 RootRecall 自身服务用的,opencode 会话模型另算)。
 
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
