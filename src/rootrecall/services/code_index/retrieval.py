@@ -20,7 +20,10 @@ reranker provider 抽象(镜像 embed.py)
 
 还没做(P1.3 范围外,记 backlog / 设计 §6.3)
 ----------------------------------------------
-- 查询类型 boosting(PascalCase→Class、snake→Function、dotted→qualified):借 CRG,eval 不达标再加。
+- ~~查询类型 boosting~~ 部分做了(2026-08-18):重排池扩满(全部候选重排,零额外成本)+
+  **符号粒度先验**(module 强降/内部符号轻降/公共入口不动,见 §3)—— eval L2 概念查询
+  粒度错位触发(module 块逐字回响查询词压走入口符号,gold 被挤到 rank 21/24)。
+  剩:PascalCase→Class / dotted→qualified 的查询形状 boosting,借 CRG,eval 再不达标再加。
 - 三级降级(hybrid→仅 FTS→仅向量→keyword):借 CRG,目前 hybrid 由 LanceDB 原生兜底,reranker 失败时降级用 hybrid 顺序。
 - provider 硬化(retryable 指数退避):backlog #12(基础版已含 index 校验 + UA + 4xx body 透传)。
 
@@ -213,13 +216,48 @@ def create_reranker(cfg) -> Reranker | None:
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# §3 retrieve:一次完整检索
+# §3 符号粒度先验(2026-08-18,L2 概念查询粒度错位)
+# ──────────────────────────────────────────────────────────────────────────
+
+# 先验乘数(跨证据定档:eval L2 miss 明细,Q4 前三全是 module 块 / Q2 gold 被压到 21 位)。
+# 取整值防过拟合;只动「文件级/内部符号 vs 公共入口」这一层相对关系,cross-encoder 主导排序。
+_PRIOR_MODULE = 0.65   # module 块:整文件词袋,概念查询里逐字回响查询词,把入口符号挤出 top-k(最大噪声源)
+_PRIOR_INTERNAL = 0.80  # 私有 helper(_ 前缀)与嵌套函数(函数内 def):真实但「内部细节」,概念查询要的是入口
+
+
+def _granularity_prior(kind: str, symbol: str) -> float:
+    """按符号粒度给先验乘数(纯函数,便于单测)。
+
+    - module(整文件块)→ 0.65:文件 docstring 常把查询词复述一遍,BM25/重排双高分,
+      但用户问概念时要的是「入口符号」不是整文件。降而不剔:问「这个文件/模块干嘛」时
+      module 仍可回到 top-k(它的 cross-encoder 分需明显领先)。
+    - 私有(_ 前缀)或嵌套函数(symbol 带 "." 且 kind=function,即函数内 def)→ 0.80:
+      内部实现细节;公共入口(顶层函数/类/公有方法)不降。
+    - 其余 → 1.0。
+    """
+    if kind == "module":
+        return _PRIOR_MODULE
+    last = symbol.rsplit(".", 1)[-1] if "." in symbol else symbol
+    if last.startswith("_") or (kind == "function" and "." in symbol):
+        return _PRIOR_INTERNAL
+    return 1.0
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# §4 retrieve:一次完整检索
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _to_hit(row: dict, score: float) -> RetrievalHit:
-    """store.hybrid_search 返回的 dict → RetrievalHit(把 vector 等大字段挡在 extra 外)。"""
+def _to_hit(row: dict, score: float, *, raw_score: float | None = None) -> RetrievalHit:
+    """store.hybrid_search 返回的 dict → RetrievalHit(把 vector 等大字段挡在 extra 外)。
+
+    raw_score:重排原始分(未经粒度先验);给了就放 extra["rerank_score"] 供观测/评测,
+    score 字段是最终排序分(先验调整后)。
+    """
     keep_out = {"id", "symbol", "kind", "file", "start_line", "end_line", "text", "vector", "_relevance_score"}
+    extra = {k: v for k, v in row.items() if k not in keep_out}
+    if raw_score is not None:
+        extra["rerank_score"] = raw_score
     return RetrievalHit(
         id=row.get("id", ""),
         symbol=row.get("symbol", ""),
@@ -229,7 +267,7 @@ def _to_hit(row: dict, score: float) -> RetrievalHit:
         end_line=int(row.get("end_line") or 0),
         text=row.get("text", ""),
         score=score,
-        extra={k: v for k, v in row.items() if k not in keep_out},
+        extra=extra,
     )
 
 
@@ -243,8 +281,17 @@ def retrieve(
     top_k: int = 5,
     candidate_top_n: int = 50,
     where: str | None = None,
+    apply_prior: bool = True,
 ) -> RetrievalResult:
     """混合检索 + 重排:query → 向量 → hybrid(BM25+向量+RRF)取候选 → cross-encoder 重排 → top_k。
+
+    重排两步(2026-08-18 改进,L2 概念查询粒度错位):
+      ① **池扩满**:reranker 拿全部候选(≤ candidate_top_n)重排 —— 远端 rerank 本来就
+         对送的每条文档打分,top_n 只裁返回条数,扩池零额外成本;gold 若落在 rank 6-50
+         旧实现(top_n=top_k)永远看不见它。
+      ② **符号粒度先验**:重排分 × _granularity_prior(module 强降/内部符号轻降/公共入口
+         不动)再排序取 top_k —— 治「文件级 module 块与内部 helper 把入口符号挤出 top-k」。
+         apply_prior=False 关掉(eval A/B 消融用)。
 
     返回 RetrievalResult(hits, out_mode)。out_mode 可观测:
       hybrid+rerank(正常)/ hybrid(无 reranker)/ rerank-failed:hybrid(reranker 报错降级)/ empty(无候选)。
@@ -255,17 +302,23 @@ def retrieve(
     if not candidates:
         return RetrievalResult([], "empty")
 
-    # 无 reranker:直接按 RRF 分取 top_k
+    # 无 reranker:直接按 RRF 分取 top_k(先验只设计给重排后的分数域,不动这条路)
     if reranker is None:
         return RetrievalResult([_to_hit(c, float(c.get("_relevance_score", 0.0))) for c in candidates[:top_k]], "hybrid")
 
     # Stage 2:cross-encoder 重排(对候选的 fts_text 打分——短、装得下上下文,且语义信号比全文体更聚焦)
     docs = [c.get("fts_text") or c.get("text", "") for c in candidates]
     try:
-        ranked = reranker.rerank(query, docs, top_n=top_k)
+        ranked = reranker.rerank(query, docs, top_n=len(docs))
     except Exception as e:
         logger.warning("reranker 失败,降级用 hybrid 顺序: %s", e)
         return RetrievalResult([_to_hit(c, float(c.get("_relevance_score", 0.0))) for c in candidates[:top_k]], "rerank-failed:hybrid")
 
-    hits = [_to_hit(candidates[idx], score) for idx, score in ranked]
-    return RetrievalResult(hits, "hybrid+rerank")
+    # Stage 3:粒度先验调整 + 取 top_k(稳定排序:同分保持重排原序)
+    hits = []
+    for idx, score in ranked:
+        c = candidates[idx]
+        prior = _granularity_prior(c.get("kind", ""), c.get("symbol", "")) if apply_prior else 1.0
+        hits.append(_to_hit(c, score * prior, raw_score=score))
+    hits.sort(key=lambda h: h.score, reverse=True)
+    return RetrievalResult(hits[:top_k], "hybrid+rerank")
