@@ -2,12 +2,18 @@
 
 直接测 _symbol_to_chunks 的切分逻辑(核心算法)+ _chunk_one_file 的接线(循环换没换对)。
 真建索引(远端 embedder)的回归靠手动 `uv run rootrecall index ... --force`(花钱 + 慢),不放单测。
+另含:parser 作用域限定名(函数局部符号)+ chunk_repo 撞 id 去重护栏(真 bug 回归,2026-08-18)。
 """
 
 from __future__ import annotations
 
-from rootrecall.services.code_index.chunker import MAX_CHUNK_CHARS, _chunk_one_file, _symbol_to_chunks
-from rootrecall.services.code_index.parser import Symbol
+from rootrecall.services.code_index.chunker import (
+    MAX_CHUNK_CHARS,
+    _chunk_one_file,
+    _symbol_to_chunks,
+    chunk_repo,
+)
+from rootrecall.services.code_index.parser import GRAMMARS, Symbol, _parse_bytes
 
 
 def _sym(
@@ -149,3 +155,76 @@ def test_chunk_one_file_splits_oversize_module_no_symbols():
     assert mods[0].id == "vendor.h:<module>"
     for idx, c in enumerate(mods[1:], start=2):
         assert c.id == f"vendor.h:<module>:p{idx}"
+
+
+# ── parser 作用域限定名(2026-08-18 真 bug 回归:函数局部同名符号撞 chunk id) ──
+#
+# 事故形状:tests/test_mcp_tools.py 里 4 个测试函数各自定义 class _FakeGraph,
+# 旧 parser 只跟 class 栈 → 4 个都叫 "_FakeGraph" → 4 条 chunk 同 id 进一个 upsert 批,
+# LanceDB 直接拒:"Ambiguous merge inserts are prohibited"。修法 = 作用域栈把函数也压进去。
+
+
+def _qnames(source: str) -> list[tuple[str, str]]:
+    """解析一段 Python 源码,返回 [(qualified_name, kind)],按出现顺序。"""
+    syms = _parse_bytes(source.encode(), GRAMMARS["python"], "test_scope.py")
+    return [(s.qualified_name, s.kind) for s in syms]
+
+
+def test_parser_qualifies_function_local_classes():
+    """两个函数各自定义同名局部类 → 限定名带函数前缀,不再撞车(修的就是这个)。"""
+    out = _qnames(
+        "def test_a():\n"
+        "    class _FakeGraph:\n"
+        "        def m(self):\n"
+        "            pass\n"
+        "def test_b():\n"
+        "    class _FakeGraph:\n"
+        "        pass\n"
+    )
+    assert out == [
+        ("test_a", "function"),
+        ("test_a._FakeGraph", "class"),
+        ("test_a._FakeGraph.m", "method"),
+        ("test_b", "function"),
+        ("test_b._FakeGraph", "class"),
+    ]
+    # 唯一性:同文件限定名两两不同(chunk id = file:qname,这是 id 唯一的前提)
+    names = [q for q, _ in out]
+    assert len(names) == len(set(names))
+
+
+def test_parser_nested_function_and_toplevel_unchanged():
+    """嵌套函数带外层函数前缀;顶层/类内/类内类等老场景零变化(回归保护)。"""
+    out = _qnames(
+        "def outer():\n"
+        "    def helper():\n"
+        "        pass\n"
+        "class Top:\n"
+        "    def method(self):\n"
+        "        pass\n"
+        "def top_fn():\n"
+        "    pass\n"
+    )
+    assert out == [
+        ("outer", "function"),
+        ("outer.helper", "function"),  # 嵌套函数也是 function(直接外层不是 class)
+        ("Top", "class"),
+        ("Top.method", "method"),
+        ("top_fn", "function"),
+    ]
+
+
+# ── chunk_repo 撞 id 去重护栏 ────────────────────────────────────────────────
+
+
+def test_chunk_repo_dedupes_colliding_ids(tmp_path, caplog):
+    """防御层:真给两个同 id 的 Symbol(C 的 struct/函数同名边缘,parser 修不完的),
+    chunk_repo 保留首见、丢弃后见、发警告 —— 不再让重复 id 流向 upsert。"""
+    f = tmp_path / "edge.c"
+    f.write_text("int dup_name(void) { return 1; }\n", encoding="utf-8")
+    dup = _sym(1, 1, qname="dup_name", kind="macro", file="edge.c")
+    chunks = chunk_repo(tmp_path, symbols=[dup, dup])  # 同 id 两条
+
+    ids = [c.id for c in chunks if c.kind == "macro"]
+    assert ids == ["edge.c:dup_name"]  # 只活首见一条
+    assert any("重复" in r.message for r in caplog.records)  # 且有日志,静默腐蚀变有声丢弃

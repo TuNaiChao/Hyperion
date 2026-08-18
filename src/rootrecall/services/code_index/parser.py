@@ -261,12 +261,17 @@ def _extract_symbols(
     """递归遍历 AST,收集函数 / 类符号。
 
     采用「带状态 DFS」而非「先 query 出节点再 parent 回溯」:下行时维护
-    外层类名栈 class_stack,遇到函数就按当前栈算限定名、判定 function 还是
-    method;遇到类就先入栈再下钻、出栈时弹。这样限定名和归属一次成形,
-    不用回溯、不用给每个祖先线程化 source。
+    外层作用域栈 scope_stack(类 + 函数都入栈),遇到函数就按当前栈算限定名、
+    判定 function 还是 method;遇到类就先入栈再下钻、出栈时弹。这样限定名和
+    归属一次成形,不用回溯、不用给每个祖先线程化 source。
+
+    函数名也进栈(不只类):函数体内定义的局部类 / 嵌套函数拿「外层函数.名字」
+    前缀 —— 否则两个函数各自定义同名局部类(如多个测试里的 class _FakeGraph)
+    会拿到同一个限定名 → 同文件撞 chunk id → 增量 upsert 被 LanceDB 拒
+    ("Ambiguous merge inserts");这也兑现 chunker「限定名同文件内唯一」的契约。
     """
     symbols: list[Symbol] = []
-    class_stack: list[str] = []  # 外层类名,从外到内
+    scope_stack: list[tuple[str, str]] = []  # 外层命名作用域,从外到内;(名字, "class"|"function")
 
     def visit(node) -> None:
         # —— 函数节点:记录后继续下钻(抓嵌套定义:函数内的函数 / 类)——
@@ -287,8 +292,8 @@ def _extract_symbols(
                 symbols.append(
                     Symbol(
                         name=simple,
-                        qualified_name=".".join(class_stack + [simple]),
-                        kind="method" if class_stack else "function",
+                        qualified_name=".".join([*(n for n, _ in scope_stack), simple]),
+                        kind="method" if (scope_stack and scope_stack[-1][1] == "class") else "function",
                         language=grammar.name,
                         file=file_path,
                         start_line=node.start_point[0] + 1,  # 0-indexed → 1-indexed
@@ -309,7 +314,7 @@ def _extract_symbols(
             symbols.append(
                 Symbol(
                     name=simple,
-                    qualified_name=".".join(class_stack + [simple]),
+                    qualified_name=".".join([*(n for n, _ in scope_stack), simple]),
                     kind="class",
                     language=grammar.name,
                     file=file_path,
@@ -319,14 +324,21 @@ def _extract_symbols(
                     docstring=docstring,
                 )
             )
-            class_stack.append(simple)  # 进入类作用域:压栈
+            scope_stack.append((simple, "class"))  # 进入类作用域:压栈
+
+        # 函数体内的定义(局部类 / 嵌套函数)要带函数名前缀:进入函数作用域也压栈
+        pushed_fn = node.type == grammar.function_node and simple is not None
+        if pushed_fn:
+            scope_stack.append((simple, "function"))
 
         # 对所有节点(含上面命中的)继续下钻 named_children
         for child in node.named_children:
             visit(child)
 
+        if pushed_fn:
+            scope_stack.pop()  # 离开函数作用域:弹栈
         if node.type == grammar.class_node:
-            class_stack.pop()  # 离开类作用域:弹栈
+            scope_stack.pop()  # 离开类作用域:弹栈
 
     visit(root_node)
     return symbols
@@ -372,8 +384,12 @@ def iter_source_files(
     符号列表——否则会漏掉无符号文件,破坏 100% 覆盖(cAST 的 plug-and-play)。
 
     - languages=None:遍历所有已注册语言;给 ["python"] 只遍历 Python。
-    - 跳过 _SKIP_DIRS 里的目录和隐藏目录(.git / .venv …)。
-    - rel 用相对仓根路径(索引稳定;仓挪位置不影响)。
+    - **尊重 .gitignore**(2026-08-18 真事故):git 仓走 `git ls-files`(已跟踪)
+      ∪ `git ls-files --others --exclude-standard`(未跟踪且未忽略)—— 工作区里
+      clone 进来的参考仓(deer-flow/oh-my-pi 这类,gitignore 掉但不隐藏)纯 rglob
+      会全量扫进去,几千个无关文件爆嵌入账单 + 污染索引。非 git 仓 / git 失败
+      兜底回 rglob,并仍跳过 _SKIP_DIRS 与隐藏目录。
+    - rel 用相对仓根路径(索引稳定;仓挪位置不影响);输出排序保证确定性。
     """
     root = Path(root)
     want = set(languages) if languages else set(GRAMMARS)
@@ -383,19 +399,49 @@ def iter_source_files(
     for lang in want:
         suffixes.update(GRAMMARS[lang].suffixes)
 
-    for p in root.rglob("*"):
-        if not p.is_file():
+    def _ok(rel: str) -> bool:
+        """相对路径过了三道筛:后缀 / 跳过目录 / 隐藏目录段。"""
+        parts = Path(rel).parts
+        if Path(rel).suffix.lower() not in suffixes:
+            return False
+        if any(part in _SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
+            return False
+        return detect_language(Path(rel)) in want
+
+    rels = _git_visible_files(root)  # None = 非 git 仓或 git 不可用
+    if rels is None:
+        rels = sorted(
+            str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()
+        )
+    for rel in sorted(set(rels)):
+        if not _ok(rel):
             continue
-        if p.suffix.lower() not in suffixes:
-            continue
-        # 路径里的目录段是否命中跳过名单 / 隐藏目录
-        rel = p.relative_to(root)
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in rel.parts[:-1]):
-            continue
-        lang = detect_language(p)
-        if lang not in want:
-            continue
-        yield p, str(rel), lang
+        yield root / rel, rel, detect_language(Path(rel))
+
+
+def _git_visible_files(root: Path) -> list[str] | None:
+    """git 仓:返回「没被 ignore 的文件」相对路径清单(已跟踪 ∪ 未跟踪未忽略)。
+
+    非 git 仓 / git 没装 / 命令失败 → None(调用方兜底 rglob,宁可慢不可漏)。
+    -z 用 NUL 分隔,路径里有空格/换行也不切坏。
+    """
+    import subprocess
+
+    def run(args: list[str]) -> set[str] | None:
+        try:
+            out = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True, text=False, check=True, timeout=120,
+            )
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+        return {line for line in out.stdout.decode("utf-8", errors="replace").split("\0") if line}
+
+    tracked = run(["ls-files", "-z"])
+    if tracked is None:  # 非 git 仓:第一条就失败,不用再问第二条
+        return None
+    others = run(["ls-files", "-z", "--others", "--exclude-standard"]) or set()
+    return list(tracked | others)
 
 
 def parse_repo(

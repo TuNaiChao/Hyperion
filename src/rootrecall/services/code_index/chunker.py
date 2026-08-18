@@ -49,6 +49,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -60,6 +61,8 @@ from rootrecall.services.code_index.parser import (
     parse_file,
     parse_repo,
 )
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────
 # §1 数据模型
@@ -471,4 +474,16 @@ def chunk_repo(root: Path | str, symbols: list[Symbol] | None = None) -> list[Co
         except OSError:
             continue  # 跳过读不了的文件,不让单个坏文件中断整仓扫描
         chunks.extend(_chunk_one_file(rel, source, file_syms, lang))
-    return chunks
+
+    # 护栏:同批出现重复 chunk id(同文件同名符号,C 的 struct/函数同名边缘)会炸增量
+    # upsert(LanceDB 拒绝同批多行撞同一目标行),全量路径也会静默写出重复行。
+    # id 是主键,表里本来只能活一条:保留首见 + 警告,把静默腐蚀变成有日志的丢弃。
+    seen: set[str] = set()
+    deduped: list[CodeChunk] = []
+    for c in chunks:
+        if c.id in seen:
+            logger.warning("chunk id 重复,丢弃后见者: %s(parser 限定名撞车,查该文件的同类符号)", c.id)
+            continue
+        seen.add(c.id)
+        deduped.append(c)
+    return deduped

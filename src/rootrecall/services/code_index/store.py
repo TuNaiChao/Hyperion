@@ -204,6 +204,24 @@ class LanceDBStore:
         if tbl is not None:
             tbl.optimize()
 
+    def delete_by_file(self, repo: str, files: list[str] | set[str]) -> int:
+        """删掉若干文件的全部 chunk 行(按 file 列匹配),返回删前行数。
+
+        增量重建的两处用:① 文件从仓库消失(否则它的 chunk 永远阴魂不散);
+        ② 重嵌某文件前先清旧行 —— chunk id 是「file:限定名」,符号改名/挪作用域会换 id,
+        只靠 merge_insert 匹配不上旧行,会留重复内容的幽灵行。
+        """
+        files = [f for f in files if f]
+        if not files:
+            return 0
+        tbl = self._open_or_create(repo)
+        if tbl is None:
+            return 0
+        quoted = ", ".join("'" + f.replace("'", "''") + "'" for f in files)
+        before = tbl.count_rows()
+        tbl.delete(f"file IN ({quoted})")
+        return before
+
     def hybrid_search(
         self,
         repo: str,

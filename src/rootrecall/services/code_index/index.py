@@ -19,7 +19,7 @@
 还没做(P1.3 范围外,记 backlog)
 --------------------------------
 - git diff 加速变化文件定位(现 walk+sha256 对账,够用;大仓再上 `git diff --name-only`)。
-- 删除文件清理:文件从仓库消失时其 chunk 暂不自动删(pinned 评测仓无此问题;生产级补 delete_by_file)。
+- ~~删除文件清理~~ ✅ 已做(2026-08-18):增量路径 delete_by_file 清「消失文件 + 重嵌文件」旧行(换 id 的符号不再留幽灵行)。
 - 并行 parse(ProcessPoolExecutor)+ N 跳依赖追踪(借 CRG,P1.5/P6)。
 - temp-swap 现有微秒级窗口,常驻服务时升级为无窗口(§14.4 触发器)。
 
@@ -236,11 +236,17 @@ def _incremental(
     fp: str,
     batch_size: int,
 ) -> dict:
-    """增量:parse 全部(快)→ 只 embed sha256 变了的那批文件的 chunk → merge_insert 条件 upsert。"""
+    """增量:parse 全部(快)→ 只 embed sha256 变了的那批文件的 chunk → merge_insert 条件 upsert。
+
+    重嵌前先 delete_by_file 清掉这些文件(以及已从仓库消失的文件)的旧行:chunk id 是
+    「file:限定名」,符号改名/挪作用域会换 id,只靠 merge_insert 匹配不上旧行,会留
+    内容重复的幽灵行;消失文件的 chunk 更是要主动清。
+    """
     logger.info("[%s] 增量:切块 + 对账...", repo_name)
     chunks = chunk_repo(repo_path)  # parse 快;embed 慢——下面按文件 sha256 短路
     new_fm = _file_manifest(repo_path)
     changed_files = {rel for rel, h in new_fm.items() if old.file_manifest.get(rel) != h}
+    removed_files = set(old.file_manifest) - set(new_fm)
     to_embed = [c for c in chunks if c.file in changed_files]
     logger.info(
         "[%s] %d/%d 文件变化,%d/%d chunk 待重嵌",
@@ -248,6 +254,8 @@ def _incremental(
     )
 
     store = LanceDBStore(base_dir, db_name=_LANCEDB)
+    if changed_files or removed_files:
+        store.delete_by_file(repo_name, changed_files | removed_files)
     n = _embed_and_upsert(store, repo_name, to_embed, embedder, batch_size) if to_embed else 0
     if to_embed:
         store.optimize(repo_name)
