@@ -118,37 +118,37 @@ flowchart TB
 
 | 工具 | 作用 |
 |---|---|
-| `rootrecall-memory_recall` | 检索长期记忆(bug 教训 / 代码事实 / 领域知识),带 file:line 溯源,多路召回 + 时间衰减 |
-| `rootrecall-memory_memorize` | 写入记忆 / 沉淀教训;支持 `corrects` 参数显式声明"纠正了哪条旧结论" |
-| `rootrecall-memory_dump` | 全量记忆分页导出为溯源卡,供体检 / 审计(只读) |
+| `rootrecall_memory_recall` | 检索长期记忆(bug 教训 / 代码事实 / 领域知识),带 file:line 溯源,多路召回 + 时间衰减 |
+| `rootrecall_memory_memorize` | 写入记忆 / 沉淀教训;支持 `corrects` 参数显式声明"纠正了哪条旧结论" |
+| `rootrecall_memory_dump` | 全量记忆分页导出为溯源卡,供体检 / 审计(只读) |
 
 **代码情报(8 个)**
 
 | 工具 | 作用 |
 |---|---|
-| `rootrecall-search_codebase` | 语义 + 符号检索,**只返回索引中真实存在的符号**(防幻觉) |
-| `rootrecall-blast_radius` | 改动影响面(结构图 BFS:改这些文件会波及谁) |
-| `rootrecall-call_chain` | 调用链:谁调它 / 它调谁(N 跳 CALL 边 + PageRank 排序) |
-| `rootrecall-repo_map` | 全仓符号地图,按重要性打包进 token 预算(Aider 式 repo map) |
-| `rootrecall-repo_overview` | 架构俯瞰:模块社区 / 边界 / 枢纽 / 桥节点 / 耦合告警(纯图查询,防幻觉) |
-| `rootrecall-cross_version_diff` | 同一个仓两个 git ref 之间的差异 |
-| `rootrecall-when_introduced` | 某个符号由哪个 commit 引入(pickaxe + 行历史双锚点) |
-| `rootrecall-merge_eval` | 上游 commit 合入判定三态:fork 已修(patch-id)/ 建议合 / 冲突(merge-tree,零 touch) |
+| `rootrecall_search_codebase` | 语义 + 符号检索,**只返回索引中真实存在的符号**(防幻觉) |
+| `rootrecall_blast_radius` | 改动影响面(结构图 BFS:改这些文件会波及谁) |
+| `rootrecall_call_chain` | 调用链:谁调它 / 它调谁(N 跳 CALL 边 + PageRank 排序) |
+| `rootrecall_repo_map` | 全仓符号地图,按重要性打包进 token 预算(Aider 式 repo map) |
+| `rootrecall_repo_overview` | 架构俯瞰:模块社区 / 边界 / 枢纽 / 桥节点 / 耦合告警(纯图查询,防幻觉) |
+| `rootrecall_cross_version_diff` | 同一个仓两个 git ref 之间的差异 |
+| `rootrecall_when_introduced` | 某个符号由哪个 commit 引入(pickaxe + 行历史双锚点) |
+| `rootrecall_merge_eval` | 上游 commit 合入判定三态:fork 已修(patch-id)/ 建议合 / 冲突(merge-tree,零 touch) |
 
 **硬门(交付关卡,3 个)**
 
 | 工具 | 作用 |
 |---|---|
-| `rootrecall-validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
-| `rootrecall-export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错) |
-| `rootrecall-export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门;可附带蒸馏一份 AGENTS.md) |
+| `rootrecall_validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
+| `rootrecall_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错) |
+| `rootrecall_export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门;可附带蒸馏一份 AGENTS.md) |
 
 **PR 抓取(2 个)**
 
 | 工具 | 作用 |
 |---|---|
-| `rootrecall-fetch_patch` | 抓取 GitHub PR 的 diff + 元数据(标题 / 正文 / 变更文件) |
-| `rootrecall-ensure_repo` | 仓库名 / URL → 本地路径,本地没有则自动 clone |
+| `rootrecall_fetch_patch` | 抓取 GitHub PR 的 diff + 元数据(标题 / 正文 / 变更文件) |
+| `rootrecall_ensure_repo` | 仓库名 / URL → 本地路径,本地没有则自动 clone |
 
 ## 记忆:带溯源与纠正闭环的知识库
 

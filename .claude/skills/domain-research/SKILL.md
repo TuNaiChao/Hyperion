@@ -4,9 +4,9 @@ description: 上网调研领域/项目知识(协议语义、各层职责、技�
 allowed-tools:
   - websearch
   - webfetch
-  - rootrecall-memory_recall
-  - rootrecall-memory_memorize
-  - rootrecall-export_report
+  - rootrecall_memory_recall
+  - rootrecall_memory_memorize
+  - rootrecall_export_report
   - read
   - grep
   - glob
@@ -52,12 +52,12 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题领域知识 → **短路直接出知识卡**(step 5/6),不重跑网调;这才是「秒答」。没命中才走完整调研 |
+| `rootrecall_memory_recall(query, codebase?)` | **step 1 第一步** | 命中同主题领域知识 → **短路直接出知识卡**(step 5/6),不重跑网调;这才是「秒答」。没命中才走完整调研 |
 | `websearch(query)` | step 3 撒网找源(仅重跑路径) | 传**主题 + 权威词**(协议名 + spec/RFC/standard);挑权威源 |
 | `webfetch(url)` | step 3 精读权威源(仅重跑路径) | 读官方 spec/RFC/手册正文;记 URL 做溯源 |
 | `read` / `grep` / `glob` | step 3 第三重交叉验证(可选) | 网调查到的协议行为,本地有源码时去核实(如查到"X→Y",grep 源码确有此调用) |
-| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=domain_knowledge,kind_detail=domain,带 source_url(网调)/不带(笔记);**不需用户验证**。**短路路径不 memorize** |
-| `rootrecall-export_report(...)` | step 6 落盘(可选) | 写调研报告 .md;每条结论附 source URL |
+| `rootrecall_memory_memorize(...)` | step 7(仅重跑路径才记) | kind=domain_knowledge,kind_detail=domain,带 source_url(网调)/不带(笔记);**不需用户验证**。**短路路径不 memorize** |
+| `rootrecall_export_report(...)` | step 6 落盘(可选) | 写调研报告 .md;每条结论附 source URL |
 
 ## 硬约束
 
