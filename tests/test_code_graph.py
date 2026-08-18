@@ -559,3 +559,99 @@ def test_merge_eval_not_a_repo(tmp_path):
     empty.mkdir()
     with pytest.raises(ValueError):
         merge_eval("a", "b", fork_ref="c", repo_path=str(empty))
+
+
+# ── 增量刷新(D:接 CRG incremental machinery)─────────────────────────────
+
+
+def _git(repo, *args):
+    """在 repo 里跑一条 git;失败即炸(测试夹具,不吞错)。坑#21:一律 git -C,不 cd。"""
+    import subprocess
+    subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@example.com",
+                    "-c", "user.name=t", *args], check=True, capture_output=True, text=True)
+
+
+def _make_repo(repo):
+    """两个 .py 文件的小仓:跨文件 import + 函数互调,足够产出节点/边/社区。"""
+    repo.mkdir(parents=True)
+    (repo / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n"
+        "def beta():\n    return 1\n"
+        "def gamma():\n    return 0\n"
+    )
+    (repo / "b.py").write_text(
+        "from a import alpha\n"
+        "def caller():\n    return alpha()\n"
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+    _git(repo, "branch", "-m", "main")
+
+
+@needs_crg
+def test_update_full_rebuild_when_no_db(tmp_path):
+    """图未建 → update() 兜底走全量 build,返回 mode=full_rebuild。"""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    graphs = tmp_path / "graphs"
+
+    cg, summary = CodeGraph.update(repo, "t", base_dir=str(graphs))
+    assert summary["mode"] == "full_rebuild"
+    assert cg.stats()["total_nodes"] > 0
+    # 全量建完应留 built_head 快照(增量下次才有基准)
+    assert (graphs / "t" / "built_head").exists()
+
+
+@needs_crg
+def test_update_incremental_after_edit(tmp_path):
+    """建图后改文件 + 加未跟踪文件 → update() 只增量重解析,新符号进图、旧节点不丢。"""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    graphs = tmp_path / "graphs"  # 图放仓外:db/快照别混进 git 未跟踪清单
+
+    cg = CodeGraph.build(repo, "t", base_dir=str(graphs))
+    n0 = cg.stats()["total_nodes"]
+
+    # 改动面 = 已跟踪文件的修改 + 未跟踪新文件(两条来源都该进增量清单)
+    (repo / "a.py").write_text(
+        "def alpha():\n    return beta() + gamma()\n"
+        "def beta():\n    return 1\n"
+        "def gamma():\n    return 0\n"
+        "def epsilon():\n    return alpha()\n"
+    )
+    (repo / "c.py").write_text("from a import beta\ndef zeta():\n    return beta()\n")
+
+    cg2, summary = CodeGraph.update(repo, "t", base_dir=str(graphs))
+    assert summary["mode"] == "incremental"
+    assert summary["files_updated"] >= 2  # a.py(修改)+ c.py(未跟踪)
+    # 新函数带来新节点(增量解析真的发生了,不是空跑)
+    assert cg2.stats()["total_nodes"] > n0
+
+
+@needs_crg
+def test_update_noop_when_untouched(tmp_path):
+    """建图后没动过 → update() 是 noop,节点数不变。"""
+    repo = tmp_path / "repo"
+    _make_repo(repo)
+    graphs = tmp_path / "graphs"
+
+    cg = CodeGraph.build(repo, "t", base_dir=str(graphs))
+    cg2, summary = CodeGraph.update(repo, "t", base_dir=str(graphs))
+    assert summary["mode"] == "noop"
+    assert cg2.stats()["total_nodes"] == cg.stats()["total_nodes"]
+
+
+@needs_crg
+def test_update_non_git_falls_back_to_full(tmp_path):
+    """非 git 仓:build 不写快照(无 HEAD)→ update() 退回全量重建(增量没基准)。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "a.py").write_text("def alpha():\n    return 0\n")
+    graphs = tmp_path / "graphs"
+
+    CodeGraph.build(repo, "t", base_dir=str(graphs))
+    assert not (graphs / "t" / "built_head").exists()  # 非 git 仓本就不写快照
+
+    _, summary = CodeGraph.update(repo, "t", base_dir=str(graphs))
+    assert summary["mode"] == "full_rebuild"

@@ -19,7 +19,7 @@ metadata:
 ## 改动 1:`hyperion index` 一键建两者([cli.py](../../src/hyperion/cli.py) cmd_index)
 
 向量索引建完后,接着 `CodeGraph.build(repo_root, repo_name)`:
-- 已建图且非 `--force` → 跳过(省 full_build,像向量索引的增量语义);
+- ~~已建图且非 `--force` → 跳过~~ **2026-08-18 已升级为增量刷新**(见 [[colleague-onboarding-toolset-handoff]] 的 D):已建图重跑走 `CodeGraph.update()`(built_head 快照 + CRG incremental_update,只重解析改动文件),不再静默跳过;
 - `--force` → 先 `shutil.rmtree` 旧图目录再重建(免 stale 节点);
 - **CRG extra 没装(ImportError)/ 建图失败 → 非致命降级**:打提示 + 不挡向量索引(search_codebase 仍可用),结构图工具各自降级提示。
 - 新 `--no-graph` flag(只建向量索引,快)。argparse help / docstring 都改成「建两者」。

@@ -42,6 +42,8 @@ uv run rootrecall index <repo_path> [repo_name] [--force] [--no-graph]
 
 结构图需要 `uv sync --extra code-review-graph`;没装会非致命降级(向量索引照建,提示装法)。
 
+重跑语义:两条索引都增量 —— 向量按 manifest 只重嵌改动文件;结构图按 `built_head` 快照只重解析改动 + 未跟踪新增的文件(社区按需重检测),无改动直接跳过。补丁打进工作区或合入后,重跑本命令刷新即可;`--force` 才全量重建(图拿不准的场合也会自动退回全量)。
+
 ```bash
 uv run rootrecall index ~/src/wpa_supplicant wpa_supplicant
 # 索引完成:向量 N chunk + 结构图 M 节点

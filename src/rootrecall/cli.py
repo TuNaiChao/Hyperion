@@ -56,7 +56,8 @@ def cmd_index(args) -> int:
     - 向量索引 → search_codebase(BM25 + 向量 + RRF + rerank)
     - 结构图   → blast_radius / call_chain / repo_map(CRG tree-sitter 解析 + Leiden 社区)
     `--no-graph` 只建向量索引(快);CRG(code-review-graph extra)没装则自动跳过结构图并提示,
-    不挡向量索引。已建的结构图默认跳过(省去 full_build),`--force` 才重建。
+    不挡向量索引。已建的结构图默认**增量刷新**(补丁打进/合入后重跑本命令即可,只重解析改动
+    文件;拿不准的场合自动退回全量),`--force` 才强制全量重建。
     """
     import shutil
     from pathlib import Path
@@ -90,7 +91,28 @@ def cmd_index(args) -> int:
     graph_dir = Path("data/structgraph") / repo_name
     db_path = graph_dir / "graph.db"
     if db_path.exists() and not args.force:
-        print(f"结构图已存在,跳过:{db_path}(用 --force 重建)。")
+        # 图已建 → 增量刷新(而非旧版的整个跳过:图会静默陈旧,--force 才重建太钝)。
+        # 向量索引上面本就按 manifest 增量;这里补齐结构图的增量路:只重解析
+        # built_head 快照以来改动 + 未跟踪新增的文件,社区按需重检测,拿不准自动退全量。
+        try:
+            _g, summary = CodeGraph.update(repo_root=str(repo_path), repo_name=repo_name)
+            mode = summary.get("mode")
+            if mode == "incremental":
+                print(f"结构图已增量刷新:{db_path}"
+                      f"(重解析 {summary.get('files_updated', len(summary.get('changed_files', [])))} 个改动文件"
+                      f" + {len(summary.get('dependent_files', []))} 个依赖文件,"
+                      f"社区重存 {summary.get('communities', 0)} 个;--force 可全量重建)。")
+            elif mode == "noop":
+                print(f"结构图无改动,跳过:{db_path}(--force 可全量重建)。")
+            else:
+                print(f"结构图已全量重建({summary.get('reason', '兜底')}):{db_path}。")
+        except ImportError as e:  # 与下方全量路径同款:CRG 没装不挡向量索引
+            print(f"结构图跳过:CRG 未装({e})。装它:`uv sync --extra code-review-graph`。\n"
+                  f"  向量索引已就绪(search_codebase 可用);blast_radius / call_chain / repo_map 暂不可用。",
+                  file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 —— 刷新失败不致命:旧图还在,工具按旧图答
+            print(f"结构图增量刷新失败(非致命,沿用旧图):{e}\n"
+                  f"  可 `rootrecall index <repo> <name> --force` 全量重建。", file=sys.stderr)
         return 0
     if args.force and graph_dir.exists():
         shutil.rmtree(graph_dir)  # --force 清旧图,免 stale 节点混进新图

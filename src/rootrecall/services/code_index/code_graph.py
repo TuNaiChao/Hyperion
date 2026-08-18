@@ -68,6 +68,28 @@ def _require_crg() -> None:
         )
 
 
+def _current_head(repo: Path) -> str | None:
+    """当前 git HEAD 的完整 sha;非 git 仓 / 空(无提交)仓 → None(增量没基准,走全量)。"""
+    try:
+        return _run_git(repo, ["rev-parse", "HEAD"]).strip() or None
+    except ValueError:
+        return None
+
+
+def _changed_since(repo: Path, base_sha: str) -> list[str]:
+    """自 base_sha 以来动过的文件清单(仓库相对路径,去重排序)。
+
+    两条来源取并集,宁可多报不漏报(CRG incremental_update 内部还有 per-file hash 快筛,
+    清单给宽了只是多几次 hash 比对,不会重复解析):
+    - ``git diff --name-only <sha>``:工作树 vs 那次提交 —— 覆盖「建图后新提交 + 已暂存 + 未暂存」;
+    - ``git ls-files --others``:未跟踪的新文件(git diff 看不见它们)。
+    sha 不可解析(rebase 改历史等)→ _run_git 抛 ValueError,由调用方兜底全量重建。
+    """
+    diff = _run_git(repo, ["diff", "--name-only", "-z", base_sha, "--"]).split("\0")
+    untracked = _run_git(repo, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0")
+    return sorted({p for p in (*diff, *untracked) if p})
+
+
 def _pagerank(graph) -> dict:
     """CALLS 子图上的 PageRank —— 被越多重要函数调用 → 分越高,标识「结构上关键的函数」。
 
@@ -668,6 +690,8 @@ class CodeGraph:
         """建图(一次性,慢):解析全仓 → 存节点/边 → Leiden 社区检测 → 持久化。
 
         返回建好、可直接查询的 CodeGraph。db 落 <base_dir>/<repo_name>/graph.db。
+        建完顺手把当前 git HEAD 记进同目录 ``built_head`` 快照 —— update() 靠它算
+        「上次建图以来改了哪些文件」(非 git 仓没快照,update() 每次都退回全量)。
         """
         _require_crg()
         from code_review_graph.communities import detect_communities, store_communities
@@ -687,7 +711,74 @@ class CodeGraph:
         stored = store_communities(store, communities)
         logger.info("CRG 社区: 检测 %d 个,持久化 %d 个", len(communities), stored)
 
+        head = _current_head(Path(repo_root))
+        if head:
+            (db_path.parent / "built_head").write_text(head + "\n", encoding="utf-8")
+
         return cls(store, repo_name)
+
+    @classmethod
+    def update(
+        cls,
+        repo_root: str | Path,
+        repo_name: str,
+        *,
+        base_dir: str = "data/structgraph",
+        min_community_size: int = 2,
+    ) -> tuple[CodeGraph, dict]:
+        """增量刷新已有结构图:只重解析「上次建图/更新以来动过 + 未跟踪新增」的文件。
+
+        接 CRG incremental machinery:`incremental_update` 重解析改动文件及其依赖文件
+        (内部还有 per-file sha256 快筛,清单给宽不亏),`incremental_detect_communities`
+        在改动不触及现有社区时直接跳过、触及才全量重检测。补丁打进工作区或合入后,
+        重跑 `rootrecall index` 就走到这里 —— 向量索引本就按 manifest 增量,结构图
+        以前是整个跳过(--force 才全量重建,图会静默变陈旧),现在改为增量刷新。
+
+        兜底链(任何一步拿不准 → 全量重建,宁可贵不错):
+        图不存在 / built_head 快照缺失(旧版建的图、或非 git 仓)/ 非 git 仓 /
+        快照 commit 不可解析(rebase 改过历史)→ build()。
+
+        返回 (CodeGraph, 摘要 dict):摘要 mode ∈ incremental | noop | full_rebuild;
+        incremental 再带 files_updated / changed_files / dependent_files / communities。
+        """
+        db_path = Path(base_dir) / repo_name / "graph.db"
+        marker = Path(base_dir) / repo_name / "built_head"
+        repo = Path(repo_root)
+
+        def _full(reason: str) -> tuple[CodeGraph, dict]:
+            logger.info("CRG 增量刷新退回全量重建(%s): %s", reason, repo)
+            g = cls.build(repo, repo_name, base_dir=base_dir, min_community_size=min_community_size)
+            return g, {"mode": "full_rebuild", "reason": reason}
+
+        if not db_path.exists() or not marker.exists():
+            return _full("图或 built_head 快照不存在" if db_path.exists() else "图未建")
+
+        head_new = _current_head(repo)
+        if head_new is None:
+            return _full("非 git 仓,无 diff 基准")
+
+        try:
+            changed = _changed_since(repo, marker.read_text(encoding="utf-8").strip())
+        except ValueError as e:
+            return _full(f"基线 commit 不可解析: {e}")
+
+        if not changed:
+            marker.write_text(head_new + "\n", encoding="utf-8")  # 推进快照(空提交等场景)
+            g = cls.open(repo_name, base_dir=base_dir)
+            return g, {"mode": "noop", "changed_files": 0}
+
+        from code_review_graph.communities import incremental_detect_communities
+        from code_review_graph.graph import GraphStore
+        from code_review_graph.incremental import incremental_update
+
+        store = GraphStore(db_path)
+        stats = incremental_update(repo, store, changed_files=changed)
+        n_comm = incremental_detect_communities(store, changed, min_size=min_community_size)
+        marker.write_text(head_new + "\n", encoding="utf-8")
+        logger.info("CRG 增量刷新完成: %s,社区重存 %d 个", stats, n_comm)
+        return cls(store, repo_name), {
+            "mode": "incremental", **stats, "communities": n_comm,
+        }
 
     @classmethod
     def open(cls, repo_name: str, *, base_dir: str = "data/structgraph") -> CodeGraph:
