@@ -13,15 +13,15 @@ cd "$REPO"
 FORCE=0
 if [ "${1:-}" = "--force" ]; then FORCE=1; fi
 
-# ── [1/5] 系统工具 + Python 依赖 + 记忆软链 ─────────────────────────────
+# ── [1/6] 系统工具 + Python 依赖 + 记忆软链 ─────────────────────────────
 # fresh clone 没有 .venv → 跑完整 setup.sh;本机已装过 → 跳过(重装用 --force)。
 if [ "$FORCE" -eq 1 ] || [ ! -d .venv ]; then
   bash scripts/setup.sh
 else
-  echo "[1/5] 依赖已就绪(.venv 存在),跳过安装;重装: bash scripts/quickstart.sh --force"
+  echo "[1/6] 依赖已就绪(.venv 存在),跳过安装;重装: bash scripts/quickstart.sh --force"
 fi
 
-# ── [2/5] .env 密钥(必填 2 个;已配的保留现值,只问缺的)────────────────
+# ── [2/6] .env 密钥(必填 2 个;已配的保留现值,只问缺的)────────────────
 [ -f .env ] || cp .env.example .env
 
 # 读 .env 里某个 key 的值(仅内部用,不回显)
@@ -61,17 +61,17 @@ ask_key() {
   done
 }
 
-echo "[2/5] .env 密钥(必填 2 个;其余按需 key 见 .env.example 注释,稍后手动补)"
+echo "[2/6] .env 密钥(必填 2 个;其余按需 key 见 .env.example 注释,稍后手动补)"
 ask_key "DEEPSEEK_API_KEY"  "所有 LLM 角色(deepseek-v4-pro / v4-flash);https://platform.deepseek.com"
 ask_key "DASHSCOPE_API_KEY" "embedding + reranker(阿里云百炼);https://bailian.console.aliyun.com"
 
-# ── [3/5] 验证配置 + 模型工厂加载(models 只查非空,不打印 key 值)────────
-echo "[3/5] 验证模型配置"
+# ── [3/6] 验证配置 + 模型工厂加载(models 只查非空,不打印 key 值)────────
+echo "[3/6] 验证模型配置"
 uv run rootrecall models
 
-# ── [4/5] (可选)给目标代码库建索引 ─────────────────────────────────────
+# ── [4/6] (可选)给目标代码库建索引 ─────────────────────────────────────
 # 检索类工具(search_codebase / blast_radius / call_chain…)需要索引;记忆类不需要。
-echo "[4/5] 建索引(可选)"
+echo "[4/6] 建索引(可选)"
 printf '要现在给某个代码库建索引吗?输入仓库绝对路径(留空跳过,之后随时: uv run rootrecall index <仓库路径> <索引名>):'
 read -r repo_path || repo_path=""
 if [ -n "$repo_path" ]; then

@@ -221,7 +221,7 @@ def _cmd_memory_ingest(args, scope, repo) -> int:
 
 
 def cmd_memory(args) -> int:
-    """记忆核心子命令(R1):recall 翻记忆 / add 记一条(或从报告抽)/ list / consolidate / invalidate。
+    """记忆核心子命令(R1):recall 翻记忆 / add 记一条(或从报告抽)/ ingest 摄取文档补丁 / list / consolidate / invalidate。
 
       rootrecall memory recall "<query>" [--top-k N] [--repo X]
       rootrecall memory add --kind bug_lesson --summary "..." [--file F --line L] [--root-cause "..."]
@@ -474,7 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     sub_lsp_refs.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
     sub_lsp.set_defaults(func=cmd_lsp)
 
-    sub_memory = sub.add_parser("memory", help="记忆核心:recall/add/list/consolidate/invalidate")
+    sub_memory = sub.add_parser("memory", help="记忆核心:recall/add/ingest/list/consolidate/invalidate")
     sub_memory_sub = sub_memory.add_subparsers(dest="memory_cmd", required=True)
     m_recall = sub_memory_sub.add_parser("recall", help="翻记忆(多路召回)")
     m_recall.add_argument("query", help="自然语言查询")

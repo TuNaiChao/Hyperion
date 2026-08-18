@@ -25,56 +25,42 @@
 
 ## 快速开始
 
-```bash
-git clone https://github.com/TuNaiChao/RootRecall.git
-cd RootRecall
-bash scripts/quickstart.sh
-```
-
-脚本依次做六件事,可重复执行(已配置的部分自动跳过):
-
-1. 装系统工具 + Python 依赖(调 `scripts/setup.sh`,Linux/macOS 自适应;已装过则跳过,`--force` 重装);
-2. 交互填写 `.env` 密钥(必填 2 个:DeepSeek LLM + DashScope embedding/reranker;输入不回显,不打印值);
-3. 验证模型配置(`rootrecall models`);
-4. (可选)给目标代码库建索引 —— 检索类工具需要,记忆类不需要;
-5. (可选)给 bug/工作仓接线(`scripts/wire_opencode.sh`)—— 接完可在那个仓里直接启动 opencode;
-6. opencode 接线自检 + 启动指引。
-
-## 给同事安装
-
-前置:本机装好 opencode(opencode.ai)并完成过一次默认模型配置(opencode 首次启动的模型引导,或全局配置里的 `model`/`provider` —— RootRecall 的 agent block 不钉模型,继承你的默认);自备两个模型 key(DeepSeek + 阿里云百炼 DashScope,自行注册,不共用 —— 这两个是 RootRecall 自身服务用的,opencode 会话模型另算)。
+前置:[opencode](https://opencode.ai) 已安装并完成过一次默认模型配置(RootRecall 的 agent block 不钉模型,继承默认);两个 API key —— [DeepSeek](https://platform.deepseek.com)(LLM)+ [DashScope](https://bailian.console.aliyun.com)(embedding / reranker)。
 
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
-bash scripts/quickstart.sh                                            # 依赖 + .env 密钥 + 验证 + 自检
-uv run rootrecall index <目标源码路径> <索引名>                       # 建索引(索引名按「项目-版本线」,如 wpa-v25)
-bash scripts/wire_opencode.sh ~/bugs/<bug目录> --codebase <索引名>    # bug 目录接线
-cd ~/bugs/<bug目录> && opencode
+bash scripts/quickstart.sh    # 依赖 + .env 密钥 + 模型验证 + 接线自检(幂等,可重跑)
 ```
 
-说明:
+两条日常命令(quickstart 之外):
 
-- bug 目录内放 bug 描述、日志、目标仓源码检出;`wire_opencode.sh` 自动 `git init`(opencode 项目发现沿 git 根)并放置两根线(skill 软链 + MCP 锚定),重复执行幂等,不会覆盖已有配置;
-- `--codebase` 把该目录会话的默认检索库写进生成的 `opencode.json`(检索类工具免传参);
-- 只用 opencode 的机器可 `ROOTRECALL_CLAUDE_LINK=0 bash scripts/quickstart.sh` 跳过 Claude Code 记忆软链步骤;
-- 裁剪 MCP 工具面:在生成的 `opencode.json` 的 `mcp.rootrecall.environment` 加 `"ROOTRECALL_MCP_TOOLS": "minimal"`(预设 `minimal` / `research` / `full`,或逗号清单);未注册的工具不进 tools/list,直接节省上下文;
-- 更新:`git pull` 后重跑 `bash scripts/quickstart.sh`(幂等,已配置部分自动跳过)。
+```bash
+# 建索引:检索类工具(search / blast_radius / call_chain…)需要
+# 索引名按「项目-版本线」取,如 wpa-v25
+uv run rootrecall index <源码路径> <索引名>
 
-## 在 opencode 里使用
+# 给 bug/工作仓接线(目录内放 bug 描述、日志、目标仓源码检出)
+# 自动 git init + 软链 skill + 把 MCP 进程锚回本仓;--codebase 设默认检索库
+bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>
+```
 
-脚本跑完后,启动位置二选一:**本仓库根目录**(默认),或**已接线的 bug/工作仓**(quickstart 第 5 步接线,或随时 `bash scripts/wire_opencode.sh <bug仓>`):
+| 环境变量 | 作用 |
+|---|---|
+| `ROOTRECALL_MCP_TOOLS` | 裁剪工具面省上下文:`minimal`(7 个)/ `research` / `full`(16 个,默认)或逗号清单;未注册的工具不进 tools/list |
+| `ROOTRECALL_CLAUDE_LINK=0` | 跳过 Claude Code 记忆软链(只用 opencode 的机器) |
 
-- 仓库根的 `opencode.json` 软链到 [config/opencode_rootrecall.json](config/opencode_rootrecall.json)(单一配置源,修改只改后者)—— 注册 rootrecall MCP、放行 `rootrecall*` 工具、内置 `rootrecall-bug-rca` 等 10 个 agent block;
-- 8 个 skill 在 [.claude/skills/](.claude/skills/),opencode 自动发现;
-- **从本仓库根启动** —— MCP command 用 `uv run` 按 cwd 解析 `.venv`,skill 从 `.claude/skills/` 发现,`.env` 由 rootrecall 进程启动时自行加载,均不依赖 shell 环境变量;
-- **从 bug/工作仓启动(需先接线)** —— 接线在目标仓放两根线:`.claude/skills` 软链(skill 项目级发现)+ 生成的 `opencode.json`(官方 `mcp.rootrecall.cwd` 字段把 MCP 服务器进程锚回本仓根,`.venv`/`data/`/`.env` 全部照旧解析)。
+## 使用
 
-试用(在 opencode 里直接问):
+opencode 启动位置二选一:**本仓库根**(默认),或**已接线的工作仓**。前者读仓库根软链 `opencode.json`(指向 [config/opencode_rootrecall.json](config/opencode_rootrecall.json),单一配置源:注册 MCP + 10 个 agent block);后者的 `.claude/skills` 软链供 skill 项目级发现,生成的 `opencode.json` 经 `mcp.rootrecall.cwd` 把 MCP 进程锚回本仓,`.venv` / `data/` / `.env` 照旧解析。
+
+试用(直接问):
 
 - 「为什么 wpa 的 P2P 会话会泄漏?」→ `bug-rca`
 - 「这个仓库整体架构怎么组织?新人怎么上手?」→ `onboarding`
 
-多仓库支持:检索 / 记忆类工具均接受 per-call `codebase` 参数,建多个索引即可在多个仓之间切换;记忆全局共享,条目以 codebase 标签隔离。命名约定:**索引按「项目-版本线」命名**(如 `wpa-v25`),**记忆标签用项目名**(如 `wpa`)—— 教训跨版本共享,版本写进条目内容,防版本孤岛。想只开一部分 MCP 工具省上下文 → `ROOTRECALL_MCP_TOOLS` 环境变量(预设 `minimal` / `research` / `full` 或显式清单,未注册的工具不进 tools/list)。
+多仓库:检索 / 记忆类工具均接受 per-call `codebase` 参数,建多个索引即可切换;记忆全局共享,按 codebase 标签隔离。命名约定:索引名用「项目-版本线」(`wpa-v25`),记忆标签用项目名(`wpa`)—— 教训跨版本共享,防版本孤岛。
+
+更新:`git pull` 后重跑 quickstart(幂等);目标仓打进补丁后重跑同一条 `index` 命令刷新索引 —— 向量与结构图均增量更新,`--force` 才全量重建。
 
 ## 架构
 
@@ -90,7 +76,7 @@ flowchart TB
         SVC3["workspace<br/>补丁验证"]
     end
 
-    CLI["rootrecall CLI · 基建<br/>index / memory / mcp serve / bug-rca / research / patch-report"]
+    CLI["rootrecall CLI · 基建<br/>models / index / lsp / memory / mcp serve<br/>bug-rca / research / patch-report(参考档)"]
 
     AGENT -->|"加载 skill"| SKILLS
     AGENT -->|"调用 MCP 工具(stdio / http)"| SERVER

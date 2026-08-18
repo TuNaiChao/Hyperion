@@ -16,7 +16,7 @@ uv run rootrecall mcp serve --transport http [--host --port]  # warm 长进程,�
 | `stdio`(默认) | agent 每次拉起一个子进程,1:1 生命周期 | 本地单机、opencode 接入(**推荐**,工具注册最可靠) |
 | `http` | 一个常驻进程,多个 agent 共用 | 省冷启动;opencode 需相应配置 |
 
-opencode 的接线(软链、skill、启动目录要求)见 [README](../README.md)「在 opencode 里使用」。
+opencode 的接线(软链、skill、启动目录要求)见 [README](../README.md)「使用」。
 
 ## 默认 codebase 与 per-call 覆盖
 
