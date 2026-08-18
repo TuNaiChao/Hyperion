@@ -54,8 +54,8 @@ allowed-tools:
 | `rootrecall-validate_patch(patch, repo_path)` | step 6 —— 硬门 | 只验 apply 不验修对;`repo_path` 传 v20 仓 |
 | `rootrecall-export_patch(repo_path, out_dir)` | step 7 落盘 | 把 v20 工作区的适配改动写成补丁 |
 | `rootrecall-export_report(content, repo_path, out_dir)` | step 7 落盘 | 写 backport 卡 .md |
-| `rootrecall-memory_recall(query, codebase?)` | step 3 前后 | 翻同类漏洞 / 历史回移植决策(先验是线索不是答案) |
-| `rootrecall-memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传 v25 fix sha;`fix_patch` 传适配后补丁;`codebase` 指向 v20 |
+| `rootrecall-memory_recall(query, codebase?)` | step 3 前后 | 翻同类漏洞 / 历史回移植决策(先验是线索不是答案);`codebase` 传**项目名**(如 `sdp`,不带 v20/v25) |
+| `rootrecall-memory_memorize(...)` | **用户验证通过后**才调 | `commit_sha` 传 v25 fix sha;`fix_patch` 传适配后补丁;`codebase` 传**项目名** —— **别传 v20 索引名**:记忆按 codebase 隔离,传版本名会把教训锁进版本孤岛(v25 侧翻不到);版本信息写进 summary/sha |
 | `rootrecall-ensure_repo(name)` | 本地没这个仓 | clone |
 | `bash` | 读 git(show/log/diff/fetch) | **只许** `show`/`log`/`diff`/`fetch`/`status`(读类)+ `checkout`(切 v20 干净态验 apply);改动通过 `edit` 做,不靠 `git apply` |
 

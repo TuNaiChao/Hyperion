@@ -888,3 +888,38 @@ def test_merge_eval_success_via_fake(monkeypatch):
     assert seen["fork_ref"] == "release/eagle"
     assert seen["max_commits"] == 7
     assert seen["concern_files"] == ["a.c"]
+
+
+# ════════════════════════ 工具门控(ROOTRECALL_MCP_TOOLS)════════════════════════
+
+def _tool_names(mcp) -> set[str]:
+    """server 实际注册了哪些工具(list_tools = 模型能看见的 tools/list)。"""
+    return {t.name for t in asyncio.run(mcp.list_tools())}
+
+
+def test_mcp_tools_default_registers_all_16(monkeypatch):
+    """未设置 env → 16 个全注册(向后兼容:现有接线零影响)。"""
+    monkeypatch.delenv("ROOTRECALL_MCP_TOOLS", raising=False)
+    assert len(_tool_names(build_server())) == 16
+
+
+def test_mcp_tools_preset_minimal(monkeypatch):
+    """minimal 预设 → 只注册 7 个(记忆3+search+硬门3);情报/PR 类不进 tools/list。"""
+    monkeypatch.setenv("ROOTRECALL_MCP_TOOLS", "minimal")
+    assert _tool_names(build_server()) == {
+        "memory_recall", "memory_memorize", "memory_dump",
+        "search_codebase", "validate_patch", "export_patch", "export_report",
+    }
+
+
+def test_mcp_tools_explicit_list(monkeypatch):
+    """显式逗号清单(带空格容错)→ 只注册列出的;被裁工具不在 tools/list 里 = 模型看不见 schema。"""
+    monkeypatch.setenv("ROOTRECALL_MCP_TOOLS", "memory_recall, validate_patch")
+    assert _tool_names(build_server()) == {"memory_recall", "validate_patch"}
+
+
+def test_mcp_tools_unknown_name_fails_loud(monkeypatch):
+    """拼错名 → 启动即 ValueError(附可用名清单),不静默给个错误子集。"""
+    monkeypatch.setenv("ROOTRECALL_MCP_TOOLS", "memory_recallx")
+    with pytest.raises(ValueError, match="未知工具名"):
+        build_server()

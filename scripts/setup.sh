@@ -36,8 +36,14 @@ fi
 # 默认走远端 embedding(openai_compatible,复用 langchain-openai,零额外依赖)。
 uv sync --extra mcp --extra code-review-graph
 
-echo "[3/3] Claude Code 记忆软链"
-bash "$(dirname "$0")/setup_claude.sh"
+# Claude Code 记忆软链是本仓开发者的跨机记忆同步;外部使用者(只用 opencode)可跳过:
+# ROOTRECALL_CLAUDE_LINK=0 bash scripts/quickstart.sh(或 setup.sh)
+if [ "${ROOTRECALL_CLAUDE_LINK:-1}" = "1" ]; then
+  echo "[3/3] Claude Code 记忆软链"
+  bash "$(dirname "$0")/setup_claude.sh"
+else
+  echo "[3/3] 跳过 Claude Code 记忆软链(ROOTRECALL_CLAUDE_LINK=0)"
+fi
 
 echo ""
 echo "✅ 完成。验证:uv run rootrecall models"

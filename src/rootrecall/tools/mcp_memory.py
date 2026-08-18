@@ -56,6 +56,64 @@ def _resolve_codebase(explicit: str | None) -> str:
     return Path.cwd().name
 
 
+# ── 工具门控(省上下文):ROOTRECALL_MCP_TOOLS 决定 server 注册哪些工具 ──────────
+#
+# 为什么在「注册」层做、而不是 opencode 的 permission deny:deny 只是"看得见但调不了",
+# 工具 schema 仍在上下文里照常占位;不注册的工具根本不进 tools/list,模型看不见 = 真·零开销。
+# 用法(opencode 的 mcp.rootrecall.environment,或 shell env):
+#   ROOTRECALL_MCP_TOOLS=minimal                        # 预设:bug-RCA 最小集(记忆3+search+硬门3)
+#   ROOTRECALL_MCP_TOOLS=research                       # 预设:调研集(记忆3+情报8)
+#   ROOTRECALL_MCP_TOOLS=full                           # 预设:全部 16 个(= 不设置,默认)
+#   ROOTRECALL_MCP_TOOLS=memory_recall,validate_patch   # 显式清单(工具短名,逗号分隔)
+# 拼错名字 → 启动即 ValueError 列出全部可用名(诚实失败,防静默裁错集)。
+
+_ALL_MCP_TOOLS: frozenset[str] = frozenset({
+    "memory_recall", "memory_memorize", "memory_dump",
+    "search_codebase", "blast_radius", "call_chain", "cross_version_diff",
+    "merge_eval", "when_introduced", "repo_map", "repo_overview",
+    "validate_patch", "export_patch", "export_report", "fetch_patch", "ensure_repo",
+})
+
+_MCP_TOOL_PRESETS: dict[str, frozenset[str] | None] = {
+    # bug-RCA 最小集:翻记忆 + 检索定位 + 三个交付硬门,够走完一条 bug-RCA 主线
+    "minimal": frozenset({
+        "memory_recall", "memory_memorize", "memory_dump",
+        "search_codebase", "validate_patch", "export_patch", "export_report",
+    }),
+    # 调研集:记忆3 + 代码情报8(onboarding/compare/research 向;不含交付硬门与 PR 抓取)
+    "research": frozenset({
+        "memory_recall", "memory_memorize", "memory_dump",
+        "search_codebase", "blast_radius", "call_chain", "repo_map", "repo_overview",
+        "cross_version_diff", "merge_eval", "when_introduced",
+    }),
+    "full": None,  # 全部 16 个(与不设置等价)
+}
+
+
+def _resolve_mcp_tools() -> frozenset[str] | None:
+    """解析 ROOTRECALL_MCP_TOOLS 门控:返回 None = 全量注册(未设置/空串/full);否则 = 允许集。
+
+    取值要么是单个预设名(minimal/research/full),要么是逗号分隔的工具短名清单
+    (短名即函数名;opencode 里显示为 rootrecall_<短名>)。预设与清单不混用 —— 要微调就写全清单(YAGNI)。
+    名字拼错 → ValueError 附全部可用名 + 预设,启动即炸:好过静默裁错集后 agent 到处找不到工具。
+    """
+    import os
+
+    raw = (os.environ.get("ROOTRECALL_MCP_TOOLS") or "").strip()
+    if not raw or raw == "full":
+        return None
+    if raw in _MCP_TOOL_PRESETS:
+        return _MCP_TOOL_PRESETS[raw]
+    names = frozenset(part.strip() for part in raw.split(",") if part.strip())
+    unknown = names - _ALL_MCP_TOOLS
+    if unknown:
+        raise ValueError(
+            f"ROOTRECALL_MCP_TOOLS 含未知工具名: {sorted(unknown)}。"
+            f"可用工具: {sorted(_ALL_MCP_TOOLS)};可用预设: {sorted(_MCP_TOOL_PRESETS)}"
+        )
+    return names
+
+
 def _render_audit_card(it) -> str:
     """把一条 KnowledgeItem 渲染成体检用的溯源卡(大白话:这条记忆 + 它多可信 + 哪来的 + 还有效吗)。
 
@@ -144,6 +202,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     server 名 "rootrecall" —— opencode 按 `<server>_<tool>` 给工具加前缀(如 rootrecall_search_codebase)。
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
        `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
+    ROOTRECALL_MCP_TOOLS 环境变量可门控注册哪些工具(预设 minimal/research/full 或显式短名清单,
+       见 _resolve_mcp_tools);不设置 = 16 个全量注册(向后兼容)。
     """
     from mcp.server.fastmcp import FastMCP
 
@@ -159,8 +219,22 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     mcp = FastMCP("rootrecall", **fastmcp_kwargs)
     svc = get_memory_service()
 
+    # 工具门控:enabled_tools=None 全量;否则只注册清单内的(未入选的不进 tools/list,
+    # 模型看不见其 schema —— 上下文真省;对照 permission deny 的"看得见但调不了")。
+    enabled_tools = _resolve_mcp_tools()
+
+    def _tool(name: str):
+        """门控版 @mcp.tool():工具在允许集 → 正常注册;不在 → 原样返回函数、不注册。"""
+
+        def deco(fn):
+            if enabled_tools is None or name in enabled_tools:
+                return mcp.tool()(fn)
+            return fn
+
+        return deco
+
     # ── ① memory_recall:翻长期记忆(R1 已有,这里薄封一层 scope)────────────
-    @mcp.tool()
+    @_tool("memory_recall")
     async def memory_recall(query: str, top_k: int = 5, kind: str | None = None,
                             codebase: str | None = None) -> str:
         """Recall from RootRecall's long-term memory: historical bug lessons / codebase facts
@@ -173,6 +247,11 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         codebase: override which codebase's memory to recall from (default = this server's
               codebase). Pass when the bug you're investigating belongs to a different repo than
               the server's default; recall is scope-isolated so it never crosses codebases.
+              NAMING: pass the PROJECT name (e.g. ``wpa``), never a version-line name
+              (``wpa-v25``) — memory is scope-isolated, so a version-scoped label would lock
+              lessons inside one version (v20 sessions could never recall v25 lessons). Version
+              context belongs in summary/evidence; version-line names are for index/retrieval
+              tools (search_codebase etc.).
         """
         # per-call codebase 覆盖(模板同 blast_radius 的 `codebase or repo`);不传 = 闭包默认 repo。
         active_repo = codebase or repo
@@ -195,7 +274,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         return "\n".join(out)
 
     # ── ② memory_memorize:写一条记忆(报告/补丁走 workflow 自动记,这是 ad-hoc 入口)──
-    @mcp.tool()
+    @_tool("memory_memorize")
     async def memory_memorize(kind: Literal["codebase_fact", "bug_lesson", "domain_knowledge"], summary: str,
                               file: str | None = None, line: int | None = None,
                               evidence: list[dict] | None = None,
@@ -248,6 +327,10 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         codebase: override which codebase's memory to write into (default = this server's codebase).
               Pass when the lesson belongs to a different repo than the server's default; the item is
               scoped (id namespaced + filtered) by this codebase, so it won't pollute others.
+              NAMING: pass the PROJECT name (e.g. ``wpa``), never a version-line name (``wpa-v25``) —
+              scope isolation means a version label locks the lesson inside that version (v25 sessions
+              would recall nothing recorded under wpa-v20). Put the version in summary/commit_sha/
+              evidence instead; version-line names are for index/retrieval tools.
         """
         from rootrecall.services.memory.schema import Evidence, KnowledgeItem, SourceTier, make_id
 
@@ -305,7 +388,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # recall 是「按 query 相关性挑几条」(得先知道问啥);memory_dump 是「一次把全量摊开看」——
     # 体检记忆库:「关于这个仓我们到底记了啥 / 每条多可信 / 哪来的 / 还有效吗」。这是可审计知识库的入口。
     # 包 MemoryService.list_items(已是契约,0 新服务代码),每条渲染成带溯源的体检卡(_render_audit_card)。
-    @mcp.tool()
+    @_tool("memory_dump")
     async def memory_dump(kind: str | None = None, include_invalid: bool = False,
                           codebase: str | None = None,
                           limit: int = 60, offset: int = 0) -> str:
@@ -323,6 +406,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         kind:            optional filter — codebase_fact | bug_lesson | mental_model (omit = all).
         include_invalid: also show soft-deleted / superseded items (default False = active only).
         codebase:        override which codebase's memory to dump (default = this server's codebase).
+              Pass the PROJECT name (e.g. ``wpa``), not a version-line name — memory scopes are
+              project-level (same naming convention as memory_recall/memory_memorize).
         limit/offset:    pagination — the dump returns at most ``limit`` items starting at ``offset``
                   (default first 60). A health-check needs the WHOLE picture, so if there are more
                   items (header says "showing 1-60 of N, more → memory_dump(offset=60)"), PAGE THROUGH
@@ -361,7 +446,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         return "\n".join(out)[:12000]
 
     # ── ③ search_codebase:语义+符号检索(防幻觉:只回索引里真实存在的符号)──────
-    @mcp.tool()
+    @_tool("search_codebase")
     async def search_codebase(query: str, top_k: int = 5, codebase: str | None = None) -> str:
         """Semantic + symbol search over this codebase's index (BM25 + vector + RRF + rerank).
 
@@ -407,7 +492,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ⑤ blast_radius:改动影响面(结构图 BFS —— 改这些文件会波及谁)──────────
     # harness 转向:把 CodeGraph.impact_radius 暴露成工具,让 agent 改代码前查"动了这些会断哪"。
-    @mcp.tool()
+    @_tool("blast_radius")
     async def blast_radius(changed_files: list[str], codebase: str | None = None) -> str:
         """Structural blast-radius: given a set of changed files, return what else gets hit
         (callers / callees / dependents via code-graph BFS) — the "if I touch these, what breaks" view.
@@ -440,7 +525,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 和 blast_radius 互补:blast_radius = 文件种子·全边·「改这些会波及谁」(blast);
     # call_chain = 符号种子·仅 CALLS 边·「这个函数的调用上下文 + 谁结构上重要」(chain)。
     # bug-RCA / 调研里 agent 定位根因、判断改动影响时最想要的「调用链」视图;图驱动,零 LLM。
-    @mcp.tool()
+    @_tool("call_chain")
     async def call_chain(symbol: str, direction: str = "both", depth: int = 2,
                          top_n: int = 15, codebase: str | None = None) -> str:
         """Call chain for a function: who calls it / what it calls (N hops along CALL edges only),
@@ -485,7 +570,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 回答「旧版本(base)→ 新版本(head),我关心的 concern 改了啥 / 修了没」:
     # base..head 提交门 + concern 的 git diff + (有图)触及函数 + git cherry 等价摘要。
     # 确定性事实,零 LLM(「修没修」判断归 agent)。比 blast_radius/call_chain 强:没图也能跑 git 核。
-    @mcp.tool()
+    @_tool("cross_version_diff")
     async def cross_version_diff(base_ref: str, head_ref: str, repo_path: str,
                                  concern_files: list[str] | None = None,
                                  concern_symbols: list[str] | None = None,
@@ -529,7 +614,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 维护 fork 时,把上游一段 commit 范围逐个评估「该不该合入」:patch-id 等价(已修,git --cherry-mark)
     # + 能否干净 apply(冲突)+ 触及文件/函数(CRG 可选)。确定性地板;「相不相关」归 agent(CRG 查)。
     # 全程 local-git:上游须先 fetch 进本仓让 ref 可见(agent 跑 git remote add + fetch)。
-    @mcp.tool()
+    @_tool("merge_eval")
     async def merge_eval(upstream_base_ref: str, upstream_head_ref: str, fork_ref: str,
                          repo_path: str, concern_files: list[str] | None = None,
                          max_commits: int = 50, codebase: str | None = None) -> str:
@@ -588,7 +673,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # ── ⑤f when_introduced:bug 引入 commit 定位(SZZ 式;🟡#7,第 16 个 MCP 工具)──
     # 纯 git(零 LLM、零图依赖)——pickaxe(-S)或行历史(-L)出候选表,哪条真引入缺陷
     # 归 agent 语义裁决(确定性地板 + LLM 天花板,与 merge_eval 同分工)。
-    @mcp.tool()
+    @_tool("when_introduced")
     async def when_introduced(repo_path: str, symbol: str | None = None,
                               file: str | None = None, line: int | None = None,
                               line_end: int | None = None, max_commits: int = 20) -> str:
@@ -633,7 +718,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # ── ⑤d repo_map:PageRank 排名的全仓符号地图(Aider repomap 式;#38)──────────
     # 和 call_chain 互补:call_chain = 一个符号的调用上下文(手电筒照一条路);
     # repo_map = 全仓最重要符号俯瞰图(卫星图),委托前给 agent 全局视角 / 调研「关键模块」骨架。
-    @mcp.tool()
+    @_tool("repo_map")
     async def repo_map(map_tokens: int = 2048, codebase: str | None = None) -> str:
         """Whole-repo symbol map ranked by PageRank importance (Aider-style repo map), packed into a token budget.
 
@@ -677,7 +762,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     #   repo_map      = 看全城「最重要的 50 家店」(PageRank 排名符号);
     #   call_chain    = 手电筒照一条路(一个符号的调用上下文)。
     # 全是纯图查询(无 LLM),图驱动防幻觉 —— 讲「这仓分几大模块」靠社区检测,不是模型瞎编。
-    @mcp.tool()
+    @_tool("repo_overview")
     async def repo_overview(
         top_n: int = 15, max_communities: int = 30, codebase: str | None = None
     ) -> str:
@@ -781,7 +866,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ⑥ validate_patch:补丁能否干净 apply(执行硬门,零 LLM)────────────────
     # harness 转向:把 validate_patch 暴露成工具,agent 改完/拿到 PR diff 后过这道硬门再信。
-    @mcp.tool()
+    @_tool("validate_patch")
     async def validate_patch(patch: str, repo_path: str) -> str:
         """Execution gate (non-LLM): does this unified-diff patch apply cleanly to the repo working tree?
 
@@ -816,7 +901,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 同 bug_rca workflow 约定;同仓重跑覆盖,历史在记忆库)。
     # apply 验证**不在这做** —— forward --check 对"已改过的树"必失败(见 validate.py:context 已变,
     # 反向 --check 才证必要);那是 validate_patch(第⑥步,对干净树)的活。export 只保证"有非空 diff 落盘"。
-    @mcp.tool()
+    @_tool("export_patch")
     async def export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str:
         """Finalize your fix as an on-disk .patch file — a bug-RCA run is NOT complete until the
         patch is on disk (chat is not a deliverable).
@@ -876,7 +961,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 自检非空(治"agent 假装写报告 / 传空串糊弄")。落 data/bug_rca/<repo>-rca.md(对齐 orchestrator 的
     # render_report 约定;同仓重跑覆盖,历史在记忆库)。报告是**最终交付物**,排在 memorize 之后写 ——
     # 要含 memorize 返回的 id(证明教训已沉淀),才算完整闭环。
-    @mcp.tool()
+    @_tool("export_report")
     async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca",
                             agents_md: bool = False) -> str:
         """Finalize your analysis report as an on-disk .md file — a bug-RCA run is NOT complete until
@@ -932,7 +1017,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # ── ⑩ fetch_patch:PR 链接 → diff + meta(P-A 1a,取快递)────────────────────
     # 给一个 GitHub PR 链接,抓回 diff + title/body/changed_files/merge_commit_sha。opencode 能 curl,
     # 但这里带 token 鉴权(私有/限速)+ 失败重试 + 结构化拆包(踩坑#2 辩护:agent 通用 curl 不知 token/remotes)。
-    @mcp.tool()
+    @_tool("fetch_patch")
     async def fetch_patch(url: str) -> str:
         """Fetch a GitHub PR's diff + metadata (title/body/changed_files/merge_commit_sha).
 
@@ -955,7 +1040,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # ── ⑪ ensure_repo:本地没有 → auto-clone(P-A 1a,借样机)────────────────────
     # 鉴定要一台"样机"(代码仓)。本地没有 → 按 config.patch.git.remotes 配的地址 clone。
     # 踩坑#2 辩护:opencode 会 git clone,但只去公网;用户的"自定义 git 连接"(内网镜像/SSH)它不知道。
-    @mcp.tool()
+    @_tool("ensure_repo")
     async def ensure_repo(name_or_url: str) -> str:
         """Resolve a codebase to a local path, auto-cloning if missing.
 

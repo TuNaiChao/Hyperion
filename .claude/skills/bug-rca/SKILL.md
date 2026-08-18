@@ -33,13 +33,13 @@ allowed-tools:
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
-| `rootrecall-memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文 |
+| `rootrecall-memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文;`codebase` 传项目名(如 `wpa`,不带版本号 —— 教训跨版本共享) |
 | `rootrecall-search_codebase(query)` | 找入口符号——传概念,别传猜的文件名 | 只回真实存在的符号,不会编路径 |
 | `rootrecall-blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |
 | `rootrecall-when_introduced(repo_path, symbol=\|file+line)` | 候选难分胜负时——「这段缺陷逻辑哪个 commit 带进来的」 | 纯 git 候选表(时间倒序+added/removed);引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移;哪条真引入语义裁决(git show 逐条读);引入 commit 的 message/diff 常直接暴露根因意图——假设循环的辅助证据,不是硬门 |
 | `rootrecall-validate_patch(patch, repo_path)` | 每版补丁都调 | 只验 **apply,不验修对** |
 | `rootrecall-export_patch(repo_path)` | 每出一版补丁就调 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证 |
-| `rootrecall-memorize(...)` | 验证通过后才调 | kind=bug_lesson |
+| `rootrecall-memorize(...)` | 验证通过后才调 | kind=bug_lesson;`codebase` 传项目名(不带版本号,教训跨版本共享) |
 | `rootrecall-export_report(content, repo_path)` | 验证通过后才调 | 最终报告落 `data/bug_rca/<repo>-rca.md` |
 
 ## 硬约束

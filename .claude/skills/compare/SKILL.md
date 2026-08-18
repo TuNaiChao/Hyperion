@@ -26,9 +26,9 @@ allowed-tools:
 
 ## 运行模式
 
-> **先 recall,命中就短路**。这个 skill 的价值一半在「记忆让下次秒答」—— 所以**第一步永远是 `memory_recall`**(两 codebase 各查一次这个流程主题的对比)。若召回的历史对比事实**已覆盖用户问的主题 + file:line 双源齐全**,**直接复用它出对比卡(下面步骤 5/6),不要重跑 search/read**;只有没命中、或命中但主题对不上/缺关键节点时,才走完整的 A→B→C 调研。判据见 step 2 的「短路 vs 重跑」。
+> **先 recall,命中就短路**。这个 skill 的价值一半在「记忆让下次秒答」—— 所以**第一步永远是 `memory_recall`**(`codebase` 传项目名查一次这个流程主题的对比 —— 记忆按项目记、跨版本共享)。若召回的历史对比事实**已覆盖用户问的主题 + file:line 双源齐全**,**直接复用它出对比卡(下面步骤 5/6),不要重跑 search/read**;只有没命中、或命中但主题对不上/缺关键节点时,才走完整的 A→B→C 调研。判据见 step 2 的「短路 vs 重跑」。
 
-1. **确认两版 + 流程主题 + recall 探底**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**第一步立刻 `memory_recall(query=<流程主题>, codebase=<各>)` 两 codebase 各一次**,看有没有历史对比事实。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),检索用概念不用文件名。
+1. **确认两版 + 流程主题 + recall 探底**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**第一步立刻 `memory_recall(query=<流程主题>, codebase=<项目名>)` 查一次**,看有没有历史对比事实(记忆按项目名记、跨版本共享;**别**用两版索引名各查 —— 索引名是检索类工具用的,记忆 scope 里没有,会白查)。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),检索用概念不用文件名。
 
    > **⚠ 仓库路径**:工具(`search_codebase`/`repo_map`/`call_chain`)返回的 file:line 是索引时的**相对路径**(带 repo_root 前缀,如 `code-test/v25/bluez/src/...`)。你要 `read` 函数体时,若相对路径在你的 cwd 下打不开(常见:仓库目录被 gitignore → `glob` 看不见;或 cwd 不是项目根),**直接问用户要仓库绝对路径**,或用 `ensure_repo` 拿到 `data/repos/` 下的落点 —— **别浪费步数满盘 glob/find**(本 skill 无 bash 权限,find 也用不了)。拿到绝对路径前缀后,把索引返回的相对路径拼成绝对路径再 `read`。
 2. **短路 vs 重跑(关键分流)**:看 step 1 的 recall 结果 ——
@@ -38,7 +38,7 @@ allowed-tools:
 4. **逐节点对照【阶段 B】**(仅重跑路径):① 把两版入口函数群**配对** —— 同名直接配;名字不同就 `read` 函数体判**是否同职责**(v20 的 `foo` ↔ v25 是否拆成了 `foo`+`bar`?)。配不上的标「v20 无 / v25 新增」。**函数配对是语义判断,无确定性工具**(各 codebase 结构图独立无联合图)。② 对配上的每对函数,`read` 两版完整函数体,讲清差异 —— 逻辑分叉 / 参数变化 / 新增校验 / 删除的步骤 / 重构。流程每个关键节点(入口、状态转换、资源释放...)都对照一遍。
 5. **聚流程级结论【阶段 C·短路路径也走这】**:把(重跑得出的、或 recall 命中直接复用的)节点差异聚成**流程级差异** —— 入口差异 / 状态机差异 / 新增环节 / 删除环节 / 重命名映射。给出因果解读:为什么 v25 多了某个环节(如新协议层)/ 为什么改名(职责拆分)。不要只罗列文件差异,要讲清流程层面变了什么。
 6. **落对比报告**:`export_report` 落盘对比报告 .md。**每条结论必须附双源 file:line**(v25 的 + v20 的),对齐 cited-reporter 防幻觉。**用户显式要求 AGENTS.md 时**才在同一调用传 `agents_md=True`(蒸馏 ≤60 行 agent 版写进目标仓根;默认不传——不问自写用户仓 = 越界;两版对比时只写用户指定的那个目标仓,不两个都写)。
-7. **memorize(仅重跑路径才记)**:重跑得出的新结论才 `memorize(kind=codebase_fact, kind_detail=architecture, summary=<两版流程差异 + 因果>, evidence=[<双源 file:line + 代码片段>], codebase=<标注两版>, confidence=<你的把握>)`。**短路路径不要 memorize**(recall 已命中的事实 DB 里有了,重复记浪费调用,且按 summary 算 id 会去重——不污染但白花一步)。这条事实读码即坐实,**不需等用户验证**。
+7. **memorize(仅重跑路径才记)**:重跑得出的新结论才 `memorize(kind=codebase_fact, kind_detail=architecture, summary=<两版流程差异 + 因果>, evidence=[<双源 file:line + 代码片段>], codebase=<项目名,如 bluez> —— 别带版本(对比事实跨版本复用,版本已体现在双源 evidence 里), confidence=<你的把握>)`。**短路路径不要 memorize**(recall 已命中的事实 DB 里有了,重复记浪费调用,且按 summary 算 id 会去重——不污染但白花一步)。这条事实读码即坐实,**不需等用户验证**。
 
 ## 工具(按需调)
 
@@ -48,8 +48,8 @@ allowed-tools:
 | `rootrecall-repo_map(codebase?)` | step 2 俯瞰两版骨架 | Aider repomap 式 PageRank 符号地图,找流程入口模块;两 codebase 各跑一次 |
 | `rootrecall-call_chain(symbol, codebase?)` | step 2 流程展开 | 从入口种子多跳展开,看流程涉及的函数链;两 codebase 各跑 |
 | `read` / `grep` / `glob` | step 4 读两版函数体(仅重跑路径) | **核心**:step 4 配对判同职责 + 逐节点对照全靠 read 两版函数体。**短路路径不用** |
-| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步**(两 codebase 各查) | 命中同主题对比事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
-| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;**不需用户验证**。**短路路径不 memorize**(DB 已有) |
+| `rootrecall-memory_recall(query, codebase?)` | **step 1 第一步**(codebase=项目名,查一次) | 命中同主题对比事实 → **短路直接出报告**(step 5/6),不重跑;这才是「秒答」。没命中才走完整调研 |
+| `rootrecall-memory_memorize(...)` | step 7(仅重跑路径才记) | kind=codebase_fact,kind_detail=architecture,带双源 evidence;`codebase` 传项目名(如 `bluez`,不带版本);**不需用户验证**。**短路路径不 memorize**(DB 已有) |
 | `rootrecall-export_report(content, repo_path, out_dir)` | step 6 落盘 | 写对比报告 .md |
 | `rootrecall-ensure_repo(name)` | 本地没仓 | 只读 clone |
 

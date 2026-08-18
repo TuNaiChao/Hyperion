@@ -6,19 +6,35 @@
 #                     (opencode 官方 cwd 字段让 rootrecall 服务器进程在本仓根跑:
 #                      uv 找得到 .venv、data/(记忆/索引)不漂到 bug 仓、.env 自加载)
 #
-# 用法: bash scripts/wire_opencode.sh <bug仓路径> [<bug仓路径>...]
+# 用法: bash scripts/wire_opencode.sh <bug仓路径> [<bug仓路径>...] [--codebase <索引名>]
+#   --codebase <名>:把该 bug 目录的默认检索库写进生成的配置(ROOTRECALL_CODEBASE env;
+#                    需先 `uv run rootrecall index <源码路径> <名>` 建好索引;索引名按「项目-版本线」
+#                    命名如 wpa-v25,记忆类工具按约定另传项目名,不受影响)。
+#   目录不是 git 仓时自动 git init(opencode 项目发现沿 git 根;顺带 bug 材料/补丁可纳入版本管理)。
 # 可重复执行(幂等);目标已有自己的 opencode.json(不含 rootrecall)→ 备份成 .bak 后跳过,不覆盖别人的配置。
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 
-if [ $# -eq 0 ]; then
-  echo "用法: bash scripts/wire_opencode.sh <bug仓路径> [<bug仓路径>...]" >&2
+# --codebase 可选旗标先摘出来,剩下的都是 bug 仓路径
+CODEBASE=""
+RAW=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --codebase)
+      [ $# -ge 2 ] || { echo "--codebase 需要一个参数(索引名)" >&2; exit 1; }
+      CODEBASE="$2"; shift 2 ;;
+    *) RAW+=("$1"); shift ;;
+  esac
+done
+
+if [ ${#RAW[@]} -eq 0 ]; then
+  echo "用法: bash scripts/wire_opencode.sh <bug仓路径> [<bug仓路径>...] [--codebase <索引名>]" >&2
   exit 1
 fi
 
 # 先把参数转成绝对路径(下面要 cd 回本仓根跑 uv,相对路径会跟着漂 —— 踩坑#21 同族预防)
 BUGS=()
-for p in "$@"; do
+for p in "${RAW[@]}"; do
   if [ -d "$p" ]; then p=$(cd "$p" && pwd); fi
   BUGS+=("$p")
 done
@@ -31,6 +47,13 @@ for BUG in "${BUGS[@]}"; do
   if [ ! -d "$BUG" ]; then
     echo "  ⚠️ 目录不存在,跳过(路径写对后重跑即可)"
     continue
+  fi
+
+  # bug 目录常不是 git 仓 —— init 一下:opencode 找项目配置/skill 沿 git 根向上爬,
+  # init 后本目录即项目根(确定性强);顺带 bug 描述/日志/补丁可纳入版本管理。已有 .git 则跳过。
+  if [ ! -e "$BUG/.git" ]; then
+    git init -q "$BUG"
+    echo "  ✅ 已 git init(opencode 项目发现沿 git 根)"
   fi
 
   # 门1:skills 软链
@@ -50,17 +73,22 @@ for BUG in "${BUGS[@]}"; do
     continue
   fi
   # 注入用 uv run python 而非 jq —— jq 不在本项目 setup.sh 的依赖清单里,uv 必装(与 opencode 模板同用 --no-sync)
-  uv run --no-sync python - "$TEMPLATE" "$BUG/opencode.json" "$REPO" <<'PY'
+  uv run --no-sync python - "$TEMPLATE" "$BUG/opencode.json" "$REPO" "$CODEBASE" <<'PY'
 import json, sys
 
-template, out, repo = sys.argv[1], sys.argv[2], sys.argv[3]
+template, out, repo, codebase = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 cfg = json.load(open(template, encoding="utf-8"))
-cfg.setdefault("mcp", {}).setdefault("rootrecall", {})["cwd"] = repo
+srv = cfg.setdefault("mcp", {}).setdefault("rootrecall", {})
+srv["cwd"] = repo
+if codebase:
+    # 该 bug 目录会话的默认检索库(_resolve_codebase 读 ROOTRECALL_CODEBASE):
+    # 检索类工具免传 codebase;记忆类按约定传项目名覆盖它,不受影响。
+    srv.setdefault("environment", {})["ROOTRECALL_CODEBASE"] = codebase
 with open(out, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
 PY
-  echo "  ✅ 门2 opencode.json 已生成(mcp.rootrecall.cwd = $REPO)"
+  echo "  ✅ 门2 opencode.json 已生成(mcp.rootrecall.cwd = $REPO${CODEBASE:+, 默认检索库 = $CODEBASE})"
   echo "  自检:cd $BUG && opencode mcp list → 应见 rootrecall ✓ connected"
 done
 
