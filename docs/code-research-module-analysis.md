@@ -38,15 +38,21 @@ RootRecall 的代码调研就是给代码库建一套**导航系统**,三层能�
 
 ### 1.2 查询:两段式(海选 + 精排)
 
-`retrieve`([retrieval.py:236-271](../src/rootrecall/services/code_index/retrieval.py#L236-L271)):
+`retrieve`([retrieval.py:274-321](../src/rootrecall/services/code_index/retrieval.py#L274-L321)):
 
 ```
 混合召回(Stage 1):BM25 关键词 + 向量语义,RRF 融合,取前 50
         ↓
-精排(Stage 2):cross-encoder reranker 逐个细看,取 top-k
+精排(Stage 2):cross-encoder reranker 对全部候选逐个细看(不是只看前 k 个)
+        ↓
+粒度先验(Stage 3):按符号级别微调分数 → 排序 → 取 top-k
 ```
 
-**比喻**:招聘先海选 50 份简历(BM25 看"简历关键词",向量看"这人气质像不像"),再让资深面试官(reranker)逐份细读挑出 5 份。
+**比喻**:招聘先海选 50 份简历(BM25 看"简历关键词",向量看"这人气质像不像"),再让资深面试官(reranker)**把 50 份全读一遍**逐份打分,最后 HR 拿着打分表做一道"级别校正"——整本部门介绍(相当于 module 块)和内部草稿(私有/嵌套函数)往后挪一挪,对外发布的正式岗位职责(公共入口符号)往前放一放——取前 5。
+
+**为什么要 Stage 2 看全部、Stage 3 再微调**:
+- 面试官本来就对送来的每份简历都打分,只取回前 5 份是白扔信息——真命候选人若排第 6 就永远被埋(实测概念查询的正解曾被挤到第 21、24 位)。扩池取回**零额外成本**。
+- 概念查询的实测病根:整文件的词袋(module 块)常把查询词原样复述一遍,双高分类似"答案",把真正的入口符号挤出前排。先验只做**降权不剔除**(module ×0.65、私有/嵌套 ×0.80、公共入口 ×1.0,[retrieval.py:220-245](../src/rootrecall/services/code_index/retrieval.py#L220-L245)):问"哪个函数管这事"时入口符号上得来,问"这个文件整体干嘛"时 module 块分数够高照样回前排。原始重排分保留在 `extra['rerank_score']`,排序可解释。
 
 - BM25 侧专门为代码调过参:FTS 索引 `stem=False / remove_stop_words=False`,不然 `malloc` / `int` / `void` 会被词干化或当停用词删掉([store.py:147-161](../src/rootrecall/services/code_index/store.py#L147-L161))。
 - 全文侧喂的不是裸代码,是**词袋**:标识符拆词(`scan_res_handler` → scan / res / handler)、符号名和 docstring 重复加权([chunker.py:198-230](../src/rootrecall/services/code_index/chunker.py#L198-L230))——让"处理扫描结果"也能命中 `scan_res_handler`。
@@ -54,7 +60,9 @@ RootRecall 的代码调研就是给代码库建一套**导航系统**,三层能�
 
 ### 1.3 工程细节(增量与原子)
 
-- **增量更新**:索引带"清单"(manifest)——每文件的 sha256、嵌入模型指纹、schema 版本。重跑时按清单对账,只重嵌改过的文件;行级用 content_hash 判定,`merge_insert` 条件更新,**没变的块零重写**([store.py:196-199](../src/rootrecall/services/code_index/store.py#L196-L199))。
+- **增量更新**:索引带"清单"(manifest)——每文件的 sha256、嵌入模型指纹、schema 版本。重跑时按清单对账,只重嵌改过的文件;行级用 content_hash 判定,`merge_insert` 条件更新,**没变的块零重写**([store.py:196-199](../src/rootrecall/services/code_index/store.py#L196-L199))。重嵌前先把该文件(以及已从仓库消失的文件)的旧行整批清掉([store.py:207-223](../src/rootrecall/services/code_index/store.py#L207-L223))——块的主键是「文件:限定名」,符号改名会换主键,不清旧行会留内容重复的幽灵。
+- **只编 git 认账的文件**:文件遍历尊重 `.gitignore`(git 仓走 `git ls-files` 已跟踪 ∪ 未跟踪未忽略 两路并集,非 git 仓兜底纯遍历,[parser.py:377-446](../src/rootrecall/services/code_index/parser.py#L377-L446))。工作区里 clone 进来的参考仓若已 ignore,不会被扫进索引——否则几千个无关文件全送去嵌入,账单爆炸还污染检索。
+- **限定名带完整"户口"**:解析时作用域栈把函数也压进去,函数体内定义的类/函数带外层函数前缀(如 `test_a._FakeGraph`)——保证同文件内主键唯一,否则多个函数各自定义同名局部类会撞主键,增量写入被数据库直接拒绝。
 - **原子重建**:全量重建写影子目录,建完 `os.replace` 原子交换,建一半崩了旧索引不脏、下次能恢复([index.py:183-227](../src/rootrecall/services/code_index/index.py#L183-L227))。
 - **模型指纹换版自动全量**:换 embedding 模型 → 指纹变 → 自动全量重建,不会出现新模型向量混旧模型向量的暗病。
 
@@ -138,10 +146,10 @@ RootRecall 的代码调研就是给代码库建一套**导航系统**,三层能�
 | [Aider repomap](https://aider.chat/2023/10/22/repomap.html)(tree-sitter 符号 + PageRank + token 预算;2025-2026 被大量复刻为 MCP server) | ✅ `repo_map` 同款算法,且叠加社区检测 / hub / bridge(Aider 没有);连 scipy 缺失都有纯 Python PageRank 降级 |
 | [Microsoft Code Researcher](https://www.marktechpost.com/2025/06/14/microsoft-ai-introduces-code-researcher-a-deep-research-agent-for-large-systems-code-and-commit-history/)(深度调研 agent,RL 训练代码图多跳遍历策略) | 🟡 方向一致(call_chain 多跳 + 引用式报告),遍历策略靠 skill 指令而非训练——单机工具的现实取舍 |
 | [Tree-sitter 知识图谱 MCP(arXiv 2026)](https://arxiv.org/html/2603.27277v1)(结论:最优架构 = 图检索 + RepoMap/PageRank 混合) | ✅ 正是检索层 + 结构图层的双路设计 |
-| 混合检索(BM25 + 向量 + RRF)→ cross-encoder 精排 | ✅ 工业标准两段式完整,带四级降级可观测 |
+| 混合检索(BM25 + 向量 + RRF)→ cross-encoder 精排 | ✅ 工业标准两段式完整,带四级降级可观测;精排后再叠**粒度先验**(module/内部符号降权、公共入口不动)——metadata boost 是各家 reranker 的通行做法,这里按代码符号的"级别"自制同款 |
 | [AGENTS.md](https://agents.md/) 惯例(60k+ 仓采用,agent 开工自动读的"README") | ✅ `export_report(agents_md=True)` opt-in 产出——默认关(不问自写用户仓 = 越界)、已有拒写不覆盖、内容是 agent 蒸馏的 ≤60 行精简版(冗长反而拖累 agent)而非死模板 |
 
-**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。截断治理(诚实截断)与 AGENTS.md 产出已补齐,剩余改进是触发级的(语言覆盖 / 查询形态 boosting 等,记 CLAUDE.md「低优 backlog」)。
+**结论**:检索与结构图的**架构选型都在 2026 主流线上**(hybrid + rerank、PageRank 地图、社区检测、引用防幻觉),叠加"沉淀进记忆"是通用代码情报工具没有的闭环。截断治理(诚实截断)与 AGENTS.md 产出已补齐;检索侧的粒度先验(全量重排 + 符号级别降权)已落地——自评测里符号直查全部第 1 名命中,概念查询的正解位次大幅前移但前排命中率未再抬(剩余 miss 是同域公共符号的打分平局,属语义模型天花板,不是粒度问题),再抬的方向记 CLAUDE.md「低优 backlog」。
 
 ---
 
