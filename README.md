@@ -30,18 +30,27 @@
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
 bash scripts/quickstart.sh    # 依赖 + .env 密钥 + 模型验证 + 接线自检(幂等,可重跑)
+uv run rootrecall install --global   # (推荐)注册进 ~/.config/opencode:任意目录 opencode 免接线
 ```
 
-两条日常命令(quickstart 之外):
+日常命令(quickstart 之外):
 
 ```bash
-# 建索引:检索类工具(search / blast_radius / call_chain…)需要
-# 索引名按「项目-版本线」取,如 wpa-v25
-uv run rootrecall index <源码路径> <索引名>
+# ── opencode 接线(二选一)──────────────────────────────────────────────
+uv run rootrecall install --global   # 全机一次:skills 软链 + MCP 注册 + AGENTS.md 路由段
+                                     # 之后任意目录 `opencode` 直接用;卸载加 --uninstall
+bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>   # 项目级接线(不想全局时)
+uv run rootrecall here --codebase <索引名>                   # bug 目录轻标记(配合全局注册)
 
-# 给 bug/工作仓接线(目录内放 bug 描述、日志、目标仓源码检出)
-# 自动 git init + 软链 skill 与 AGENTS.md 路由表 + 把 MCP 进程锚回本仓;--codebase 设默认检索库
-bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>
+# ── 建索引:检索类工具(search / blast_radius / call_chain…)需要 ──────────
+uv run rootrecall index <源码路径> <索引名>            # 索引名按「项目-版本线」取,如 wpa-v25
+uv run rootrecall index <路径> <新版本名> --seed <基线索引名>   # 小版本播种:拷贝基线再增量,只重嵌差异
+
+# ── 代码库生命周期(baseline 永久+定时同步 / ephemeral 一次性+gc 回收)────
+uv run rootrecall repo register <名> --url <git地址> --role baseline --branch <分支>
+uv run rootrecall repo checkout <新名> --from <基线名> --ref <tag/分支> --bug <bug号>  # 秒开一次性检出(worktree)
+uv run rootrecall repo sync [--analyze <发行版仓名>]   # fetch→ff→增量刷索引→上游三态分析报告(零 LLM)
+uv run rootrecall repo gc [--dry-run]                 # 回收过期 ephemeral(级联:worktree+索引+结构图;记忆不删)
 ```
 
 | 环境变量 | 作用 |
@@ -51,7 +60,9 @@ bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>
 
 ## 使用
 
-opencode 启动位置二选一:**本仓库根**(默认),或**已接线的工作仓**;停在默认界面直接提问即可,agent 读 [AGENTS.md](AGENTS.md) 路由表自动载入对应 skill(`rootrecall-*` 模式已撤出 Tab 切换列表,改为 subagent 供 `@` 点名或硬门隔离时委派)。前者读仓库根软链 `opencode.json`(指向 [config/opencode_rootrecall.json](config/opencode_rootrecall.json),单一配置源:注册 MCP + agent block);后者的 `.claude/skills` 软链供 skill 项目级发现、`AGENTS.md` 软链供默认 agent 路由,生成的 `opencode.json` 经 `mcp.rootrecall.cwd` 把 MCP 进程锚回本仓,`.venv` / `data/` / `.env` 照旧解析。
+opencode 启动位置三选一:**本仓库根**(默认)、**已接线的工作仓**(wire_opencode.sh / `rootrecall here`)、**任意目录**(`install --global` 注册后免接线);停在默认界面直接提问即可,agent 读 [AGENTS.md](AGENTS.md) 路由表自动载入对应 skill(`rootrecall-*` 模式已撤出 Tab 切换列表,改为 subagent 供 `@` 点名或硬门隔离时委派)。全局注册把 skills 软链进 `~/.config/opencode/skills/`、MCP 写进 `~/.config/opencode/opencode.json`(cwd 锚回本仓)、路由表以标记段落进 `~/.config/opencode/AGENTS.md`——卸载 `install --global --uninstall` 只摘自己写的。项目级接线时 `.claude/skills`/`AGENTS.md` 软链供项目级发现,生成的 `opencode.json` 经 `mcp.rootrecall.cwd` 把 MCP 进程锚回本仓,`.venv` / `data/` / `.env` 照旧解析。
+
+**仓库注册表**(`data/repos.yaml`,由 `repo register/checkout/ensure_repo` 自动维护)把「索引名↔仓库路径↔角色↔生命周期」串起来:检索/记忆类工具与 `validate_patch` 等的 `repo_path` 参数现在**直接吃注册名**(注册表→索引清单→data/repos 逐级反查),compare/bug-rca 等不再问你要绝对路径;`repo ls` 一眼看全机资产,baseline(共享基线,`repo sync` 定时更新,systemd timer 样例见 [deploy/](deploy/))与 ephemeral(一次性 bug 检出,`repo gc --dry-run` 先看后删)各安其位。
 
 试用(默认界面直接问,自动路由):
 

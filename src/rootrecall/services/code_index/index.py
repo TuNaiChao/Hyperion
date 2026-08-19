@@ -66,12 +66,15 @@ class IndexManifest:
     - model_fingerprint:embedder.fingerprint;变 → 全量重建(向量空间变了)。
     - schema_version:chunk schema 版本;变 → 全量重建。
     - file_manifest:{相对路径: sha256} —— 增量对账(哪份文件变了要重嵌)。
+    - repo_path:建库时源码仓的绝对路径(repo registry 反查用;旧清单没有 → None)。
+      索引名→仓库路径从此可反查(resolve_repo_path),agent 不再问用户要路径。
     """
 
     repo_commit: str | None
     model_fingerprint: str
     schema_version: int
     file_manifest: dict[str, str] = field(default_factory=dict)
+    repo_path: str | None = None
 
 
 def _manifest_path(base_dir: Path, repo: str) -> Path:
@@ -221,7 +224,7 @@ def _full_rebuild(
     commit = _git_head(repo_path)
     _write_manifest(
         _manifest_path(base_dir, repo_name),
-        IndexManifest(commit, fp, SCHEMA_VERSION, _file_manifest(repo_path)),
+        IndexManifest(commit, fp, SCHEMA_VERSION, _file_manifest(repo_path), repo_path=str(repo_path)),
     )
     logger.info("[%s] 全量重建完成: %d chunks @ %s", repo_name, n, commit or "no-git")
     return {"mode": "full", "indexed": n, "total_chunks": n, "repo_commit": commit}
@@ -261,7 +264,7 @@ def _incremental(
         store.optimize(repo_name)
 
     commit = _git_head(repo_path)
-    _write_manifest(_manifest_path(base_dir, repo_name), IndexManifest(commit, fp, SCHEMA_VERSION, new_fm))
+    _write_manifest(_manifest_path(base_dir, repo_name), IndexManifest(commit, fp, SCHEMA_VERSION, new_fm, repo_path=str(repo_path)))
     logger.info("[%s] 增量完成: 重嵌 %d chunks @ %s", repo_name, n, commit or "no-git")
     return {
         "mode": "incremental",

@@ -27,10 +27,13 @@ def ensure_repo(name_or_path: str, *, cfg: AppConfig | None = None) -> tuple[Pat
 
     解析顺序:
       1. ``name_or_path`` 是**路径样**(绝对路径或含 ``/``)且存在的本地目录 → 直接用(不 clone)。
-         光秃秃的名字不当本地路径(避免跟 cwd 下同名目录撞车),走下面 remotes/clone_dir。
-      2. ``clone_dir/<name>`` 已存在 → 直接用(幂等,不重 clone)。``name`` 取 URL/路径末段去 ``.git``。
-      3. 否则:remote = ``config.patch.git.remotes[name]``(或按原样拿 ``name_or_path`` 当 git URL);
-         ``git clone [--depth 1] <remote> <clone_dir/<name>>``;返回新路径。
+         光秃秃的名字不当本地路径(避免跟 cwd 下同名目录撞车),走下面注册表/remotes/clone_dir。
+      2. **注册表命中**(data/repos.yaml,repo registry):该名字登记过且 path 在盘上 → 直接用。
+         F1 起 ensure_repo 与注册表打通 —— baseline/ephemeral 仓从这里秒出路径,不重 clone。
+      3. ``clone_dir/<name>`` 已存在 → 直接用(幂等,不重 clone)。``name`` 取 URL/路径末段去 ``.git``。
+      4. 否则:remote = ``config.patch.git.remotes[name]``(或按原样拿 ``name_or_path`` 当 git URL);
+         ``git clone [--depth 1] <remote> <clone_dir/<name>>``;**clone 成功顺手登记进注册表**
+         (role=unmanaged,记 url/path —— 下次走第 2 步秒出,也让 `repo ls` 看得见它)。
 
     浅克隆由 ``config.patch.git.shallow`` 控制(默认开,省时省空间)。
     clone 失败(网络错 / rc≠0)抛 ``RuntimeError``(带 stderr 尾,调用方友好降级)。
@@ -41,19 +44,29 @@ def ensure_repo(name_or_path: str, *, cfg: AppConfig | None = None) -> tuple[Pat
 
     # 1. 显式本地路径直接命中 —— 但只认「路径样」输入(绝对路径或含分隔符);
     #    光秃秃的名字(如 "src"/"wpa")不当本地路径,否则碰巧跟 cwd 下同名目录撞车
-    #    (例:项目根有 src/,传 "src" 会被误判成命中而不 clone)。名字应走 remotes/clone_dir。
+    #    (例:项目根有 src/,传 "src" 会被误判成命中而不 clone)。名字应走注册表/remotes/clone_dir。
     p = Path(name_or_path)
     looks_like_path = p.is_absolute() or ("/" in name_or_path) or ("\\" in name_or_path)
     if looks_like_path and p.is_dir():
         return p.resolve(), False
 
-    # 2. clone_dir 里按短名命中(幂等:之前 clone 过就别再 clone)。
+    # 2. 注册表命中(repo registry,F1):登记过且盘上还在 → 直接用。
+    try:
+        from rootrecall.services.repos.registry import RepoRegistry
+
+        rec = RepoRegistry().get(name_or_path)
+        if rec is not None and rec.exists_on_disk():
+            return Path(rec.path).resolve(), False
+    except Exception:  # noqa: BLE001 —— 注册表坏了不挡 ensure_repo 主链路(文件即真相,删了重建即可)
+        pass
+
+    # 3. clone_dir 里按短名命中(幂等:之前 clone 过就别再 clone)。
     name = repo_name(name_or_path)
     dest = clone_dir / name
     if dest.is_dir():
         return dest.resolve(), False
 
-    # 3. 缺则 clone:remote 优先按短名查 config.remotes;查不到就把 name_or_path 当 git URL。
+    # 4. 缺则 clone:remote 优先按短名查 config.remotes;查不到就把 name_or_path 当 git URL。
     remote = git_cfg.remotes.get(name) or git_cfg.remotes.get(name_or_path) or name_or_path
     clone_dir.mkdir(parents=True, exist_ok=True)
     cmd: list[str] = ["git", "clone"]
@@ -69,6 +82,15 @@ def ensure_repo(name_or_path: str, *, cfg: AppConfig | None = None) -> tuple[Pat
         # 不静默:带 stderr 尾让调用方知道为啥挂(认证失败 / 仓不存在 / 网络 …)。
         tail = (r.stderr or "").strip()[-400:]
         raise RuntimeError(f"git clone 失败({remote}):rc={r.returncode} {tail}")
+
+    # clone 成功 → 顺手登记注册表(role=unmanaged;要升级 baseline 跑 repo register 覆盖)。
+    # 登记失败不挡返回(注册表只是加速层,坏了下次再登记)。
+    try:
+        from rootrecall.services.repos.registry import RepoRegistry
+
+        RepoRegistry().register(name, path=str(dest.resolve()), url=remote)
+    except Exception:  # noqa: BLE001
+        pass
     return dest.resolve(), True
 
 

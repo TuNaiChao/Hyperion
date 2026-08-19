@@ -1,0 +1,10 @@
+[Unit]
+Description=RootRecall baseline repo sync (fetch + ff + incremental index + upstream tri-state report)
+
+[Service]
+Type=oneshot
+# WorkingDirectory = RootRecall 安装根(uv 找得到 .venv、data/ 不漂)
+WorkingDirectory=%h/Desktop/Agent/RootRecall
+ExecStart=/usr/bin/env uv run --no-sync rootrecall repo sync --analyze bluez-v20
+# 想只同步不出分析报告:去掉 --analyze 参数
+# 嵌入 key 没配时加 --no-index(跳过索引刷新,只做 git 侧同步)

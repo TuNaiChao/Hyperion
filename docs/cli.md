@@ -9,7 +9,10 @@
 | 命令 | 档 | 作用 |
 |---|---|---|
 | [`models`](#models) | 日常 | 列出配置的模型 + 角色路由(验证配置) |
-| [`index`](#index) | 日常 | 给仓库建索引(向量 + 结构图,一次到位) |
+| [`index`](#index) | 日常 | 给仓库建索引(向量 + 结构图,一次到位;`--seed` 播种增量) |
+| [`repo`](#repo) | 日常 | 仓库注册表与生命周期:ls / register / resolve / checkout / sync / gc |
+| [`install`](#install--here) | 日常 | opencode 全局注册/卸载(任意目录免接线) |
+| [`here`](#install--here) | 日常 | bug/工作目录轻标记(`.rootrecall.yaml` + 项目 opencode.json) |
 | [`lsp`](#lsp) | 日常 | L2 精确导航(clangd)自检 / 冒烟 |
 | [`memory`](#memory) | 日常 | 记忆管理:recall / add / ingest / list / consolidate / invalidate |
 | [`mcp serve`](#mcp-serve) | 日常 | 启动 MCP server(16 个工具的入口) |
@@ -30,7 +33,7 @@ uv run rootrecall models
 给代码仓建索引 —— 检索类工具(search_codebase / blast_radius / call_chain / repo_map / repo_overview)的前置。
 
 ```bash
-uv run rootrecall index <repo_path> [repo_name] [--force] [--no-graph]
+uv run rootrecall index <repo_path> [repo_name] [--force] [--seed <基线索引名>] [--no-graph]
 ```
 
 | 参数 | 说明 |
@@ -38,6 +41,7 @@ uv run rootrecall index <repo_path> [repo_name] [--force] [--no-graph]
 | `repo_path` | 仓库根目录 |
 | `repo_name` | 索引名(默认取目录名);MCP 工具按这个名字查 |
 | `--force` | 强制全量重建 |
+| `--seed` | 从同线基线索引播种:拷贝向量库+manifest(+结构图)再走增量,**只重嵌差异文件**(小版本索引省 95%+ 嵌入费;目标已存在则跳过拷贝) |
 | `--no-graph` | 只建向量索引不建结构图(快;图系工具将不可用) |
 
 结构图需要 `uv sync --extra code-review-graph`;没装会非致命降级(向量索引照建,提示装法)。
@@ -50,6 +54,55 @@ uv run rootrecall index <repo_path> [repo_name] [--force] [--no-graph]
 uv run rootrecall index ~/src/wpa_supplicant wpa_supplicant
 # 索引完成:向量 N chunk + 结构图 M 节点
 ```
+
+## repo
+
+仓库注册表(`data/repos.yaml`)与生命周期管理 —— 把「索引名↔仓库路径↔角色↔bug 关联」串成一条链。
+注册表同时是 MCP 工具 `repo_path` 参数的反查源(注册表 → 索引清单 repo_path → data/repos 逐级),
+`validate_patch` / `when_introduced` / `cross_version_diff` / `merge_eval` / `export_patch` 都能**直接传注册名**。
+
+```bash
+uv run rootrecall repo ls                                   # 全机资产一览(角色/路径/索引名)
+uv run rootrecall repo register <名> --url <git地址> --role baseline --branch <分支>
+uv run rootrecall repo register <名> --path <本地路径>       # 已有本地仓登记(upsert;--role 缺省=保留现值)
+uv run rootrecall repo resolve <名或路径>                    # 反查本地绝对路径(打印命中来源)
+uv run rootrecall repo rm <名>                               # 只删记录不删盘上文件
+
+# 一次性 bug 检出(worktree 共享对象库,秒级;登记 ephemeral)
+uv run rootrecall repo checkout <新名> --from <基线名> --ref <tag/分支/commit> [--bug <bug号>]
+
+# 基线同步(幂等,给定时器反复跑):fetch→ff→增量刷索引→(可选)上游三态分析报告
+uv run rootrecall repo sync [基线名...] [--analyze <发行版仓名>] [--no-index]
+
+# 回收过期 ephemeral(级联:worktree+向量索引+结构图+记录;记忆不删;baseline 不碰)
+uv run rootrecall repo gc [--dry-run] [--max-age-days 14] [--name <名>] [--prune-orphans]
+```
+
+| 角色 | 语义 |
+|---|---|
+| `baseline` | 共享基线(bluez 上游 / uos v20 线…):永久保留,`sync` 定时更新;首个 bare 镜像落 `data/mirrors/` |
+| `ephemeral` | 某 bug 的一次性检出(`data/worktrees/`):到期 `gc` 级联回收,可点名强删 |
+| `unmanaged` | `ensure_repo` 顺手 clone 的样机 / 手动 index 未声明角色的仓:gc 不碰 |
+
+`sync --analyze` 的三态报告(已修/建议合/冲突)是纯 git 确定性事实(patch-id + merge-tree,零 LLM),
+落 `data/upstream_reports/<基线名>/<时间戳>-sync.md`;「该不该真合」走 upstream-merge skill 复核。
+定时部署样例(systemd user timer / cron)见 [deploy/](../deploy/README.md)。
+
+## install / here
+
+opencode 接线的两条路,取代「每个 bug 目录跑一次 wire 脚本」:
+
+```bash
+uv run rootrecall install --global            # 全机一次:skills 软链 + mcp.rootrecall + AGENTS.md 路由段
+uv run rootrecall install --global --uninstall  # 卸载(只摘自己写的;别人的配置绝不动)
+uv run rootrecall here [--codebase <索引名>]   # 在 bug 目录里跑:写 .rootrecall.yaml + 项目 opencode.json
+```
+
+`install --global` 后**任意目录** `opencode` 免接线直接问(skill 走 `~/.config/opencode/skills/`、
+MCP 走全局 opencode.json 的 `cwd` 锚回本仓、路由表走 `~/.config/opencode/AGENTS.md` 标记段落);
+`here` 在当前目录补项目级默认检索库(`ROOTRECALL_CODEBASE`),已有别人配置时备份 `.bak` 后跳过。
+注意:全局 AGENTS.md 会注入本机所有 opencode 会话(路由表自带条件判据,对无关项目只多占少量
+system prompt);介意就用项目级 [wire_opencode.sh](../scripts/wire_opencode.sh)。
 
 ## lsp
 

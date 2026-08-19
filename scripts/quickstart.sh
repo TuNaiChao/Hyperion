@@ -89,14 +89,23 @@ else
 fi
 
 # ── [5/6] (可选)给 bug/工作仓接线:接完能在那个仓里直接启动 opencode ──────
-echo "[5/6] bug/工作仓接线(可选)"
-printf '要直接在某个 bug/工作仓里启动 opencode 吗?输入仓库绝对路径,多个用空格分隔(留空跳过):'
+echo "[5/6] opencode 接线(推荐全局一次,免每目录接线)"
+printf '要把 RootRecall 全局注册进 opencode 吗(装一次,之后任意目录 opencode 直接用)?[Y/n] '
+read -r ans_global || ans_global=""
+if [ "$ans_global" != "n" ]; then
+  if command -v opencode >/dev/null 2>&1; then
+    uv run rootrecall install --global
+  else
+    echo "  ⚠️ 未检测到 opencode,跳过(装好 opencode 后随时: uv run rootrecall install --global)"
+  fi
+fi
+printf '还要给某个 bug/工作仓做项目级接线吗?输入目录绝对路径,多个用空格分隔(留空跳过):'
 read -r bug_dirs || bug_dirs=""
 if [ -n "$bug_dirs" ]; then
   # shellcheck disable=SC2086  # 用户按空格分隔输入多个路径
   bash scripts/wire_opencode.sh $bug_dirs
 else
-  echo "  跳过(要用时随时: bash scripts/wire_opencode.sh <bug仓路径>)"
+  echo "  跳过(全局注册已够用;单个 bug 目录要定默认检索库时: cd <目录> && uv run rootrecall here --codebase <索引名>)"
 fi
 
 # ── [6/6] opencode 接线自检 + 启动指引 ──────────────────────────────────

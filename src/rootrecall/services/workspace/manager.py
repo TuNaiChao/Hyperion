@@ -42,18 +42,60 @@ _AGENTS_MD = """\
 """
 
 
+def _copy_worktree(repo_root: Path, dest: Path) -> bool:
+    """git 仓 → `git worktree add` 共享对象库(省空间;manager 顶注 R3 规划的落地),再把
+    源仓**未提交改动**覆写过来(worktree 检出的是 HEAD,脏态必须手工带过来,语义对齐 copytree)。
+    非 git 仓 / worktree 失败 → 返回 False,调用方回落整仓 copytree。"""
+    import shutil
+    import subprocess
+
+    def _run(argv: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(argv, capture_output=True, text=True, cwd=str(cwd) if cwd else None)
+
+    if _run(["git", "-C", str(repo_root), "rev-parse", "--is-inside-work-tree"]).returncode != 0:
+        return False
+    if _run(["git", "-C", str(repo_root), "worktree", "add", "--detach", str(dest), "HEAD"]).returncode != 0:
+        shutil.rmtree(dest, ignore_errors=True)
+        return False
+
+    # 带上源仓未提交改动:status --porcelain 逐条处理(删/改/增/重命名取新路径)。
+    # porcelain v1 每行 = XY 两列状态 + 空格 + 路径,X/Y 都可能是空格(如 " M"),所以按列位切,
+    # 不能 partition(' ')(会把 " M core.c" 切出 "M core.c" 这种坏路径)。
+    r = _run(["git", "-C", str(repo_root), "status", "--porcelain=v1"])
+    for ent in r.stdout.splitlines():
+        if len(ent) < 4:
+            continue
+        status, path = ent[:2], ent[3:]
+        if "R" in status and " -> " in path:  # 重命名条目:C old -> new,搬新路径即可
+            path = path.rsplit(" -> ", 1)[1]
+        path = path.strip('"')
+        src, dst = repo_root / path, dest / path
+        if "D" in status and not src.exists():  # 源里已删 → 目标也删掉(复刻脏态)
+            if dst.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+            elif dst.exists():
+                dst.unlink()
+            continue
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        elif src.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+    return True
+
+
 def create_workspace(
     repo_root: Path | str, trigger: str, *, bug_id: str | None = None
 ) -> Path:
     """建一个 bug 专用 workspace,返回它的路径。
 
-    repo_root:原代码仓(整体复制进 code/,opencode 在 code/ 改,原仓不动)。
+    repo_root:原代码仓(git 仓走 worktree 共享对象库 —— 秒级、省空间;非 git/失败回落整仓复制)。
     trigger:  bug 线索(写进 triggers/issue.md)。
     bug_id:   bug 标识;不给则用时间戳。
 
     产出目录结构(R2 末最简):
       <repo>__<bug_id>/
-      ├── code/          # 全量代码 cp(含 .git,供 git diff;大仓 R3 改 git worktree 省空间)
+      ├── code/          # 代码(git 仓=worktree 检出 HEAD + 未提交改动;否则整仓 cp)
       ├── triggers/issue.md
       ├── delegate/      # node_assemble 写 prompt.md(方式 B 指引)
       ├── patch/         # node_verify 写 final.diff(git diff code/ 的产物)
@@ -65,13 +107,18 @@ def create_workspace(
     repo_root = Path(repo_root)
     name = bug_id or time.strftime("%Y%m%d-%H%M%S")
     ws = WORKSPACE_ROOT / f"{repo_root.name}__{name}"
-    # 同 bug 重跑:已存在先清(保持干净;R3 改成 archive 而非删)
+    # 同 bug 重跑:已存在先清(保持干净;R3 改成 archive 而非删)。worktree 目录被 rmtree 后
+    # 源仓侧留悬空簿记 → 顺手 prune(失败不挡,git 下次 prune 也能清)。
     if ws.exists():
         shutil.rmtree(ws)
+        import subprocess
+        subprocess.run(["git", "-C", str(repo_root), "worktree", "prune"],
+                       capture_output=True, text=True)
     ws.mkdir(parents=True)
 
-    # code/:复制全量代码(含 .git → git diff 能跑)。opencode 在此读+改,原仓不动。
-    shutil.copytree(repo_root, ws / "code")
+    # code/:git 仓优先 worktree(共享对象库;未提交改动覆写带过来),否则整仓复制。
+    if not _copy_worktree(repo_root, ws / "code"):
+        shutil.copytree(repo_root, ws / "code")
 
     # .gitignore:排除 opencode 自己的运行时产物(否则会被 git add -A 连带进补丁)。
     # opencode 在 code/ 里写 .omo/(session 续接)、.opencode/ 等,这些不是 bug 修复,

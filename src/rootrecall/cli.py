@@ -73,12 +73,31 @@ def cmd_index(args) -> int:
     repo_name = args.repo_name or repo_path.resolve().name
     vs_path = getattr(getattr(cfg.code_index, "vector_store", None), "path", "data/code_index")
 
+    # ── 0)播种(F5):小版本索引从同线基线索引拷贝起步,增量只重嵌差异文件 ──────
+    # 场景:v20 的 5.50.61 出 bug,索引名 bluez-v20-5.50.61;它和基线 bluez-v20 绝大多数
+    # 文件相同 → 拷贝基线索引(向量库+manifest)再走增量,只有差异文件重新 embed
+    # (远端 embedding 按 token 计费,这条能省下 95%+ 的费用和时间)。幂等:目标已存在不拷。
+    if args.seed:
+        seed_vec, target_vec = Path(vs_path) / args.seed, Path(vs_path) / repo_name
+        seed_sg = Path("data/structgraph") / args.seed
+        target_sg = Path("data/structgraph") / repo_name
+        if target_vec.exists():
+            print(f"播种跳过:{target_vec} 已存在(--seed 只在目标索引不存在时拷贝)。")
+        elif seed_vec.exists():
+            shutil.copytree(seed_vec, target_vec)
+            print(f"已播种向量索引:{args.seed} → {repo_name}(增量只重嵌差异文件)。")
+        else:
+            print(f"⚠️ 播种源不存在:{seed_vec} —— 走正常全量建索引。", file=sys.stderr)
+        if not target_sg.exists() and seed_sg.exists():
+            shutil.copytree(seed_sg, target_sg)
+            print(f"已播种结构图:{args.seed} → {repo_name}(增量刷新只重解析改动文件)。")
+
     # ── 1)向量索引(search_codebase 用)──────────────────────────────────
     embedder = create_embedder(cfg.code_index.embedding)
     stats = build_index(repo_path, repo_name, embedder, vs_path, force=args.force)
     n = stats.get("indexed", stats.get("total_chunks", "?"))
     print(f"向量索引完成 [{stats.get('mode')}]:{repo_name}  {n} chunk  "
-          f"commit={stats.get('repo_commit', '-')[:10]}")
+          f"commit={(stats.get('repo_commit') or '-')[:10]}")
 
     # ── 2)结构图(blast_radius / call_chain / repo_map 用;可选,失败不致命)──
     # 没这条,降级提示「先建 rootrecall index」会把人引向只建了向量索引、结构图仍缺的死路。
@@ -444,6 +463,221 @@ def cmd_patch_report(args) -> int:
     return 0
 
 
+def cmd_repo(args) -> int:
+    """仓库注册表子命令(F1 repo registry):ls / register / rm / resolve。
+
+    注册表(data/repos.yaml)把「索引名 ↔ 仓库路径 ↔ 角色 ↔ 生命周期」串起来:
+      rootrecall repo ls                                  列出全部受管仓(角色/路径/索引名)
+      rootrecall repo register <名> --path <p> [--url U] [--role baseline|ephemeral|unmanaged]
+                  [--branch B] [--bug ID] [--codebase 索引名]                  登记/更新(upsert)
+      rootrecall repo rm <名>                             移除记录(只删记录不删盘上文件)
+      rootrecall repo resolve <名或路径>                  反查本地绝对路径(注册表→索引清单→data/repos)
+    baseline = 共享基线(永久保留,repo sync 定时更新);ephemeral = 某 bug 的一次性检出
+    (repo gc 级联清理);unmanaged = ensure_repo 顺手 clone 的样机/手动 index 未声明角色的仓。
+    """
+    from rootrecall.services.repos.registry import RepoRegistry, resolve_repo_path
+
+    reg = RepoRegistry()
+
+    if args.repo_cmd == "ls":
+        recs = reg.list()
+        if not recs:
+            print("(注册表为空 —— rootrecall repo register <名> --path <路径> 登记,或 ensure_repo/index 自动登记)")
+            return 0
+        print(f"{'名字':24} {'角色':11} {'路径':36} 索引/分支/bug")
+        for r in recs:
+            extra = r.index_name if r.index_name != r.name else ""
+            extra += f" @{r.branch}" if r.branch else ""
+            extra += f" bug={r.bug_id}" if r.bug_id else ""
+            warn = "" if r.exists_on_disk() else "  ⚠️ 路径不在盘上"
+            print(f"{r.name:24} {r.role:11} {r.path:36} {extra}{warn}")
+        return 0
+
+    if args.repo_cmd == "register":
+        if not args.path and not args.url and not reg.get(args.name):
+            print("错误:新登记需要 --path 或 --url 之一(已有记录可省略,仅改角色等字段)。", file=sys.stderr)
+            return 2
+        # role 缺省 = 保留现值(新记录才落 unmanaged)—— registry.register 统一处理
+        rec = reg.register(
+            args.name, path=args.path, url=args.url, role=args.role,
+            branch=args.branch, bug_id=args.bug, codebase=args.codebase, note=args.note,
+        )
+        print(f"已登记: {rec.name}  role={rec.role}  path={rec.path or '-'}"
+              f"{f' url={rec.url}' if rec.url else ''}{f' @{rec.branch}' if rec.branch else ''}")
+        return 0
+
+    if args.repo_cmd == "rm":
+        rec = reg.remove(args.name)
+        print(f"已移除记录: {rec.name}(盘上文件未动,要删盘上文件用 repo gc / 手动 rm)"
+              if rec else f"未找到记录: {args.name}")
+        return 0 if rec else 1
+
+    if args.repo_cmd == "resolve":
+        path, source = resolve_repo_path(args.name_or_path)
+        if path is None:
+            print(f"❌ 解析失败({source})", file=sys.stderr)
+            return 1
+        print(f"repo_path={path}  (来源: {source})")
+        return 0
+
+    if args.repo_cmd == "checkout":
+        # 从基线(baseline 注册记录或其 bare 镜像)开一个一次性检出:worktree 共享对象库,
+        # 秒级创建;登记为 ephemeral(bug 分析完 repo gc 级联回收)。
+        from pathlib import Path
+
+        from rootrecall.services.repos.mirror import add_worktree, ensure_mirror, worktrees_root
+
+        base = reg.get(args.from_repo)
+        if base is None:
+            print(f"错误:基线未注册 —— 先 `rootrecall repo register {args.from_repo} --url <git地址> "
+                  f"--role baseline --branch <分支>`。", file=sys.stderr)
+            return 2
+        url = base.url or (Path(base.mirror) if base.mirror else None)
+        if url is None:
+            print(f"错误:基线 {args.from_repo} 既无 url 也无 mirror,没法开检出。", file=sys.stderr)
+            return 2
+        mirror, new_clone = ensure_mirror(args.from_repo, str(url))
+        if base.mirror != str(mirror):  # 首次开检出 → 把镜像落点回填基线记录
+            reg.register(args.from_repo, mirror=str(mirror))
+        dest = Path(args.dest) if args.dest else worktrees_root() / args.name
+        wt, new_wt = add_worktree(mirror, args.ref, dest)
+        ref_desc = args.ref if args.ref else (base.branch or "HEAD")
+        reg.register(args.name, path=str(wt), role="ephemeral", from_repo=args.from_repo,
+                     branch=ref_desc, bug_id=args.bug, mirror=str(mirror))
+        print(f"✅ 检出就绪:{wt}  ({'新建 worktree' if new_wt else '已有,复用'};镜像 {'新 clone' if new_clone else '复用'} {mirror})")
+        print(f"   已登记 ephemeral(role=ephemeral, from={args.from_repo}"
+              f"{f', bug={args.bug}' if args.bug else ''});建索引: uv run rootrecall index {wt} {args.name}")
+        return 0
+
+    if args.repo_cmd == "gc":
+        from rootrecall.services.repos.registry import gc_ephemeral
+
+        rep = gc_ephemeral(max_age_days=args.max_age_days, dry_run=args.dry_run,
+                           names=[args.name] if args.name else None)
+        verb = "将删(dry-run)" if rep["dry_run"] else "已删"
+        for item in rep["removed"]:
+            casc = " + ".join(str(c) for c in item["cascades"])
+            print(f"🗑  {verb}:{item['name']}(age={item['age_days']}d{f', bug={item['bug']}' if item['bug'] else ''})→ {casc}")
+        for item in rep["kept_young"]:
+            print(f"⏳ 保留(未到期):{item['name']}(age={item['age_days']}d;点名强删加 --name)")
+        if rep["orphan_indexes"]:
+            print("⚠️ 孤儿索引(manifest 记的源仓路径已消失;要删手动 rm 或加 --prune-orphans):")
+            for p in rep["orphan_indexes"]:
+                print(f"   {p}")
+            if args.prune_orphans and not args.dry_run:
+                import shutil
+                for p in rep["orphan_indexes"]:
+                    shutil.rmtree(p, ignore_errors=True)
+                    print(f"🗑  已删孤儿索引:{p}")
+        for p in rep.get("legacy_indexes", []):
+            print(f"ℹ️ 未登记索引(老清单无 repo_path,不删;对源仓重跑 index 即纳入管理):{p}")
+        if not rep["removed"] and not rep["kept_young"] and not rep["orphan_indexes"] and not rep.get("legacy_indexes"):
+            print("(没有可回收的 ephemeral 仓,也没有孤儿索引)")
+        return 0
+
+    if args.repo_cmd == "sync":
+        # 基线仓定时更新:fetch --prune → 检出 ff 跟进 → 增量刷索引 →(可选)上游三态分析报告。
+        # 幂等,给 systemd timer / cron 反复跑(cron/systemd 样例见 deploy/)。
+        from rootrecall.services.repos.mirror import sync_repo
+        from rootrecall.services.repos.registry import RepoRegistry
+
+        reg = RepoRegistry()
+        names = args.names or [r.name for r in reg.list() if r.role == "baseline"]
+        if not names:
+            print("(没有 baseline 注册仓可同步;先 repo register <名> --url <地址> --role baseline)")
+            return 0
+
+        embedder = None
+        if not args.no_index:
+            try:
+                from rootrecall.services.code_index.embed import create_embedder
+                embedder = create_embedder(get_app_config().code_index.embedding)
+            except Exception as e:  # noqa: BLE001 —— key 缺/网络不可达:同步不因此中断,只跳过索引刷新
+                print(f"⚠️ embedder 不可用({e}),本次跳过索引刷新(要强制跳过加 --no-index)", file=sys.stderr)
+
+        rc = 0
+        for n in names:
+            try:
+                r = sync_repo(n, analyze_fork=args.analyze, refresh_index=not args.no_index,
+                              embedder=embedder, registry=reg)
+            except Exception as e:  # noqa: BLE001 —— 单仓失败不挡其余仓
+                print(f"❌ {n}: {e}", file=sys.stderr)
+                rc = 1
+                continue
+            if "skipped" in r:
+                print(f"⏭  {n}: {r['skipped']}")
+                continue
+            n_new = len(r.get("new_commits") or [])
+            ff = "" if "fast_forwarded" not in r else ("  ✅ ff 跟进" if r["fast_forwarded"] else "  ⚠️ 不能 ff,HEAD 未动")
+            print(f"🔄 {n}: 新 commit {n_new}{ff}"
+                  + (f"  索引[{(r.get('index') or {}).get('mode') if isinstance(r.get('index'), dict) else r.get('index')}]" if r.get("index") else ""))
+            for c in (r.get("new_commits") or [])[:10]:
+                print(f"    {c}")
+            if len(r.get("new_commits") or []) > 10:
+                print(f"    …共 {n_new} 条")
+            if r.get("note"):
+                print(f"    注:{r['note']}")
+            if r.get("analysis"):
+                a = r["analysis"]
+                if a.get("error"):
+                    print(f"    ⚠️ 分析未成:{a['error']}")
+                else:
+                    s = a.get("summary", {})
+                    print(f"    📊 三态分析:{a['range']} → total={s.get('total', 0)} "
+                          f"already_fixed={s.get('already_fixed', 0)} recommend_merge={s.get('recommend_merge', 0)} "
+                          f"conflict={s.get('conflict', 0)}  报告:{a['report']}")
+        return rc
+
+    print(f"(未知 repo 子命令: {args.repo_cmd})", file=sys.stderr)
+    return 1
+
+
+def cmd_install(args) -> int:
+    """opencode 全局注册 / 卸载(F2):三件套装进 ~/.config/opencode,全机一次。
+
+      rootrecall install --global           装:skills 软链 + mcp.rootrecall + AGENTS.md 路由段
+      rootrecall install --global --uninstall  卸:只摘自己写的东西(别人的配置绝不动)
+    装完之后任意目录 `opencode` 免接线;bug 目录里跑 `rootrecall here` 补默认检索库标记。
+    幂等可重跑(git pull 升级后重跑一次同步路由表)。
+    """
+    from rootrecall.services.install import install_global, uninstall_global
+
+    if args.uninstall:
+        r = uninstall_global()
+        print(f"已卸载全局注册({r['config_home']}):")
+        print(f"  skills: 摘除 {len(r['skills_removed'])} 个软链 {r['skills_removed']}")
+        print(f"  mcp: {r['mcp']}")
+        print(f"  AGENTS.md: {r['agents_md']}")
+        return 0
+
+    r = install_global()
+    print(f"✅ 已全局注册({r['config_home']};重跑同步升级,卸载加 --uninstall):")
+    print(f"  skills: {len(r['skills'])} 个软链 -> {r['skills']}")
+    print(f"  mcp: {r['mcp']}")
+    print(f"  AGENTS.md: {r['agents_md']}")
+    print("之后任意目录 `opencode` 免接线直接问;bug 目录可跑 `rootrecall here --codebase <索引名>` 定默认检索库。")
+    return 0
+
+
+def cmd_here(args) -> int:
+    """在 bug/工作目录现场做轻量标记(F2,配合全局注册 = 每目录唯一要跑的命令)。
+
+      rootrecall here [--codebase <索引名>]
+    写 `.rootrecall.yaml`(人/agent 可读标记)+ 项目 opencode.json(锚 MCP + 默认检索库),
+    不是 git 仓则 git init。已有自己的 opencode.json(不含 rootrecall)→ 备份 .bak 后跳过不覆盖。
+    """
+    from rootrecall.services.install import here
+
+    r = here(codebase=args.codebase)
+    print(f"✅ 已标记({r['project']}):")
+    if r.get("git_init"):
+        print("  git init(opencode 项目发现沿 git 根)")
+    print(f"  标记文件: {r['marker']}")
+    print(f"  opencode.json: {r['opencode_json']}")
+    print("cd 该目录 && opencode —— 默认界面直接提问,agent 按 AGENTS.md 路由表自动载入 skill。")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
@@ -459,9 +693,62 @@ def main(argv: list[str] | None = None) -> int:
     sub_index.add_argument("repo_name", nargs="?", default=None,
                            help="索引名(默认取目录名;须与 code_index.repo 一致)")
     sub_index.add_argument("--force", action="store_true", help="强制全量重建(向量索引 + 结构图)")
+    sub_index.add_argument("--seed", default=None, metavar="已有索引名",
+                           help="从同线基线索引播种(拷贝向量库+结构图再增量,只重嵌差异文件;省时省钱)")
     sub_index.add_argument("--no-graph", action="store_true",
                            help="只建向量索引,不建结构图(快;blast_radius/call_chain/repo_map 将不可用)")
     sub_index.set_defaults(func=cmd_index)
+
+    sub_repo = sub.add_parser("repo", help="仓库注册表(data/repos.yaml):ls/register/rm/resolve + checkout/gc/sync")
+    sub_repo_sub = sub_repo.add_subparsers(dest="repo_cmd", required=True)
+    r_ls = sub_repo_sub.add_parser("ls", help="列出全部受管仓(角色/路径/索引名)")
+    r_ls.set_defaults(func=cmd_repo, repo_cmd="ls")
+    r_reg = sub_repo_sub.add_parser("register", help="登记/更新一个仓(upsert:未传字段保留现值)")
+    r_reg.add_argument("name", help="注册名(约定=索引名,如 bluez-v20 / bluez-v20-5.50.61)")
+    r_reg.add_argument("--path", default=None, help="工作树绝对路径")
+    r_reg.add_argument("--url", default=None, help="git remote(clone/sync 用)")
+    r_reg.add_argument("--role", default=None, choices=["baseline", "ephemeral", "unmanaged"],
+                       help="baseline=共享基线(永久+sync)| ephemeral=一次性 bug 检出(gc 清)| unmanaged"
+                            "(缺省=保留现值;新记录默认 unmanaged)")
+    r_reg.add_argument("--branch", default=None, help="锁定的分支/tag")
+    r_reg.add_argument("--bug", default=None, help="ephemeral:关联 bug 标识")
+    r_reg.add_argument("--codebase", default=None, help="检索索引名(与 name 不同才填)")
+    r_reg.add_argument("--note", default=None)
+    r_reg.set_defaults(func=cmd_repo, repo_cmd="register")
+    r_rm = sub_repo_sub.add_parser("rm", help="移除记录(只删记录,不删盘上文件)")
+    r_rm.add_argument("name")
+    r_rm.set_defaults(func=cmd_repo, repo_cmd="rm")
+    r_res = sub_repo_sub.add_parser("resolve", help="名字/路径 → 本地绝对路径反查")
+    r_res.add_argument("name_or_path")
+    r_res.set_defaults(func=cmd_repo, repo_cmd="resolve")
+    r_co = sub_repo_sub.add_parser("checkout", help="从基线开一次性检出(git worktree 共享对象库,登记 ephemeral)")
+    r_co.add_argument("name", help="检出注册名(=索引名,如 bluez-v20-5.50.61)")
+    r_co.add_argument("--from", dest="from_repo", required=True, help="基线注册名(须已 register --role baseline --url)")
+    r_co.add_argument("--ref", required=True, help="检出的 ref(分支/tag/commit,如 5.50.61)")
+    r_co.add_argument("--bug", default=None, help="关联 bug 标识(gc 报告里给人看)")
+    r_co.add_argument("--dest", default=None, help="落点(默认 data/worktrees/<name>)")
+    r_co.set_defaults(func=cmd_repo, repo_cmd="checkout")
+    r_gc = sub_repo_sub.add_parser("gc", help="回收过期 ephemeral 仓(级联:worktree+向量索引+结构图+记录;记忆不删)")
+    r_gc.add_argument("--max-age-days", type=int, default=14, help="ephemeral 到期天数(默认 14)")
+    r_gc.add_argument("--dry-run", action="store_true", help="只列要删什么,不动手")
+    r_gc.add_argument("--name", default=None, help="点名强删某个(忽略年龄)")
+    r_gc.add_argument("--prune-orphans", action="store_true", help="顺带删孤儿索引(源仓已不在盘上的)")
+    r_gc.set_defaults(func=cmd_repo, repo_cmd="gc")
+    r_sync = sub_repo_sub.add_parser("sync", help="基线仓同步:fetch→ff→增量刷索引→(可选)上游三态分析报告")
+    r_sync.add_argument("names", nargs="*", help="要同步的基线名(缺省=全部 baseline)")
+    r_sync.add_argument("--analyze", default=None, metavar="FORK名",
+                        help="对哪个注册仓做上游三态分析(如 --analyze bluez-v20;fork 须有本地检出)")
+    r_sync.add_argument("--no-index", action="store_true", help="跳过索引刷新(没配 embedding key 时)")
+    r_sync.set_defaults(func=cmd_repo, repo_cmd="sync")
+
+    sub_install = sub.add_parser("install", help="opencode 全局注册/卸载(skills+mcp+AGENTS.md 三件套,全机一次)")
+    sub_install.add_argument("--global", dest="global_", action="store_true", help="装进 ~/.config/opencode(唯一模式)")
+    sub_install.add_argument("--uninstall", action="store_true", help="卸载全局注册(只摘自己写的)")
+    sub_install.set_defaults(func=cmd_install)
+
+    sub_here = sub.add_parser("here", help="在当前 bug/工作目录做轻量标记(.rootrecall.yaml + 项目 opencode.json)")
+    sub_here.add_argument("--codebase", default=None, help="该目录会话的默认检索索引名(免每次显式传)")
+    sub_here.set_defaults(func=cmd_here)
 
     sub_lsp = sub.add_parser("lsp", help="L2 精确导航(clangd):health 自检 / refs 冒烟")
     sub_lsp_sub = sub_lsp.add_subparsers(dest="lsp_cmd", required=True)

@@ -56,6 +56,27 @@ def _resolve_codebase(explicit: str | None) -> str:
     return Path.cwd().name
 
 
+def _resolve_repo_path_arg(name_or_path: str) -> str:
+    """repo_path 参数「名字/路径」两吃(F1 repo registry)。
+
+    路径样输入且存在 → 原样返回(老行为,零变化);光秃名字 → 走 resolve_repo_path
+    反查(注册表 > 索引清单 repo_path > data/repos 落点),命中换成解析出的绝对路径。
+    解析失败**不改原值**(让下游按"路径不存在"的老报错走,附带本函数的提示更友好)。
+    """
+    p = Path(name_or_path).expanduser()
+    if (p.is_absolute() or "/" in name_or_path or "\\" in name_or_path) and p.is_dir():
+        return str(p.resolve())
+    try:
+        from rootrecall.services.repos.registry import resolve_repo_path
+
+        resolved, source = resolve_repo_path(name_or_path)
+    except Exception:  # noqa: BLE001 —— 注册表层坏(文件损坏等)不挡工具主链路
+        return name_or_path
+    if resolved is not None:
+        return str(resolved)
+    return name_or_path  # 查不到 → 原样交下游报错(agent 会看到老格式的"不是目录"提示)
+
+
 # ── 工具门控(省上下文):ROOTRECALL_MCP_TOOLS 决定 server 注册哪些工具 ──────────
 #
 # 为什么在「注册」层做、而不是 opencode 的 permission deny:deny 只是"看得见但调不了",
@@ -583,11 +604,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         how to port' judgment is yours, using this output + search_codebase + call_chain.
 
         base_ref/head_ref: two git refs in the SAME repo (e.g. '5.50'/'5.85', or 'HEAD~5'/'HEAD').
-        repo_path: absolute path to the repo working tree (cwd for git). concern_files/symbols:
+        repo_path: absolute path to the repo working tree (cwd for git) — or just a registered
+        codebase/repo name (resolved via the repo registry / index manifest). concern_files/symbols:
         scope to these (symbols resolved via the graph if available). top_commits: commit cap.
         codebase: override which codebase's graph is used for enrichment (default = server's).
         Needs only the git repo; graph is optional enrichment (runs git core even without it).
         """
+        repo_path = _resolve_repo_path_arg(repo_path)
         from rootrecall.services.code_index.code_graph import CodeGraph
         from rootrecall.services.code_index.code_graph import cross_version_diff as _cvd
         target = codebase or repo
@@ -637,11 +660,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
         upstream_base_ref/upstream_head_ref: upstream commit range (two git refs in repo_path, e.g.
             last-sync-point and upstream/master). fork_ref: fork branch to compare against (e.g. release/eagle).
-        repo_path: absolute path of the repo working tree (cwd for git). concern_files: scope to commits
-            touching these files. max_commits: scan cap (default 50). codebase: graph for touched-function
-            enrichment (optional; default = this server's codebase).
+        repo_path: absolute path of the repo working tree (cwd for git) — or a registered
+            codebase/repo name (resolved via the repo registry / index manifest). concern_files: scope
+            to commits touching these files. max_commits: scan cap (default 50). codebase: graph for
+            touched-function enrichment (optional; default = this server's codebase).
         Needs only the git repo; graph is optional enrichment (runs without it).
         """
+        repo_path = _resolve_repo_path_arg(repo_path)
         from rootrecall.services.code_index.code_graph import CodeGraph
         from rootrecall.services.code_index.code_graph import merge_eval as _me
         target = codebase or repo
@@ -692,11 +717,13 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         semantic judgment — `git show <sha>` each: the introducing commit's message/diff often
         reveals the root cause's intent (a useful cross-check for your hypothesis).
 
-        repo_path: absolute path of the repo working tree. file: with symbol = pathspec narrowing
+        repo_path: absolute path of the repo working tree — or a registered codebase/repo name
+            (resolved via the repo registry / index manifest). file: with symbol = pathspec narrowing
             (short symbols like "scan" hit a lot — always narrow); with line = REQUIRED
             repo-relative path. max_commits: candidate cap (default 20; oldest-introducer may be
             beyond cap — raise it and re-call). Searches the current checkout only (no --all).
         """
+        repo_path = _resolve_repo_path_arg(repo_path)
         from rootrecall.services.code_index.code_graph import when_introduced as _wi
         try:
             result = _wi(repo_path, symbol=symbol, file=file, line=line,
@@ -873,13 +900,15 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         Runs `git apply --check` forward (strict → --3way → patch -p1 fallback) — a deterministic hard
         gate before trusting a patch. Returns applies + method + git diagnostic. Use it to confirm a
         patch/PR you're about to merge, or a fix you just wrote, actually fits the target repo.
-        repo_path: absolute path of the repo working tree to check against. (No reverse check here —
+        repo_path: absolute path of the repo working tree to check against — or a registered
+        codebase/repo name (resolved via the repo registry / index manifest). (No reverse check here —
         that needs the already-patched tree; the bug_rca workflow has the full forward+reverse validate.)
         """
         from pathlib import Path
 
         from rootrecall.services.workspace.validate import validate_patch as _validate
 
+        repo_path = _resolve_repo_path_arg(repo_path)
         if not Path(repo_path).is_dir():
             return f"repo_path 不是目录: {repo_path}"
         try:
@@ -912,13 +941,15 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         failures a bare ``git diff > file`` silently swallows. Run ``validate_patch`` first to confirm
         the diff applies; this tool only guarantees a non-empty patch lands on disk at the canonical path.
 
-        repo_path: absolute path of the repo whose working tree holds your fix.
+        repo_path: absolute path of the repo whose working tree holds your fix — or a registered
+                   codebase/repo name (resolved via the repo registry / index manifest).
         out_dir:   output directory (default ``data/bug_rca`` = "latest snapshot" location, matching
                    the bug_rca workflow convention; created if missing).
         """
         import subprocess
         from pathlib import Path
 
+        repo_path = _resolve_repo_path_arg(repo_path)
         repo = Path(repo_path)
         if not repo.is_dir():
             return f"repo_path 不是目录: {repo_path}"
@@ -1044,10 +1075,12 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     async def ensure_repo(name_or_url: str) -> str:
         """Resolve a codebase to a local path, auto-cloning if missing.
 
-        Give a repo name (looked up in ``config.patch.git.remotes``), a git URL, or an existing local
-        path. Returns the local absolute path; reuses an existing clone in ``data/repos/<name>``
-        (idempotent — won't re-clone). Use before ``validate_patch`` when the repo
-        isn't already local.
+        Give a repo name, a git URL, or an existing local path. Resolution order: repo registry
+        (``data/repos.yaml`` — registered baselines/bug checkouts hit instantly, no clone) →
+        ``config.patch.git.remotes`` → treat as git URL; a fresh clone lands in ``data/repos/<name>``
+        and is auto-registered. Returns the local absolute path; idempotent — won't re-clone.
+        Use before ``validate_patch`` etc. when the repo isn't already local; note those tools
+        now also accept a registered name directly as repo_path.
         """
         from rootrecall.services.repos.resolver import ensure_repo as _ensure
 

@@ -30,7 +30,7 @@ allowed-tools:
 
 1. **确认两版 + 流程主题 + recall 探底**:问清两个 codebase 各代表哪版(如 `bluez` = v25 新版、`bluez_v20` = v20 旧版)+ 用户关心的**流程主题**(「连接流程」/「配对流程」/「SDP 服务发现」/「GATT 发现」...)。本地没仓 → `ensure_repo`(只读 clone)。**第一步立刻 `memory_recall(query=<流程主题>, codebase=<项目名>)` 查一次**,看有没有历史对比事实(记忆按项目名记、跨版本共享;**别**用两版索引名各查 —— 索引名是检索类工具用的,记忆 scope 里没有,会白查)。**先把主题词想成一个代码概念**(「连接流程」→ connection establishment / connect / pair / link),检索用概念不用文件名。
 
-   > **⚠ 仓库路径**:工具(`search_codebase`/`repo_map`/`call_chain`)返回的 file:line 是索引时的**相对路径**(带 repo_root 前缀,如 `code-test/v25/bluez/src/...`)。你要 `read` 函数体时,若相对路径在你的 cwd 下打不开(常见:仓库目录被 gitignore → `glob` 看不见;或 cwd 不是项目根),**直接问用户要仓库绝对路径**,或用 `ensure_repo` 拿到 `data/repos/` 下的落点 —— **别浪费步数满盘 glob/find**(本 skill 无 bash 权限,find 也用不了)。拿到绝对路径前缀后,把索引返回的相对路径拼成绝对路径再 `read`。
+   > **⚠ 仓库路径**:工具(`search_codebase`/`repo_map`/`call_chain`)返回的 file:line 是索引时的**相对路径**(带 repo_root 前缀,如 `code-test/v25/bluez/src/...`)。你要 `read` 函数体时,若相对路径在你的 cwd 下打不开(常见:仓库目录被 gitignore → `glob` 看不见;或 cwd 不是项目根),按序试:**① 索引名直接当 repo_path 用** —— `repo_path` 参数现已吃注册名(注册表/索引清单自动反查,见 `rootrecall repo ls`);② `ensure_repo(<索引名>)` 拿绝对路径;③ 都不行才问用户。**别浪费步数满盘 glob/find**(本 skill 无 bash 权限,find 也用不了)。拿到绝对路径前缀后,把索引返回的相对路径拼成绝对路径再 `read`。
 2. **短路 vs 重跑(关键分流)**:看 step 1 的 recall 结果 ——
    - **短路(直接出报告)**:recall 命中了**同一对版本 + 同一流程主题**的对比事实,内容已包含入口配对 + 流程节点差异 + 因果结论 + 双源 file:line。→ **复用它,跳到 step 5 出对比卡 + step 6 export_report,不重跑 search/read**。用户要的「秒答」就是这条路径。最多按用户的具体问法补一两句,别整轮重读。
    - **重跑(走完整 A→B→C)**:recall 没命中、或命中的主题对不上(问的是连接,记忆里只有配对)、或缺关键节点(只覆盖了一半流程)。→ 走下面 step 3-5 的完整调研。**这才是该花 read 预算的时候**。

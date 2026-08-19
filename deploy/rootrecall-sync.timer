@@ -1,0 +1,12 @@
+[Unit]
+Description=Run RootRecall baseline sync daily
+
+[Timer]
+OnCalendar=daily
+# 错过触发点(关机)开机后补跑
+Persistent=true
+# 随机延迟 15 分钟内,避免和其他定时任务撞车
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target
