@@ -29,7 +29,7 @@ RootRecall 不是一个「装好就能用」的 exe,它交给 opencode 的是四
 |---|---|---|---|
 | **MCP 工具** | 可被模型直接调用的函数,带名字、参数说明、返回结果 | **手** —— 能做的动作 | 16 个工具:`search_codebase` / `memory_recall` / `validate_patch`……见 [mcp-tools.md](mcp-tools.md) |
 | **skill** | 一份 `SKILL.md` 说明书,教模型「遇到什么问题、按什么顺序、组合哪些工具」 | **菜谱** —— 知道先切菜还是先热锅 | 8 个 skill:`bug-rca` / `backport` / `onboarding`……路由判据见 [skill-routing-matrix.md](skill-routing-matrix.md) |
-| **agent block** | 预制角色:指定模型 + 权限 + 禁令(比如只读 skill 禁 bash) | **工牌** —— 能进哪个车间、能碰哪台机器 | 10 个 block:`rootrecall-bug-rca` / `rootrecall-compare`…… |
+| **agent block** | 预制角色:指定模型 + 权限 + 禁令(比如只读 skill 禁 bash) | **工牌** —— 能进哪个车间、能碰哪台机器 | 10 个 block:8 个 subagent(`rootrecall-bug-rca` / `rootrecall-compare`……,要硬门隔离或点名时委派)+ 2 个隐藏内部 stage(`rootrecall-localize` / `rootrecall-repair`,老 delegate 流水线专用) |
 | **配置/接线** | 让以上三样被 opencode「发现」的注册动作 | **入职引导单** —— 新员工第一天该去哪报到 | `opencode.json` + [quickstart.sh](../scripts/quickstart.sh) / [wire_opencode.sh](../scripts/wire_opencode.sh) |
 
 业界共识是**工具和菜谱要配套用(use both)**:工具给「能力」,skill 给「流程」。只有工具,模型知道能做什么但不知道标准工序;只有菜谱没有工具,模型知道工序却没家伙可使。philschmid 的总结一针见血:*"Skills complement MCP by teaching agents when and how to combine those tools for specific workflows. Use both."*
@@ -49,7 +49,7 @@ RootRecall 不是一个「装好就能用」的 exe,它交给 opencode 的是四
 | 2. 启动命令 | **自足**:`npx -y xxx` / `uvx xxx` 从全局缓存拉起,启动目录在哪都无所谓 | `uv run rootrecall mcp serve` 按**当前目录**找本仓 `.venv` —— 目录不对就拉不起来 |
 | 3. 有无家当 | **无状态**:不依赖某个固定目录的数据;真需要路径就当参数显式传(Serena 的 `--project`、code-index-mcp 的 `--project-path`) | 三样**家当锚在本仓根**:`.venv`(运行环境)、`data/`(记忆库 + 索引,绝不能漂)、`.env`(密钥) |
 
-打个比方:**`npx` 型 MCP 像外卖店** —— 店开在全局缓存,不管客人坐在哪个目录点单,都能出餐;**RootRecall 像自家厨房** —— 锅碗(`data/`)、灶具(`.venv`)、秘方本(`.env`)都锁在厨房里,要做菜就得回厨房,或者拉两根线把水电接到饭桌上。
+打个比方:**`npx` 型 MCP 像外卖店** —— 店开在全局缓存,不管客人坐在哪个目录点单,都能出餐;**RootRecall 像自家厨房** —— 锅碗(`data/`)、灶具(`.venv`)、秘方本(`.env`)都锁在厨房里,要做菜就得回厨房,或者拉三根线把水电接到饭桌上。
 
 「拉两根线」就是接线脚本干的事(见下节)。顺带一提:本仓 16 个工具都接受 per-call `codebase` 参数,和 Serena 的 `--project` 是同一族思路 —— 路径当参数传,数据不搬家;但 `.venv`/`.env` 这些「厨房基础设施」还是得靠启动位置或 `cwd` 锚定解决。
 
@@ -63,24 +63,27 @@ cd RootRecall && opencode
 
 为什么零接线:启动目录 = 厨房本身 —— `uv run` 就地解析 `.venv`,skill 从 `.claude/skills/` 自动发现,`.env` 由 rootrecall 进程启动时自行加载,什么都不用额外做。装好后第一条路就是它,前 5 步见 [quickstart.sh](../scripts/quickstart.sh)。
 
+另外,仓库根本身的 `AGENTS.md` 会被 opencode 注入每个 agent 的系统提示 —— 打开 opencode 停在默认界面直接提问即可,agent 按这张路由表自动载入对应 skill,不需要按 Tab 切换模式(8 个 `rootrecall-*` 模式已从 Tab 列表撤下,改为后台 subagent)。
+
 ### 姿势 ② 接线:在 bug/工作仓里直接启动
 
-调试系统软件时,工作现场往往在 bug 仓(比如一份 wpa_supplicant 检出)。不想两头切,就把两根线拉过去:
+调试系统软件时,工作现场往往在 bug 仓(比如一份 wpa_supplicant 检出)。不想两头切,就把三根线拉过去:
 
 ```bash
 bash scripts/wire_opencode.sh /path/to/bug仓
 ```
 
 - **门 1(skill 发现线)**:opencode 从启动目录沿 git worktree 向上爬找 `.claude/skills/`;脚本给 bug 仓放一个软链,指向本仓的 `.claude/skills`,8 个菜谱就地可见。
-- **门 2(MCP 锚定线)**:脚本在 bug 仓生成一份 `opencode.json`,里面用 opencode 官方的 `mcp.rootrecall.cwd` 字段把 rootrecall 服务器进程**锚回本仓根** —— 进程回到厨房里跑,`.venv` 找得到、`data/` 不漂、`.env` 照常自加载。
+- **门 2(路由指令线)**:软链一份 `AGENTS.md` 指向本仓根的同名文件 —— 默认界面直接提问时,agent 靠这张「点单对照表」判断该载入哪个 skill(菜谱目录 opencode 本来就会递给每个 agent,缺的只是这张表)。单源真相:改本仓一份,所有接线过的 bug 仓同步生效。
+- **门 3(MCP 锚定线)**:脚本在 bug 仓生成一份 `opencode.json`,里面用 opencode 官方的 `mcp.rootrecall.cwd` 字段把 rootrecall 服务器进程**锚回本仓根** —— 进程回到厨房里跑,`.venv` 找得到、`data/` 不漂、`.env` 照常自加载。
 
 安全性:脚本是幂等的(重复跑无害);bug 仓已有自己的 `opencode.json`(不含 rootrecall)时会**备份成 `.bak` 后跳过**,绝不覆盖别人的配置;也不穿透软链写文件。接完 `cd <bug仓> && opencode`,`opencode mcp list` 应见 `rootrecall ✓ connected`。
 
 ### 姿势 ③ 全局注册(备选方案,当前不启用)
 
-也能像外卖店那样装:把 `mcp.rootrecall`(含 `cwd` 字段)合入全局配置 `~/.config/opencode/opencode.json`,8 个 skill 软链进全局目录(opencode 官方支持 `~/.claude/skills/` 等全局位置),10 个 agent block 一并合入 —— 装一次,任何目录启动都可用。
+也能像外卖店那样装:把 `mcp.rootrecall`(含 `cwd` 字段)合入全局配置 `~/.config/opencode/opencode.json`,8 个 skill 软链进全局目录(opencode 官方支持 `~/.claude/skills/` 等全局位置),8 个 subagent agent block 一并合入 —— 装一次,任何目录启动都可用。
 
-代价在哪:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 16 个工具 schema + 8 个 skill 元数据 + 10 个 agent block。工具 schema 是常驻上下文(见 §二),这笔「过路费」白交的次数太多。业界共识也是工具要**少而精**(见 §五)。
+代价在哪:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 16 个工具 schema + 8 个 skill 元数据 + 8 个 subagent block。工具 schema 是常驻上下文(见 §二),这笔「过路费」白交的次数太多。业界共识也是工具要**少而精**(见 §五)。
 
 所以当前拍板:**按仓接线,不设全局** —— 用到哪个仓接哪个仓,干净、可控。真到了「哪哪都想用」的一天再翻案,方案就记在上面。更彻底的长期解法(把 `data/` 路径与启动目录解耦,让 RootRecall 也能 `uvx` 一条命令自足分发)在 backlog 里,触发条件成熟再做。
 

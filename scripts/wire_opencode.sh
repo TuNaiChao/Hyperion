@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# 给 bug/工作仓接上 RootRecall 的两根线,接完就能在那个仓里直接启动 opencode(不用回本仓根):
+# 给 bug/工作仓接上 RootRecall 的三根线,接完就能在那个仓里直接启动 opencode(不用回本仓根):
 #   门1(skill 发现): <bug仓>/.claude/skills 软链到本仓 .claude/skills
 #                     (opencode 从启动目录沿 git worktree 爬,项目级 .claude/skills 会被拾取)
-#   门2(MCP 锚定):   <bug仓>/opencode.json = 本仓模板 + mcp.rootrecall.cwd = 本仓根
+#   门2(路由指令): <bug仓>/AGENTS.md 软链到本仓 AGENTS.md
+#                     (opencode 把 AGENTS.md 注入每个 agent 的 system prompt —— 默认界面
+#                      直接提问时,agent 靠它判断该载入哪个 rootrecall skill,不用 Tab 切模式)
+#   门3(MCP 锚定):   <bug仓>/opencode.json = 本仓模板 + mcp.rootrecall.cwd = 本仓根
 #                     (opencode 官方 cwd 字段让 rootrecall 服务器进程在本仓根跑:
 #                      uv 找得到 .venv、data/(记忆/索引)不漂到 bug 仓、.env 自加载)
 #
@@ -61,7 +64,15 @@ for BUG in "${BUGS[@]}"; do
   ln -sfn "$REPO/.claude/skills" "$BUG/.claude/skills"
   echo "  ✅ 门1 skills 软链 -> $REPO/.claude/skills"
 
-  # 门2:生成 opencode.json(先两道安全检查,不动别人的配置)
+  # 门2:AGENTS.md 软链(默认 agent 的路由指令;单源真相,改本仓 AGENTS.md 全部 bug 仓同步生效)
+  if [ -e "$BUG/AGENTS.md" ] && [ ! -L "$BUG/AGENTS.md" ]; then
+    echo "  ⚠️ AGENTS.md 已存在且非软链(疑似你自己的指令文件),跳过不覆盖"
+  else
+    ln -sfn "$REPO/AGENTS.md" "$BUG/AGENTS.md"
+    echo "  ✅ 门2 AGENTS.md 软链 -> $REPO/AGENTS.md"
+  fi
+
+  # 门3:生成 opencode.json(先两道安全检查,不动别人的配置)
   if [ -L "$BUG/opencode.json" ]; then
     echo "  ⚠️ opencode.json 已是软链(-> $(readlink "$BUG/opencode.json")),本脚本不穿透软链写文件,跳过"
     continue
@@ -88,9 +99,9 @@ with open(out, "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
     f.write("\n")
 PY
-  echo "  ✅ 门2 opencode.json 已生成(mcp.rootrecall.cwd = $REPO${CODEBASE:+, 默认检索库 = $CODEBASE})"
+  echo "  ✅ 门3 opencode.json 已生成(mcp.rootrecall.cwd = $REPO${CODEBASE:+, 默认检索库 = $CODEBASE})"
   echo "  自检:cd $BUG && opencode mcp list → 应见 rootrecall ✓ connected"
 done
 
 echo ""
-echo "完成。之后:cd <bug仓> && opencode —— 16 个 MCP 工具 + 8 个 skill 全量可用。"
+echo "完成。之后:cd <bug仓> && opencode —— 默认界面直接提问,agent 按 AGENTS.md 路由表自动载入对应 skill(16 个 MCP 工具 + 8 个 skill 全量可用,不用 Tab 切模式)。"

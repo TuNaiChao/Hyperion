@@ -22,6 +22,7 @@
     "rootrecall-localize": {
       "description": "RootRecall bug-RCA 定位阶段:opencode 自主定位(优先调 RootRecall MCP 工具缩范围),禁补丁。到 steps 强制输出 JSON(含 verdict 自审)。",
       "mode": "primary",
+      "hidden": true,
       "steps": 12,
       "permission": {
         "edit": "deny",
@@ -37,6 +38,7 @@
     "rootrecall-repair": {
       "description": "RootRecall bug-RCA 修复阶段:根因已锁,直接 edit code/ 改文件(不贴 diff)。到 steps 输出 JSON(含 verdict 自审)。",
       "mode": "primary",
+      "hidden": true,
       "steps": 8,
       "permission": {
         "edit": "allow",
@@ -51,7 +53,7 @@
     },
     "rootrecall-bug-rca": {
       "description": "RootRecall bug-RCA 工具箱 + 人在环迭代:opencode 驱动 RCA,按需调 RootRecall MCP 工具(记忆/代码检索/影响面/补丁验证/落盘),迭代假设-证伪 + 补丁-验证循环;补丁经验证(apply + 人/真机)确认后才 memorize/export_report。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 25,
       "permission": {
         "edit": "allow",
@@ -67,7 +69,7 @@
     },
     "rootrecall-patch-review": {
       "description": "RootRecall 补丁/PR 鉴定(只读):opencode 驱动,按需调 MCP 工具(fetch_patch/ensure_repo/validate_patch/blast_radius/search_codebase),出鉴定卡。验证只到 apply(编译/正确性由用户自验);用户验证通过后才 memorize。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 25,
       "permission": {
         "edit": "deny",
@@ -83,7 +85,7 @@
     },
     "rootrecall-backport": {
       "description": "RootRecall 跨版本回移植(v25 fix → v20):opencode 驱动,读 v25 fix、语义判 v20 有无同一 bug、适配改 v20 代码、验 apply、出 backport 卡。判 bug 是语义判断无确定性工具;只到 apply 不编译;用户真机验证通过后才 memorize。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 30,
       "permission": {
         "edit": "allow",
@@ -99,7 +101,7 @@
     },
     "rootrecall-compare": {
       "description": "RootRecall 跨版本代码对比调研(只读):opencode 驱动,锚定两版各自的流程入口函数、语义配对、逐节点读函数体对照、聚流程级差异、落对比报告。读码即记(对比是纯读码事实,不需等用户验证)。不改代码。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 28,
       "permission": {
         "edit": "deny",
@@ -115,7 +117,7 @@
     },
     "rootrecall-onboarding": {
       "description": "RootRecall 单 codebase 架构导览调研(只读):opencode 驱动,repo_overview 俯瞰社区/hub/bridge + repo_map 符号俯瞰 + 挑一条主旅程端到端走 + 聚导览报告。读码即记(架构是纯读码事实,不需等用户验证)。不改代码。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 24,
       "permission": {
         "edit": "deny",
@@ -131,7 +133,7 @@
     },
     "rootrecall-memory-health": {
       "description": "RootRecall 记忆库体检(只读):opencode 驱动,memory_dump 一次摊开全量记忆条目,逐条读溯源卡(confidence/source_tier/evidence/commit_sha/bi-temporal),聚健康信号(溯源弱/待巩固/已过期/未决矛盾)+ 建议。体检只看不改(不改代码也不改记忆库);仅发现未决矛盾才 memorize 一条「需裁决」。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 16,
       "permission": {
         "edit": "deny",
@@ -147,7 +149,7 @@
     },
     "rootrecall-upstream-merge": {
       "description": "RootRecall 上游 commit 合入评估:opencode 驱动,拉上游到本地、逐 commit 三态判定(已修/建议合/冲突)、查相关性、出决策表。merge_eval 是确定性地板(patch-id+apply);只评估不修改 fork;未经验证不 memorize。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 28,
       "permission": {
         "edit": "deny",
@@ -163,7 +165,7 @@
     },
     "rootrecall-domain-research": {
       "description": "RootRecall 领域/项目知识调研(只读):opencode 驱动,websearch/webfetch 多源交叉查权威源(spec/RFC/手册)、聚领域级结论、落调研报告、记进记忆。领域知识读码即记(协议/领域常理是调研事实,不需等用户验证)。不改代码。",
-      "mode": "primary",
+      "mode": "subagent",
       "steps": 24,
       "permission": {
         "edit": "deny",
