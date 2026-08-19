@@ -44,6 +44,9 @@ agentless/
 mini-swe-agent/
 #   git clone https://github.com/sst/opencode  (R2/R4 委托后端之一:opencode;Go 单二进制,团队分发友好)
 opencode/
+#   git clone https://github.com/TuNaiChao/deepseek-harness.git  (DeepSeek 官方 agent harness,克隆自 fork;
+#   调研 RootRecall 作为其宿主之一的集成方案,见 .claude/memory/dsh-integration-plan.md)
+deepseek-harness/
 
 # 旧文档归档(docs → docs-bak,2026-08-14):调研/设计/已完成/archive 旧树整体挪到 docs-bak,
 # 新 docs/ 待重组。docs-bak 作只读归档排除出版本库;旧路径链接(CLAUDE.md / .claude/memory/)等
