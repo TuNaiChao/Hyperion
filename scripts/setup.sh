@@ -13,14 +13,23 @@ case "$(uname -s)" in
     xcode-select --install 2>/dev/null || true
     ;;
   Linux)
-    if command -v apt >/dev/null 2>&1; then
+    # 工具已齐 → 跳过 apt(免 sudo/免网络,重跑装机友好)。ctags 须验 Universal 版,exuberant 不算数。
+    missing=""
+    ctags --version 2>/dev/null | head -1 | grep -q "Universal Ctags" || missing="universal-ctags"
+    command -v clangd >/dev/null 2>&1 || missing="$missing clangd"
+    command -v rg     >/dev/null 2>&1 || missing="$missing ripgrep"
+    command -v bear   >/dev/null 2>&1 || missing="$missing bear"
+    command -v gcc    >/dev/null 2>&1 || missing="$missing build-essential"
+    if [ -z "$missing" ]; then
+      echo "  系统工具已齐(ctags/clangd/rg/bear/gcc),跳过 apt 安装"
+    elif command -v apt >/dev/null 2>&1; then
       # clangd/clang = P1.5 L2 精确导航的语言服务器;bear = 给 autotools/make 项目(bluez/wpa)生成 compile_commands.json
       sudo apt update && sudo apt install -y universal-ctags clangd clang build-essential ripgrep bear
-      # compiledb:bear 的稳替代(解析 make 干跑,不受 LD_PRELOAD/SELinux/CCACHE 干扰;autotools 更稳)。apt 无包,pip 装。
-      pip install --user compiledb 2>/dev/null || true
     else
-      echo "非 Debian 系 Linux,请手动安装:universal-ctags clangd clang ripgrep bear" >&2; exit 1
+      echo "缺:$missing —— 非 Debian 系 Linux,请手动安装:universal-ctags clangd clang ripgrep bear" >&2; exit 1
     fi
+    # compiledb:bear 的稳替代(解析 make 干跑,不受 LD_PRELOAD/SELinux/CCACHE 干扰;autotools 更稳)。apt 无包,pip 装。
+    pip install --user compiledb 2>/dev/null || true
     ;;
   *) echo "不支持的系统: $(uname -s)" >&2; exit 1 ;;
 esac

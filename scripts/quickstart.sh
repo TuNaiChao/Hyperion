@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RootRecall 一键配置:装依赖 → 交互填 .env 密钥 → 验证模型 → (可选)建索引 → (可选)接 bug 仓 → opencode 接线自检。
-# 跑完在本仓库根目录(或已接线的 bug/工作仓)启动 opencode,即可用全部功能(8 个 skill + 16 个 MCP 工具)。
+# 跑完在本仓库根目录(或已接线的 bug/工作仓)启动 opencode,即可用全部功能(8 个 skill + 17 个 MCP 工具)。
 #
 # 用法:bash scripts/quickstart.sh [--force]
 #   --force  重跑完整 scripts/setup.sh(重装系统工具 + 依赖;默认 .venv 已存在时跳过该步)
@@ -92,7 +92,10 @@ if [ -n "$repo_path" ]; then
     printf '  索引名(回车默认 %s): ' "$default_name"
     read -r idx_name || idx_name=""
     idx_name=${idx_name:-$default_name}
-    uv run rootrecall index "$repo_path" "$idx_name"
+    # 零 key 最小模式下 index 友好报错返回 2 —— 别让它把整个 quickstart 打死(set -e),后面步骤照走。
+    if ! uv run rootrecall index "$repo_path" "$idx_name"; then
+      echo "  ⚠️ 索引未建成(见上方提示)—— 补齐 key/配置后随时重跑: uv run rootrecall index $repo_path $idx_name"
+    fi
   fi
 else
   echo "  跳过(检索类工具用前再建: uv run rootrecall index <仓库路径> <索引名>)"
@@ -147,6 +150,9 @@ if [ "$ok" -eq 1 ]; then
   echo "   ② 已接线的 bug/工作仓:cd <该仓> && opencode(MCP 经 cwd 锚到本仓根 —— uv 找得到"
   echo "      .venv、data/ 不漂移;skill 走软链发现;.env 由 rootrecall 进程自加载)"
   echo ""
+  echo "   数据落点:默认仓内 $REPO/data/;要迁出(放 ~/.local/share、换盘)→ 设 ROOTRECALL_HOME"
+  echo "   后重跑 install --global 生效,已有数据 mv 过去即可 —— 详见 docs/configuration.md"
+  echo "   「数据落点与 ROOTRECALL_HOME」"
   echo "   试用示例:「为什么 wpa 的 P2P 会话会泄漏?」(bug-rca)/"
   echo "             「这个仓库整体架构怎么组织?」(onboarding)"
 else

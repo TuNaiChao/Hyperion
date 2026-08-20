@@ -104,4 +104,4 @@ PY
 done
 
 echo ""
-echo "完成。之后:cd <bug仓> && opencode —— 默认界面直接提问,agent 按 AGENTS.md 路由表自动载入对应 skill(16 个 MCP 工具 + 8 个 skill 全量可用,不用 Tab 切模式)。"
+echo "完成。之后:cd <bug仓> && opencode —— 默认界面直接提问,agent 按 AGENTS.md 路由表自动载入对应 skill(17 个 MCP 工具 + 8 个 skill 全量可用,不用 Tab 切模式)。"
