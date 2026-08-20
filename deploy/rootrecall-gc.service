@@ -5,4 +5,7 @@ Description=RootRecall repo gc(回收过期 ephemeral 检出,级联清索引/结
 Type=oneshot
 # 14 天到期的 ephemeral 自动回收;孤儿索引只报告不删(要删手动加 --prune-orphans)
 WorkingDirectory=%h/Desktop/Agent/RootRecall
+EnvironmentFile=-%h/Desktop/Agent/RootRecall/.env
+# systemd user 服务只有极简 PATH,uv 装在 ~/.local/bin → 显式补进
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
 ExecStart=/usr/bin/env uv run --no-sync rootrecall repo gc

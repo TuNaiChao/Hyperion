@@ -21,7 +21,8 @@
 mkdir -p ~/.config/systemd/user/
 cp deploy/rootrecall-sync.service deploy/rootrecall-sync.timer ~/.config/systemd/user/
 cp deploy/rootrecall-gc.service deploy/rootrecall-gc.timer ~/.config/systemd/user/
-# 按需改 service 里的 WorkingDirectory(= RootRecall 安装根)与 --analyze 参数
+# 按需改 service 里的 WorkingDirectory(= RootRecall 安装根)与 sync/analyze 参数;
+# service 已带 EnvironmentFile=.env(--analyze-agent 的 opencode 需要 key 在环境里)
 systemctl --user daemon-reload
 systemctl --user enable --now rootrecall-sync.timer rootrecall-gc.timer
 systemctl --user list-timers 'rootrecall-*'     # 看下次触发
@@ -32,8 +33,8 @@ journalctl --user -u rootrecall-sync.service -f # 看同步日志
 
 ```bash
 crontab -e
-# 每天 07:30 同步全部 baseline,对 uos-v20 出三态报告 + agent 复核 + 入记忆
-30 7 * * * cd /path/to/RootRecall && /path/to/.venv/bin/rootrecall repo sync --analyze bluez-v20 --analyze-agent --ingest-report >> data/sync.log 2>&1
+# 每天 07:30 同步 bluez-v25 基线(github deepin-community 上游),对 bluez-v20 出三态报告 + agent 复核 + 入记忆
+30 7 * * * cd /path/to/RootRecall && set -a && . ./.env && set +a && /path/to/.venv/bin/rootrecall repo sync bluez-v25 --analyze bluez-v20 --analyze-agent --ingest-report >> data/sync.log 2>&1
 # 每周一 08:30 清理过期 ephemeral 仓(14 天到期,先 dry-run 看清楚再真跑)
 30 8 * * 1 cd /path/to/RootRecall && /path/to/.venv/bin/rootrecall repo gc >> data/sync.log 2>&1
 ```
@@ -41,3 +42,11 @@ crontab -e
 注意:`sync --analyze` 只出**三态判定报告**(确定性事实);`--analyze-agent` 也只是把
 复核意见写进报告 —— 「哪些真的该合进发行版」走 upstream-merge skill 的人工确认,
 定时器永远不自动改代码/不自动合上游。
+
+两个真机踩过的坑(2026-08-20 上线实录):
+- systemd user 服务只有极简 PATH,**uv 不在其中**(service 已带
+  `Environment="PATH=%h/.local/bin:..."` 修复);opencode 若装在 nvm 等
+  版本管理器目录里同样看不见 → `ln -sf $(command -v opencode) ~/.local/bin/opencode`
+  做个稳定软链(node 升级后记得重指)。
+- `--analyze-agent` 的 LLM key 走 `EnvironmentFile=.env` 注入(service 已带);
+  缺 key / 缺 opencode 都不会挂同步,只会诚实降级纯三态。

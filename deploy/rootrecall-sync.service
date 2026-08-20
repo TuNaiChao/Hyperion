@@ -3,8 +3,13 @@ Description=RootRecall baseline repo sync (fetch + ff + incremental index + upst
 
 [Service]
 Type=oneshot
-# WorkingDirectory = RootRecall 安装根(uv 找得到 .venv、data/ 不漂)
+# WorkingDirectory = RootRecall 安装根(uv 找得到 .venv、data/ 不漂;CLI 从这里读 .env)
 WorkingDirectory=%h/Desktop/Agent/RootRecall
-ExecStart=/usr/bin/env uv run --no-sync rootrecall repo sync --analyze bluez-v20
-# 想只同步不出分析报告:去掉 --analyze 参数
+# .env 经 EnvironmentFile 注入服务进程:--analyze-agent 拉起的 opencode 不读 .env,
+# key 必须在进程环境里(缺了只会诚实降级纯三态,不会挂)。前导 - = 文件不存在不报错。
+EnvironmentFile=-%h/Desktop/Agent/RootRecall/.env
+# systemd user 服务只有极简 PATH,uv 装在 ~/.local/bin(curl 官方安装器默认落点)→ 显式补进
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/usr/bin/env uv run --no-sync rootrecall repo sync bluez-v25 --analyze bluez-v20 --analyze-agent --ingest-report
+# 想只同步不出分析报告:去掉 --analyze 及其后的 agent/ingest 旗标
 # 嵌入 key 没配时加 --no-index(跳过索引刷新,只做 git 侧同步)
