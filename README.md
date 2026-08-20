@@ -27,6 +27,15 @@
 
 前置:[opencode](https://opencode.ai) 已安装并完成过一次默认模型配置(RootRecall 的 agent block 不钉模型,继承默认);两个 API key —— [DeepSeek](https://platform.deepseek.com)(LLM)+ [DashScope](https://bailian.console.aliyun.com)(embedding / reranker)。暂时没有 embedding key 也能跑**最小模式**(记忆 + 仓库管理可用,检索类等补 key),阶梯见 [configuration.md](docs/configuration.md)「最小模式」。
 
+密钥清单(quickstart 交互式写入 `.env`,只做非空检查、永不回显;opencode 自身的模型登录是另一回事,见其官方文档):
+
+| key | 用在哪 | 申请处 | 可缺吗 |
+|---|---|---|---|
+| `DEEPSEEK_API_KEY` | LLM(模型工厂主力 provider) | [platform.deepseek.com](https://platform.deepseek.com) | 建议必配(备选 provider 已在 config.yaml 预置,换 `OPENAI_API_KEY` 等即可) |
+| `DASHSCOPE_API_KEY` | embedding + reranker(代码检索) | [bailian.console.aliyun.com](https://bailian.console.aliyun.com) | 可缺 → `uv sync --extra embedding-local` 切本地嵌入,或先跑最小模式 |
+| `GITHUB_TOKEN` | `fetch_patch` / upstream-merge 抓 PR | [github.com/settings/tokens](https://github.com/settings/tokens) | 可缺:公开 PR 匿名可用(限速) |
+| `TAVILY_API_KEY` | domain-research 联网调研 | [tavily.com](https://tavily.com) | 可缺:仅该 skill 降级,其余不受影响 |
+
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
 bash scripts/quickstart.sh    # 依赖 + .env 密钥 + 模型验证 + 接线自检(幂等,可重跑)
@@ -180,4 +189,4 @@ Python 3.12 · uv 管理依赖 · LangGraph + LangChain · **mcp** SDK(MCP serve
 
 ## 现状
 
-三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);部署侧 quickstart 经干净机演练(零 key / 全功能两轮),systemd 定时同步(sync 每日 + gc 每周一)样例见 [deploy/](deploy/) 且已真机上线;[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。
+三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);部署侧 quickstart 经干净机演练(零 key / 全功能两轮),systemd 定时同步(sync 每日 + gc 每周一)样例见 [deploy/](deploy/) 且已真机上线;[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。验证体系全部使用**私有真机金标**(自建 bug + 上游修复逐点对照),不经公开基准 —— 避开基准记忆污染(SOTA 模型只看 issue 文本即可 76% 命中出错文件,The SWE-Bench Illusion, arXiv:2506.12286),证据链的可信度以此为本。

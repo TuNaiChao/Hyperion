@@ -33,9 +33,13 @@ allowed-tools:
 
 用户话里是「项目 + 版本」(如 bluez 5.50.61)时,按序走,问用户是最后手段:
 
-1. `rootrecall_find_repo(project=<项目>, version=<版本>)` 查注册表 —— 命中 → 直接用候选的仓/索引名开工(baseline 优先;同版本 ephemeral 已开过就复用,别重开)。
+1. `rootrecall_find_repo(project=<项目>, version=<版本>)` 查注册表 —— **exact 命中**(版本对上)→ 直接用候选的仓/索引名开工(同版本 ephemeral 已开过就复用,别重开);**Related**(同项目、版本没对上)→ 别拿来就改,按第 2 步开 ephemeral checkout 把版本钉死。
 2. 没命中 → 回复里带了基线清单和**可原样跑的自动开仓命令**(bash 跑):`repo checkout <项目>-<版本> --from <基线> --ref <版本> --bug <bug标识> --index` —— worktree 秒开 + 播种基线索引增量建,一步就绪;登记 ephemeral,完事 `repo gc` 回收。
 3. 连基线都没注册 → 这时才问用户要 git 地址,register 成 baseline 后回第 2 步。
+
+**基线只读纪律**:baseline 是共享资产 —— 永远不在 baseline 工作树上直接改代码/出补丁,要改就按第 2 步开 ephemeral。发现 baseline 工作树已被人改脏(git status 非净):在回复里说明现状再继续,别顺手 reset/checkout —— 那可能是别人的工作。
+
+**debian quilt 仓**:`.pc/` 与已应用的 quilt 补丁让树「天生脏」(正常现象;export_patch 已排除 `.pc/`)。但其余既有改动不是你写的 —— 开工前 `git status` 认一遍,别让它们混进你的补丁。
 
 ## 工具(按需调,无固定顺序)
 
