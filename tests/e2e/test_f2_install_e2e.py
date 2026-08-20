@@ -79,6 +79,33 @@ def test_f2_global_install_uninstall_e2e(tmp_path):
     assert _MARKER_START not in ag2 and "我的全局偏好(改)" in ag2  # 段落摘除,用户内容保留
 
 
+def test_f2_reinstall_from_new_root_relinks_stale_skill_wiring(tmp_path):
+    """换目录重装:旧安装根留下的 */.claude/skills/<同名> 电线(含旧根删除后的悬空链)换链到新根;
+    用户的真目录/异构软链仍不抢 —— 干净机演练抓到的「半换链」回归锁(MCP 跑新根、skill 吃旧根)。"""
+    cfg = tmp_path / "cfg"
+    old_root = tmp_path / "old-root"
+    (old_root / ".claude" / "skills" / "bug-rca").mkdir(parents=True)
+    (old_root / ".claude" / "skills" / "onboarding").mkdir(parents=True)
+    (cfg / "skills").mkdir(parents=True)
+    (cfg / "skills" / "bug-rca").symlink_to(old_root / ".claude" / "skills" / "bug-rca")
+    (cfg / "skills" / "patch-review").symlink_to(
+        tmp_path / "gone-root" / ".claude" / "skills" / "patch-review")  # 旧根已删的悬空链
+    (cfg / "skills" / "my-own-skill").mkdir()                            # 用户自己的真目录
+    foreign = tmp_path / "my-notes"
+    foreign.mkdir()
+    (cfg / "skills" / "foreign-link").symlink_to(foreign)                # 异构链(非 .claude/skills 结构)
+
+    new_root = install_root()
+    r = install_global(config_home=cfg, root=new_root)
+    for name in ("bug-rca", "onboarding", "patch-review"):
+        assert name in r["skills"]
+        dst = cfg / "skills" / name
+        assert dst.is_symlink() and str(dst.resolve()).startswith(str(new_root))
+    own = cfg / "skills" / "my-own-skill"
+    assert own.is_dir() and not own.is_symlink()
+    assert str((cfg / "skills" / "foreign-link").resolve()) == str(foreign)
+
+
 def test_f2_uninstall_removes_lone_agents_md(tmp_path):
     """AGENTS.md 全文只有我们写的路由段 → 卸载时整个文件删掉,不留空壳。"""
     cfg = tmp_path / "cfg"

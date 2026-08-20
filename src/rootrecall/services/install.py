@@ -82,10 +82,20 @@ def _link_skills(cfg_home: Path, root: Path) -> list[str]:
             continue
         dst = dst_dir / src.name
         if dst.is_symlink() or dst.exists():
-            if dst.is_symlink() and str(dst.resolve()) == str(src.resolve()):
-                done.append(src.name)  # 已链对,幂等跳过
-                continue
-            # 名字被别的 skill 占了 → 不覆盖(可能是用户自己的同名 skill),跳过并留名
+            if dst.is_symlink():
+                tgt = dst.resolve()
+                if str(tgt) == str(src.resolve()):
+                    done.append(src.name)  # 已链对,幂等跳过
+                    continue
+                # 指向 */.claude/skills/<同名> 的链 = 旧安装根留下的自家电线(含旧根删除后的悬空链)
+                # → 换链到本安装根;换目录重装不再半换链(MCP 跑新仓、skill 吃旧仓,旧根一删全断)。
+                parts = tgt.parts
+                if tgt.name == src.name and len(parts) >= 3 and parts[-2] == "skills" and parts[-3] == ".claude":
+                    dst.unlink()
+                    os.symlink(src, dst)
+                    done.append(src.name)
+                    continue
+            # 名字被别的 skill 占了(用户自己的真目录/异构链)→ 不覆盖,跳过
             continue
         os.symlink(src, dst)
         done.append(src.name)
