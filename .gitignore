@@ -62,8 +62,10 @@ docs-bak/
 .idea/
 .vscode/
 
-# 手动测试手册(本地自用,不入库;同 Python语法.md/todo.md 本地文件惯例)
+# 本地自用文件,永不入库(手动测试手册 / 个人笔记 / 个人待办)
 TEST-PLAN.md
+Python语法.md
+todo.md
 
 # 另一个项目,误落在 Hyperion 目录树(非本项目代码)
 oh-my-pi/
