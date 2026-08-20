@@ -14,9 +14,11 @@
 RootRecall 的 P2 就是把"老刑警的办案纪律"固化成 agent 可执行的菜谱(skill)+ 一组确定性"取证工具"(MCP):
 
 ```
-假设 ↔ 证伪循环            补丁 ↔ 验证循环             验证后收尾
-(找线索立嫌疑人,           (改代码 → 验 apply →         (用户真机确认修好,
- 每轮主动找反证)            落盘补丁交人)                才 memorize + 报告)
+假设 ↔ 证伪循环            补丁 ↔ 验证循环             收尾
+(找线索立嫌疑人,           (改代码 → 验 apply →         (报告落盘 + 教训早记
+ 每轮主动找反证)            落盘补丁交人)                [标"未真机验证"];
+                                                        真机通过后同补丁重提
+                                                        一次,升级记忆)
 ```
 
 **核心分工**:重活(读码 / 改代码)归成熟的 coding agent(opencode / claude code),RootRecall 负责它不会的三件事——**历史同类案件的记忆召回、确定性验证工具、办案纪律**。
@@ -24,7 +26,7 @@ RootRecall 的 P2 就是把"老刑警的办案纪律"固化成 agent 可执行�
 **两个铁律**(全模块设计的地基):
 
 1. **`validate_patch` 过 ≠ 修对**。工具只验补丁"贴得上"(git apply),不验"修得好"。系统软件没有像样的单元测试,**真正的 oracle 是人 / 真机复现原故障**。
-2. **未经验证不 memorize**。没坐实的根因写进记忆,会误导以后所有同类案件——记忆的价值全在可信。
+2. **验证状态必须显式**。没真机验证过的教训**可以早记**(先验对下一个案子有价值),但工具层强制打 `unverified` 标 + 置信封顶 0.5,recall 渲染带「(未真机验证)」—— 记忆的价值全在可信,而可信靠"看得见的验证状态",不靠"憋着不记"。真机通过后同一补丁重提一次(`verification: real_machine`),同 id 合并升级、洗掉标记。
 
 ---
 
@@ -43,9 +45,9 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 `edit` 改码 → `validate_patch` 验 apply(硬门)→ `export_patch` 落盘 → 没修对就再来一轮。**每出一版补丁就落盘一版**——步数将尽时优先把当前版落盘交人,别烂在锅里。
 
-### 验证后收尾
+### 收尾(报告落盘 + 教训分级入册)
 
-用户真机验证通过后:`memorize`(kind=bug_lesson,带根因 / 修法 / 影响面 / 补丁)→ `export_report`。**人停在哪儿**:export_patch 之后、memorize 之前——agent 把推理链和补丁摆好,人拍板。
+补丁过 `validate_patch` 并 `export_patch` 落盘后:`export_report` 出报告,`memorize`(kind=bug_lesson,`verification: apply_only`)早记教训 —— 自动带 `unverified` 标、置信封顶 0.5。**人停在哪儿**:export 之后 —— agent 把推理链和补丁摆好,真机验证是人拍板;验证通过后同补丁重提一次 `real_machine`,条目原地升级。
 
 ### 证伪纪律(对抗误诊,从真踩坑提炼)
 
@@ -81,7 +83,7 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 ### 配套小工具
 
-`export_patch`(从工作树 `git add -A && git diff --cached` 观察**真实改动**——不信 agent 嘴里说的 diff,**拒绝写空 diff**,治"改错树 / 假装改完")、`export_report`(报告落盘)、`fetch_patch`(拉 PR / Gerrit 补丁)、`ensure_repo`(确认仓在)。
+`export_patch`(从工作树 `git add -A && git diff --cached` 观察**真实改动**——不信 agent 嘴里说的 diff,**拒绝写空 diff**,治"改错树 / 假装改完";quilt 源码仓的 `.pc/` 构建产物自动排除,检出带 bug 号时另归档一份到 `<bug号>/`)、`export_report`(报告落盘,同款归档)、`fetch_patch`(拉 PR / Gerrit 补丁)、`ensure_repo`(确认仓在)。
 
 ---
 
@@ -91,14 +93,14 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 | skill | 场景 | 一句话 | 硬门 | memorize 时机 |
 |---|---|---|---|---|
-| `bug-rca` | 故障 → 修复 | 定位 + 修复 + 迭代 | `validate_patch`(apply) | 用户真机验证后 |
-| `patch-review` | 鉴定一个补丁 / PR | 干啥 / 贴得上吗 / 波及谁 / 该不该合 | `validate_patch` | 用户验证通过后 |
-| `upstream-merge` | 上游一批 commit 合不合进 fork | `merge_eval` 三态表 + 相关性判断 | 三态表(fork_ref rev-parse 可解析即可,零 touch) | 用户 backport 并验证后 |
-| `backport` | v25 已修 → 改独立发行版线 v20 | 跨版本回移植 | **判 v20 有无同一 bug**(纯语义)+ `validate_patch` | 用户真机验证后 |
+| `bug-rca` | 故障 → 修复 | 定位 + 修复 + 迭代 | `validate_patch`(apply) | apply 后记 unverified,真机后升级 |
+| `patch-review` | 鉴定一个补丁 / PR | 干啥 / 贴得上吗 / 波及谁 / 该不该合 | `validate_patch` | apply 后记 unverified,真机后升级 |
+| `upstream-merge` | 上游一批 commit 合不合进 fork | `merge_eval` 三态表 + 相关性判断 | 三态表(fork_ref rev-parse 可解析即可,零 touch) | apply 后记 unverified,真机后升级 |
+| `backport` | v25 已修 → 改独立发行版线 v20 | 跨版本回移植 | **判 v20 有无同一 bug**(纯语义)+ `validate_patch` | apply 后记 unverified,真机后升级 |
 
 **backport 的特殊性**值得单独说:两条独立发行版线**没有共同 git 祖先**,patch-id 等价判定失效,所以刻意**不用** merge_eval——判"v20 有没有同一个 bug"是纯语义判断,靠 grep 定位 v20 对应函数 + read 函数体对照 v25 的 fix-point。这是全模块唯一"核心判定零工具"的场景,也是人在环最重的地方。
 
-**继承同一套纪律**:"apply 过 ≠ 修对"、"未经验证不 memorize"写进每个 skill 的正文、硬约束、"不要"清单三处。
+**继承同一套纪律**:"apply 过 ≠ 修对"写进每个 skill 的正文、硬约束、"不要"清单三处;验证状态走结构化标注(`verification` 参数 → unverified 标 + 置信封顶,真机后同补丁重提升级)—— 早期"验证前憋着不记"的禁令在真 e2e 里被证明守不住(agent 会记),改为让标记替纪律站岗。
 
 ---
 
@@ -108,7 +110,7 @@ P2 的差异化在于**每个环节都接记忆**(详细机制见[记忆模块�
 
 - **定位前**:`memory_recall(trigger)` 翻历史同类案件——"这模式之前见过,这是当时的修法"。先验是线索不是答案,以本次证据为准。
 - **定位后**:根因候选定稿前用 `problem_summary` 当 query 再召回一次历史修法(把已设计的机制用足)。
-- **验证后**:`memorize` 沉淀 bug_lesson(根因 / 修法 / 影响面 / 补丁 / commit 溯源)——下次同类 bug 的先验。
+- **验证后**:`memorize` 沉淀 bug_lesson(根因 / 修法 / 影响面 / 补丁 / commit 溯源;apply 过即记、标 unverified,真机后同补丁重提升级)——下次同类 bug 的先验。
 - **召回质量有治理**:四路召回(BM25 + 向量 + 代码检索 + 结构图)RRF 融合 → 时间衰减 → 置信度加权 → **被纠正条目降权 0.3×**(旧误诊排后面但保留可考古);consolidate 巩固会检测"补丁已合入上游"(标 `merged_upstream` 打折)和"同主题打架根因"(标 `needs_review` 待裁决)。
 
 **闭环**:这次修的 bug 是下次的先验;修错了会被纠正链降权——记忆随办案越来越准,这正是"持续学习"在 P2 的体现。

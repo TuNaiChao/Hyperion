@@ -57,7 +57,7 @@ uv run rootrecall index ~/src/wpa_supplicant wpa_supplicant
 
 ## repo
 
-仓库注册表(`data/repos.yaml`)与生命周期管理 —— 把「索引名↔仓库路径↔角色↔bug 关联」串成一条链。
+仓库注册表(`data/repos.yaml`,可用 `ROOTRECALL_HOME` 整体迁出安装根,见[配置参考](configuration.md)「数据落点」)与生命周期管理 —— 把「索引名↔仓库路径↔角色↔bug 关联」串成一条链。
 注册表同时是 MCP 工具 `repo_path` 参数的反查源(注册表 → 索引清单 repo_path → data/repos 逐级),
 `validate_patch` / `when_introduced` / `cross_version_diff` / `merge_eval` / `export_patch` 都能**直接传注册名**。
 

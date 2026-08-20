@@ -65,14 +65,15 @@ memory_recall(query: str, top_k: int = 5, kind: str | None = None, codebase: str
 | `kind` | 过滤:`bug_lesson`(历史修法)/ `codebase_fact`(代码事实)/ `domain_knowledge`(领域知识)/ `mental_model`(经验法则);省略 = 全部。给了 kind 会多取再过滤,不会饿死结果 |
 | `codebase` 🔀 | 覆盖查哪个仓的记忆(默认 = server 默认仓);记忆按仓隔离,不串库 |
 
-定位 / 改补丁前先调它,复用同仓的历史根因和修法。输出每条带 file:line 溯源 + 置信度 + 时间;被纠正过的条目带「已被纠正」标记且检索降权(仍可见,作参考)。
+定位 / 改补丁前先调它,复用同仓的历史根因和修法。输出每条带 file:line 溯源 + 置信度 + 时间;被纠正过的条目带「已被纠正」标记且检索降权(仍可见,作参考);`unverified` 条目带「(未真机验证)」显式渲染 —— 先验可用,坐实与否一眼可辨。
 
 ### memory_memorize
 
 ```python
 memory_memorize(kind, summary, file=None, line=None, evidence=None, root_cause="", fix_patch="",
                 symptom="", blast_radius_files=None, commit_sha=None, tags=None, corrects=None,
-                kind_detail=None, confidence=None, source_url=None, codebase=None) -> str
+                kind_detail=None, confidence=None, source_url=None, codebase=None,
+                verification=None) -> str
 ```
 
 | 参数 | 说明 |
@@ -85,9 +86,10 @@ memory_memorize(kind, summary, file=None, line=None, evidence=None, root_cause="
 | `kind_detail` | 细分类:`module` / `symbol` / `architecture` / `domain`(bug_lesson 不用) |
 | `confidence` | 0..1 显式置信度;不给则按来源档取默认 |
 | `source_url` | domain_knowledge 的外部溯源 URL;给了记 `imported`(网调),不给记 `stated`(使用者笔记) |
+| `verification` | 验证档:`apply_only`(默认可早记 —— 补丁过 validate 后就记,条目自动打 `unverified` 标 + 置信封顶 0.5,recall 渲染带「(未真机验证)」)/ `real_machine`(真机验证通过后**同一补丁重提一次**,同 id 合并升级、洗掉 unverified 标) |
 | `codebase` 🔀 | 覆盖写进哪个仓的记忆 |
 
-bug-RCA / 补丁鉴定流程会自动 memorize;这个入口用于现场发现的事实 / 教训。注意:**真机验证没过的结论别记** —— 未坐实的教训会污染未来的每次召回。
+bug-RCA / 补丁鉴定流程会自动 memorize;这个入口用于现场发现的事实 / 教训。验证纪律是结构化的:**没真机验证过的教训照样能记(先验有价值),但 `unverified` 标 + 低置信让每次召回都看得见「未坐实」** —— 升级不是改条目,是同补丁重提一次。
 
 ### memory_dump
 
@@ -232,7 +234,7 @@ validate_patch(patch: str, repo_path: str) -> str
 export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str
 ```
 
-收集 repo_path 里**全部未提交改动**(`git add -A && git diff --cached`,含新增文件),写 `<out_dir>/<仓库名>.patch`。**空 diff 拒写** —— 治「改错树 / 没保存 / 被 gitignore」这类静默失败。副作用:会 stage 改动(可 `git reset` 撤)。apply 验证不在这做(对已改过的树正向 check 必失败),先过 validate_patch。
+收集 repo_path 里**全部未提交改动**(`git add -A && git diff --cached`,含新增文件),写 `<out_dir>/<仓库名>.patch`。**空 diff 拒写** —— 治「改错树 / 没保存 / 被 gitignore」这类静默失败。两个顺手活:debian 源码仓的 quilt 构建产物 `.pc/` 自动排除(否则几行修复会混进几十万行垃圾);该检出在注册表里带 bug 号时,同款补丁**另归档一份**到 `<out_dir>/<bug号>/`(`repo gc` 回收 ephemeral 后交付物仍可按 bug 追溯)。副作用:会 stage 改动(可 `git reset` 撤)。apply 验证不在这做(对已改过的树正向 check 必失败),先过 validate_patch。
 
 ### export_report
 
@@ -245,7 +247,7 @@ export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca", agent
 | `content` | 完整 markdown 报告(根因 + 证据 + 补丁要点 + validate 结果 + patch 路径 + memorize id) |
 | `agents_md` | 额外把报告蒸馏成 `<repo_path>/AGENTS.md`(「给 agent 看的 README」,opencode / claude code / cursor 原生读取)。**默认关** —— 不问不写进使用者的仓;仓里已有 AGENTS.md 时拒写不覆盖 |
 
-空 / 空白内容拒写。建议顺序:export_patch → memory_memorize → export_report(报告引用前两步的路径与 id,闭环才完整)。
+空 / 空白内容拒写。同 export_patch:检出带 bug 号时按 `<bug号>/` 双写归档。建议顺序:export_patch → memory_memorize → export_report(报告引用前两步的路径与 id,闭环才完整)。
 
 ## PR 抓取(2 个)
 

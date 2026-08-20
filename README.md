@@ -25,7 +25,7 @@
 
 ## 快速开始
 
-前置:[opencode](https://opencode.ai) 已安装并完成过一次默认模型配置(RootRecall 的 agent block 不钉模型,继承默认);两个 API key —— [DeepSeek](https://platform.deepseek.com)(LLM)+ [DashScope](https://bailian.console.aliyun.com)(embedding / reranker)。
+前置:[opencode](https://opencode.ai) 已安装并完成过一次默认模型配置(RootRecall 的 agent block 不钉模型,继承默认);两个 API key —— [DeepSeek](https://platform.deepseek.com)(LLM)+ [DashScope](https://bailian.console.aliyun.com)(embedding / reranker)。暂时没有 embedding key 也能跑**最小模式**(记忆 + 仓库管理可用,检索类等补 key),阶梯见 [configuration.md](docs/configuration.md)「最小模式」。
 
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
@@ -117,7 +117,7 @@ flowchart TB
 | 工具 | 作用 |
 |---|---|
 | `rootrecall_memory_recall` | 检索长期记忆(bug 教训 / 代码事实 / 领域知识),带 file:line 溯源,多路召回 + 时间衰减 |
-| `rootrecall_memory_memorize` | 写入记忆 / 沉淀教训;支持 `corrects` 参数显式声明"纠正了哪条旧结论" |
+| `rootrecall_memory_memorize` | 写入记忆 / 沉淀教训;支持 `corrects` 显式声明"纠正了哪条旧结论",`verification` 声明验证档(apply 过即可早记但标 unverified,真机后升级) |
 | `rootrecall_memory_dump` | 全量记忆分页导出为溯源卡,供体检 / 审计(只读) |
 
 **代码情报(8 个)**
@@ -138,8 +138,8 @@ flowchart TB
 | 工具 | 作用 |
 |---|---|
 | `rootrecall_validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
-| `rootrecall_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错) |
-| `rootrecall_export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门;可附带蒸馏一份 AGENTS.md) |
+| `rootrecall_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错;quilt 仓的 `.pc/` 构建产物自动排除;检出带 bug 号时另归档一份到 `<bug号>/`) |
+| `rootrecall_export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门;同款 bug 号归档;可附带蒸馏一份 AGENTS.md) |
 
 **PR 抓取(2 个)**
 
@@ -156,14 +156,14 @@ flowchart TB
 
 ## 记忆:带溯源与纠正闭环的知识库
 
-- **四类知识**:`codebase_fact`(代码事实,读码核实)/ `bug_lesson`(bug 教训,真机验证后才记)/ `mental_model`(经验法则,由高频教训巩固升级而来)/ `domain_knowledge`(领域知识,多权威源交叉印证或用户笔记)。
+- **四类知识**:`codebase_fact`(代码事实,读码核实)/ `bug_lesson`(bug 教训,apply 过即记并标验证档)/ `mental_model`(经验法则,由高频教训巩固升级而来)/ `domain_knowledge`(领域知识,多权威源交叉印证或用户笔记)。
 - **每条带溯源**:confidence、来源层级、evidence file:line、commit_sha、bi-temporal 双时间戳(结论过期不删除,标记为 STALE,历史可审计)。
 - **纠正闭环**:新结论可显式声明纠正对象;被纠正条目降权但不隐藏,误诊记录留档可审计。
 - **检索与巩固**:BM25(jieba 中文分词)+ 向量(sqlite-vec ANN)+ RRF 融合 + 时间衰减;高频条目自动巩固。
 
 ## 验证边界
 
-系统软件的编译 / 测试 / 复现环境重、信号歧义大,RootRecall 的自动化验证**封顶在 apply**(Tier 0:补丁能在干净工作树上打上)。编译、跑测试、复现一律不做,由真机环境上的工程师完成。补丁在干净 apply 且经真机验证之前,报告只陈述推理结论,不标 tested / verified;**真机验证通过才 memorize**。
+系统软件的编译 / 测试 / 复现环境重、信号歧义大,RootRecall 的自动化验证**封顶在 apply**(Tier 0:补丁能在干净工作树上打上)。编译、跑测试、复现一律不做,由真机环境上的工程师完成。补丁在干净 apply 且经真机验证之前,报告只陈述推理结论,不标 tested / verified。记忆分两档:`apply_only`(apply 过即可记,但条目自动打 `unverified` 标、置信封顶 0.5,recall 渲染带「(未真机验证)」)与 `real_machine`(真机验证通过后**同一补丁重提一次**即合并升级、洗掉 unverified 标)—— 教训不憋着,但没坐实的永远看得出来。
 
 ## 文档
 
@@ -178,4 +178,4 @@ Python 3.12 · uv 管理依赖 · LangGraph + LangChain · **mcp** SDK(MCP serve
 
 ## 现状
 
-三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。
+三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);部署侧 quickstart 经干净机演练(零 key / 全功能两轮),systemd 定时同步(sync 每日 + gc 每周一)样例见 [deploy/](deploy/) 且已真机上线;[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。

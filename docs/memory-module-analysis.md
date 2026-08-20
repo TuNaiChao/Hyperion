@@ -117,6 +117,15 @@ RootRecall 的记忆模块就是给 agent 装一本**跨会话、能自己变聪
 
 **置信度怎么算**(Bayes 累加,借 mnemopi):新条初始 = tier_weight · 0.5;重提同事实时 `conf += (1-conf)·tier·step`(step=0.3,封顶 1.0)。cur 越接近 1 增量越小(饱和);tier 越可信权重越大。
 
+### 验证档(verification)—— 没坐实的教训,标着用而不是憋着
+
+MCP 入口 `memory_memorize` 带 `verification` 参数(2026-08-20,真 e2e 发现"验证前禁记"的纪律 agent 守不住后,从禁令改成结构化标注):
+
+- `apply_only`(早记档):补丁过了 `validate_patch` 就可以记 —— 工具层自动打 `unverified` 标 + **置信封顶 0.5**;recall 命中时渲染带「(未真机验证)」,下游 agent 一眼看出这条没坐实。先验价值保留,可信度打折显式可见。
+- `real_machine`(升级档):真机验证通过后,**同一补丁重提一次** —— 补丁内容算 id,同 id 走 Bayes 合并,新条的 tags 替换旧的(unverified 洗掉、换上 `verified_real_machine`),置信度恢复正常累加。升级不是编辑旧条,是内容寻址的天然结果。
+
+这条与 §6 的"只追加不取代"一脉相承:验证状态是条目自描述的一部分,不靠外部流程约束。
+
 ### 文档摄取通道(外部文档 → 记忆)
 
 除了 workflow 内部产出,外部文档也能吃进来([ingest.py](../src/rootrecall/services/memory/ingest.py)),按扩展名分流:
