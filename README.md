@@ -167,6 +167,7 @@ flowchart TB
 
 ## 文档
 
+- **项目介绍**(功能 / 特色 / 关键技术实现,对外讲解版):[docs/项目介绍.md](docs/项目介绍.md)
 - **skill 路由矩阵**(8 个 skill 的判据 + 易混对):[docs/skill-routing-matrix.md](docs/skill-routing-matrix.md)
 - **三支柱模块分析**:bug 定位 [docs/bug-rca-module-analysis.md](docs/bug-rca-module-analysis.md) · 代码调研 [docs/code-research-module-analysis.md](docs/code-research-module-analysis.md) · 记忆 [docs/memory-module-analysis.md](docs/memory-module-analysis.md)
 - **参考文档**:MCP 工具 [docs/mcp-tools.md](docs/mcp-tools.md) · 配置 [docs/configuration.md](docs/configuration.md) · CLI [docs/cli.md](docs/cli.md) · MCP 使用与设置(小白版)[docs/mcp-guide.md](docs/mcp-guide.md)
