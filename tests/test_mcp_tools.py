@@ -897,17 +897,17 @@ def _tool_names(mcp) -> set[str]:
     return {t.name for t in asyncio.run(mcp.list_tools())}
 
 
-def test_mcp_tools_default_registers_all_16(monkeypatch):
-    """未设置 env → 16 个全注册(向后兼容:现有接线零影响)。"""
+def test_mcp_tools_default_registers_all_17(monkeypatch):
+    """未设置 env → 17 个全注册(向后兼容:现有接线零影响)。"""
     monkeypatch.delenv("ROOTRECALL_MCP_TOOLS", raising=False)
-    assert len(_tool_names(build_server())) == 16
+    assert len(_tool_names(build_server())) == 17
 
 
 def test_mcp_tools_preset_minimal(monkeypatch):
-    """minimal 预设 → 只注册 7 个(记忆3+search+硬门3);情报/PR 类不进 tools/list。"""
+    """minimal 预设 → 只注册 8 个(find_repo 开仓查表+记忆3+search+硬门3);情报/PR 类不进 tools/list。"""
     monkeypatch.setenv("ROOTRECALL_MCP_TOOLS", "minimal")
     assert _tool_names(build_server()) == {
-        "memory_recall", "memory_memorize", "memory_dump",
+        "memory_recall", "memory_memorize", "memory_dump", "find_repo",
         "search_codebase", "validate_patch", "export_patch", "export_report",
     }
 
@@ -923,3 +923,45 @@ def test_mcp_tools_unknown_name_fails_loud(monkeypatch):
     monkeypatch.setenv("ROOTRECALL_MCP_TOOLS", "memory_recallx")
     with pytest.raises(ValueError, match="未知工具名"):
         build_server()
+
+
+# ════════════════════════ find_repo 工具(P0 自动开仓第一环)════════════════════════
+
+def test_find_repo_hit_baseline_first(tmp_path):
+    """同项目 baseline + 该版本 ephemeral → 版本精确命中(ephemeral)主列,baseline 进 Related。"""
+    from rootrecall.services.repos.registry import RepoRegistry
+
+    reg = RepoRegistry()
+    (tmp_path / "wt").mkdir()
+    reg.register("bluez-v25", path=str(tmp_path), url="https://example.com/bluez.git",
+                 role="baseline", branch="master")
+    reg.register("bluez-v25-5.50.61", path=str(tmp_path / "wt"), role="ephemeral",
+                 from_repo="bluez-v25", branch="5.50.61", bug_id="B-9")
+
+    mcp = build_server()
+    out = _call(mcp, "find_repo", {"project": "bluez", "version": "5.50.61"})
+    assert "Matched 1" in out and "bluez-v25-5.50.61" in out and "[ephemeral]" in out
+    assert "bug=B-9" in out and "on-disk" in out
+    assert "Related" in out and "[baseline]" in out  # 相近基线单列,不冒充该版本命中
+
+
+def test_find_repo_miss_with_baseline_gives_provision_command():
+    """有基线没该版本 → 回基线清单 + 带安装根、含 --index 的自动开仓命令(不问用户)。"""
+    from rootrecall.services.repos.registry import RepoRegistry
+
+    RepoRegistry().register("bluez-v20", url="https://example.com/bluez.git",
+                            role="baseline", branch="master")
+
+    mcp = build_server()
+    out = _call(mcp, "find_repo", {"project": "bluez", "version": "5.50.61"})
+    assert "No repo matched" in out and "bluez-v20" in out
+    assert "repo checkout" in out and "--index" in out and "--ref 5.50.61" in out
+    assert "project" in out  # 命令带 --project <安装根>,bash 可原样跑
+
+
+def test_find_repo_miss_no_baseline_asks_for_url():
+    """连基线都没有 → 引导要 git 地址注册基线(或 ensure_repo),不给无法执行的命令。"""
+    mcp = build_server()
+    out = _call(mcp, "find_repo", {"project": "bluez"})
+    assert "No repo matched" in out and "--role baseline" in out and "git URL" in out
+    assert "repo checkout" not in out  # 没基线时开仓命令无从执行,不该给

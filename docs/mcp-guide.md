@@ -27,7 +27,7 @@ RootRecall 不是一个「装好就能用」的 exe,它交给 opencode 的是四
 
 | 层 | 是什么 | 比喻 | 本仓对应 |
 |---|---|---|---|
-| **MCP 工具** | 可被模型直接调用的函数,带名字、参数说明、返回结果 | **手** —— 能做的动作 | 16 个工具:`search_codebase` / `memory_recall` / `validate_patch`……见 [mcp-tools.md](mcp-tools.md) |
+| **MCP 工具** | 可被模型直接调用的函数,带名字、参数说明、返回结果 | **手** —— 能做的动作 | 17 个工具:`search_codebase` / `memory_recall` / `validate_patch`……见 [mcp-tools.md](mcp-tools.md) |
 | **skill** | 一份 `SKILL.md` 说明书,教模型「遇到什么问题、按什么顺序、组合哪些工具」 | **菜谱** —— 知道先切菜还是先热锅 | 8 个 skill:`bug-rca` / `backport` / `onboarding`……路由判据见 [skill-routing-matrix.md](skill-routing-matrix.md) |
 | **agent block** | 预制角色:指定模型 + 权限 + 禁令(比如只读 skill 禁 bash) | **工牌** —— 能进哪个车间、能碰哪台机器 | 10 个 block:8 个 subagent(`rootrecall-bug-rca` / `rootrecall-compare`……,要硬门隔离或点名时委派)+ 2 个隐藏内部 stage(`rootrecall-localize` / `rootrecall-repair`,老 delegate 流水线专用) |
 | **配置/接线** | 让以上三样被 opencode「发现」的注册动作 | **入职引导单** —— 新员工第一天该去哪报到 | `opencode.json` + [quickstart.sh](../scripts/quickstart.sh) / [wire_opencode.sh](../scripts/wire_opencode.sh) |
@@ -51,7 +51,7 @@ RootRecall 不是一个「装好就能用」的 exe,它交给 opencode 的是四
 
 打个比方:**`npx` 型 MCP 像外卖店** —— 店开在全局缓存,不管客人坐在哪个目录点单,都能出餐;**RootRecall 像自家厨房** —— 锅碗(`data/`)、灶具(`.venv`)、秘方本(`.env`)都锁在厨房里,要做菜就得回厨房,或者拉三根线把水电接到饭桌上。
 
-「拉两根线」就是接线脚本干的事(见下节)。顺带一提:本仓 16 个工具都接受 per-call `codebase` 参数,和 Serena 的 `--project` 是同一族思路 —— 路径当参数传,数据不搬家;但 `.venv`/`.env` 这些「厨房基础设施」还是得靠启动位置或 `cwd` 锚定解决。
+「拉两根线」就是接线脚本干的事(见下节)。顺带一提:本仓 17 个工具都接受 per-call `codebase` 参数,和 Serena 的 `--project` 是同一族思路 —— 路径当参数传,数据不搬家;但 `.venv`/`.env` 这些「厨房基础设施」还是得靠启动位置或 `cwd` 锚定解决。
 
 ## 四、本仓的三种接入姿势
 
@@ -83,7 +83,7 @@ bash scripts/wire_opencode.sh /path/to/bug仓
 
 也能像外卖店那样装:把 `mcp.rootrecall`(含 `cwd` 字段)合入全局配置 `~/.config/opencode/opencode.json`,8 个 skill 软链进全局目录(opencode 官方支持 `~/.claude/skills/` 等全局位置),8 个 subagent agent block 一并合入 —— 装一次,任何目录启动都可用。
 
-代价在哪:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 16 个工具 schema + 8 个 skill 元数据 + 8 个 subagent block。工具 schema 是常驻上下文(见 §二),这笔「过路费」白交的次数太多。业界共识也是工具要**少而精**(见 §五)。
+代价在哪:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 17 个工具 schema + 8 个 skill 元数据 + 8 个 subagent block。工具 schema 是常驻上下文(见 §二),这笔「过路费」白交的次数太多。业界共识也是工具要**少而精**(见 §五)。
 
 所以当前拍板:**按仓接线,不设全局** —— 用到哪个仓接哪个仓,干净、可控。真到了「哪哪都想用」的一天再翻案,方案就记在上面。更彻底的长期解法(把 `data/` 路径与启动目录解耦,让 RootRecall 也能 `uvx` 一条命令自足分发)在 backlog 里,触发条件成熟再做。
 
@@ -93,8 +93,8 @@ bash scripts/wire_opencode.sh /path/to/bug仓
 
 ### 工具怎么设计
 
-- **面向结果,不面向操作**:别把 REST 端点 1:1 包一层;把「查影响面」这类多步操作合成一个高层工具,让模型一句话完成意图。本仓 16 个工具全是这个粒度(`blast_radius` 内部做完 BFS,不暴露走图原语)。
-- **数量克制**:业界建议单 server 5–15 个工具、全局 3–5 个 server / 30–50 个工具封顶。工具 schema 常驻上下文,堆多了挤占正事 —— 有实测案例工具定义吃掉约八成上下文;Claude Code 的 ToolSearch 延迟加载就是治这个的,可省约 85% 相关 token。本仓 16 个略超单 server 建议,但全在「代码情报 + 记忆 + 硬门」一个域内、远低于全局上限,🟡 继续加工具时优先合并而不是新增。
+- **面向结果,不面向操作**:别把 REST 端点 1:1 包一层;把「查影响面」这类多步操作合成一个高层工具,让模型一句话完成意图。本仓 17 个工具全是这个粒度(`blast_radius` 内部做完 BFS,不暴露走图原语)。
+- **数量克制**:业界建议单 server 5–15 个工具、全局 3–5 个 server / 30–50 个工具封顶。工具 schema 常驻上下文,堆多了挤占正事 —— 有实测案例工具定义吃掉约八成上下文;Claude Code 的 ToolSearch 延迟加载就是治这个的,可省约 85% 相关 token。本仓 17 个略超单 server 建议,但全在「代码情报 + 记忆 + 硬门」一个域内、远低于全局上限,🟡 继续加工具时优先合并而不是新增。
 - **命名 `{服务}_{动作}`**:opencode 自动给工具加 server 名前缀(`rootrecall_search_codebase`),调用方一眼可辨来源。规范硬性要求:名字 ≤128 字符、仅字母数字与 `_` `.` `-`、server 内唯一;**工具列表顺序保持稳定** —— 顺序一变 prompt cache 全失效,白花钱。
 - **description 就是 prompt engineering**:写给「第一天上班的新员工」看 —— 何时该用、何时别用、参数怎么给、返回长什么样。Anthropic 自述**仅靠打磨工具描述**就拿过 SWE-bench 同期最佳;本仓工具描述已达「够用」,🟡 还欠一轮用 opencode e2e 真实调用记录回喂打磨(记 backlog)。
 - **错误要教学**:用 MCP 规范的 `isError: true` 返回**可行动**的修正提示(「分页已到末尾,共 N 条」),不甩裸报错。模型读得懂的错误能自我纠正。
@@ -122,8 +122,8 @@ bash scripts/wire_opencode.sh /path/to/bug仓
 - **忘了接线就在 bug 仓启动了会怎样?** → MCP 拉不起来(`uv` 在 bug 仓找不到 `.venv`)、skill 发现不了 —— 只是「连不上」,没有任何破坏;回本仓根启动或补跑接线脚本即可。
 - **全局装行不行?** → 行,方案与代价在 §四姿势 ③,当前拍板不做。
 - **`codebase` 参数该传什么名?** → 两套命名:**检索/情报类工具**(search_codebase、blast_radius、call_chain、repo_map、repo_overview、cross_version_diff、merge_eval、when_introduced)传「项目-版本线」名(如 `wpa-v25`,即索引名);**记忆类**(memory_recall / memory_memorize / memory_dump)传「项目名」(如 `wpa`)。原因:记忆按 codebase 标签隔离,传版本名会把教训锁进版本孤岛 —— v20 会话永远翻不到 v25 记下的东西;版本上下文写进 summary / evidence 即可。想裁剪注册的工具数 → `ROOTRECALL_MCP_TOOLS`(见下一条)。
-- **16 个工具全注册太占上下文,能只开一部分吗?** → 能。环境变量 `ROOTRECALL_MCP_TOOLS` 门控注册:预设 `minimal`(记忆3+search_codebase+硬门3,纯 bug-RCA 最小集)/ `research`(记忆3+情报8)/ `full`(默认,16 个),或显式逗号清单(如 `memory_recall,validate_patch`)。写在 opencode 的 `mcp.rootrecall.environment` 里即可。没注册的工具不进 tools/list,模型看不见 —— 真省上下文(permission deny 只是调不了,schema 照占位)。
-- **16 个工具各是什么?** → [mcp-tools.md](mcp-tools.md);8 个 skill 怎么选 → [skill-routing-matrix.md](skill-routing-matrix.md);配置项详解 → [configuration.md](configuration.md)。
+- **17 个工具全注册太占上下文,能只开一部分吗?** → 能。环境变量 `ROOTRECALL_MCP_TOOLS` 门控注册:预设 `minimal`(find_repo 开仓查表+记忆3+search_codebase+硬门3)/ `research`(find_repo+记忆3+情报8)/ `full`(默认,17 个),或显式逗号清单(如 `memory_recall,validate_patch`)。写在 opencode 的 `mcp.rootrecall.environment` 里即可。没注册的工具不进 tools/list,模型看不见 —— 真省上下文(permission deny 只是调不了,schema 照占位)。
+- **17 个工具各是什么?** → [mcp-tools.md](mcp-tools.md);8 个 skill 怎么选 → [skill-routing-matrix.md](skill-routing-matrix.md);配置项详解 → [configuration.md](configuration.md)。
 
 ## 参考链接
 

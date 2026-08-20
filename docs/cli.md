@@ -15,7 +15,7 @@
 | [`here`](#install--here) | 日常 | bug/工作目录轻标记(`.rootrecall.yaml` + 项目 opencode.json) |
 | [`lsp`](#lsp) | 日常 | L2 精确导航(clangd)自检 / 冒烟 |
 | [`memory`](#memory) | 日常 | 记忆管理:recall / add / ingest / list / consolidate / invalidate |
-| [`mcp serve`](#mcp-serve) | 日常 | 启动 MCP server(16 个工具的入口) |
+| [`mcp serve`](#mcp-serve) | 日常 | 启动 MCP server(17 个工具的入口) |
 | [`bug-rca`](#bug-rca) | 参考 | bug 根因定位编排器(降级参考) |
 | [`research`](#research) | 参考 | 深度调研编排器(降级参考) |
 | [`patch-report`](#patch-report) | 参考 | 批量 PR 聚合报告(降级参考) |
@@ -70,6 +70,9 @@ uv run rootrecall repo rm <名>                               # 只删记录不�
 
 # 一次性 bug 检出(worktree 共享对象库,秒级;登记 ephemeral)
 uv run rootrecall repo checkout <新名> --from <基线名> --ref <tag/分支/commit> [--bug <bug号>]
+uv run rootrecall repo checkout bluez-v20-5.50.61 --from bluez-v20 --ref 5.50.61 --bug B-17 --index
+#    --index:开仓顺手建索引 —— 播种基线索引后增量建(差异文件才重嵌,省 95%+ 嵌入费);
+#             基线没建过索引则诚实走全量;embedder 不可用跳过建索引但不挡检出
 
 # 基线同步(幂等,给定时器反复跑):fetch→ff→增量刷索引→(可选)上游三态分析报告
 uv run rootrecall repo sync [基线名...] [--analyze <发行版仓名>] [--no-index]
@@ -87,6 +90,10 @@ uv run rootrecall repo gc [--dry-run] [--max-age-days 14] [--name <名>] [--prun
 `sync --analyze` 的三态报告(已修/建议合/冲突)是纯 git 确定性事实(patch-id + merge-tree,零 LLM),
 落 `data/upstream_reports/<基线名>/<时间戳>-sync.md`;「该不该真合」走 upstream-merge skill 复核。
 定时部署样例(systemd user timer / cron)见 [deploy/](../deploy/README.md)。
+
+> **自然语言 → 自动开仓**:`find_repo` MCP 工具(17 号)按「项目+版本」查注册表;版本没有精确
+> 命中时返回基线清单 + 一条带安装根、bash 可原样跑的 `repo checkout … --index` 命令 —— agent
+> 照跑即开仓建索引,全程不问用户要路径(bug-rca/backport SKILL 已接此路径)。
 
 ## install / here
 
@@ -158,7 +165,7 @@ uv run rootrecall memory invalidate <id> [--reason "..."] [--repo X]     # 失�
 
 ## mcp serve
 
-启动 MCP server —— 16 个工具的入口,详见 [MCP 工具参考](mcp-tools.md)。
+启动 MCP server —— 17 个工具的入口,详见 [MCP 工具参考](mcp-tools.md)。
 
 ```bash
 uv run rootrecall mcp serve [--codebase X] [--transport stdio|http] [--host H] [--port P]
@@ -201,5 +208,5 @@ uv run rootrecall patch-report --prs <url...> --repo <path> --codebase <name> [-
 ## 相关文档
 
 - [配置参考](configuration.md) — 模型 / 记忆 / MCP 各段配置
-- [MCP 工具参考](mcp-tools.md) — server 起来后有哪 16 个工具
+- [MCP 工具参考](mcp-tools.md) — server 起来后有哪 17 个工具
 - [README](../README.md) — quickstart 一键配置 + opencode 接入

@@ -29,10 +29,19 @@ allowed-tools:
 - **补丁 ↔ 验证循环**:`edit` → `validate_patch`(能否干净 apply)→ `export_patch`(落盘)→ 验证(人/真机)→ 没修对就再 `edit` 再 `export`。每出一版补丁就落盘一版。
 - **验证后才沉淀**:`memorize` 和 `export_report` 是验证通过后的收尾。未验证就 memorize = 把没坐实的根因/补丁写进记忆,误导后续同类 bug。
 
+## 仓库就绪(别问用户要路径)
+
+用户话里是「项目 + 版本」(如 bluez 5.50.61)时,按序走,问用户是最后手段:
+
+1. `rootrecall_find_repo(project=<项目>, version=<版本>)` 查注册表 —— 命中 → 直接用候选的仓/索引名开工(baseline 优先;同版本 ephemeral 已开过就复用,别重开)。
+2. 没命中 → 回复里带了基线清单和**可原样跑的自动开仓命令**(bash 跑):`repo checkout <项目>-<版本> --from <基线> --ref <版本> --bug <bug标识> --index` —— worktree 秒开 + 播种基线索引增量建,一步就绪;登记 ephemeral,完事 `repo gc` 回收。
+3. 连基线都没注册 → 这时才问用户要 git 地址,register 成 baseline 后回第 2 步。
+
 ## 工具(按需调,无固定顺序)
 
 | 工具 | 何时调 | 要点 |
 |---|---|---|
+| `rootrecall_find_repo(project, version?)` | 开工前——「项目+版本」还没定用哪个仓/索引 | 项目/版本从用户问话里自己解析;候选名直接当 repo_path/codebase 用(注册名可解析) |
 | `rootrecall_memory_recall(query)` | ① 定位前(发散找线索)② 候选定稿前(定向复核,必调)——本仓库历史同类 bug | 先验是线索不是答案,以本次证据为准;定向复核的 query 用 problem_summary(现象一句话),别用原始日志原文;`codebase` 传项目名(如 `wpa`,不带版本号 —— 教训跨版本共享) |
 | `rootrecall_search_codebase(query)` | 找入口符号——传概念,别传猜的文件名 | 只回真实存在的符号,不会编路径 |
 | `rootrecall_blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |

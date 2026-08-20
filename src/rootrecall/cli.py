@@ -464,7 +464,7 @@ def cmd_patch_report(args) -> int:
 
 
 def cmd_repo(args) -> int:
-    """仓库注册表子命令(F1 repo registry):ls / register / rm / resolve。
+    """仓库注册表子命令(F1 repo registry):ls / register / rm / resolve / checkout / gc / sync。
 
     注册表(data/repos.yaml)把「索引名 ↔ 仓库路径 ↔ 角色 ↔ 生命周期」串起来:
       rootrecall repo ls                                  列出全部受管仓(角色/路径/索引名)
@@ -472,6 +472,10 @@ def cmd_repo(args) -> int:
                   [--branch B] [--bug ID] [--codebase 索引名]                  登记/更新(upsert)
       rootrecall repo rm <名>                             移除记录(只删记录不删盘上文件)
       rootrecall repo resolve <名或路径>                  反查本地绝对路径(注册表→索引清单→data/repos)
+      rootrecall repo checkout <名> --from <基线> --ref <tag> [--bug B] [--index]
+                                                          开一次性检出(worktree);--index 顺手播种建索引
+      rootrecall repo gc [--dry-run] [--name N] [--prune-orphans]               回收过期 ephemeral
+      rootrecall repo sync [名…] [--analyze <fork名>]                            基线同步+上游三态报告
     baseline = 共享基线(永久保留,repo sync 定时更新);ephemeral = 某 bug 的一次性检出
     (repo gc 级联清理);unmanaged = ensure_repo 顺手 clone 的样机/手动 index 未声明角色的仓。
     """
@@ -545,8 +549,31 @@ def cmd_repo(args) -> int:
         reg.register(args.name, path=str(wt), role="ephemeral", from_repo=args.from_repo,
                      branch=ref_desc, bug_id=args.bug, mirror=str(mirror))
         print(f"✅ 检出就绪:{wt}  ({'新建 worktree' if new_wt else '已有,复用'};镜像 {'新 clone' if new_clone else '复用'} {mirror})")
+        tail = "" if args.index else f";建索引: uv run rootrecall index {wt} {args.name}"
         print(f"   已登记 ephemeral(role=ephemeral, from={args.from_repo}"
-              f"{f', bug={args.bug}' if args.bug else ''});建索引: uv run rootrecall index {wt} {args.name}")
+              f"{f', bug={args.bug}' if args.bug else ''}){tail}")
+        if args.index:
+            # 自动开仓收尾一步:播种基线索引后增量建(P0)。cmd_index 的 data/ 落点跟 cwd ——
+            # agent 常在 bug 目录里跑这条命令,chdir 锚回安装根再建,完事恢复。
+            import os as _os
+
+            from rootrecall.services.repos.registry import _install_root
+
+            root = _install_root()
+            vs_root = Path(getattr(getattr(get_app_config().code_index, "vector_store", None),
+                                   "path", "data/code_index"))
+            seed = base.index_name if (root / vs_root / base.index_name).exists() else None
+            prev_cwd = _os.getcwd()
+            try:
+                _os.chdir(root)
+                print(f"— --index:建索引 {args.name}(seed={seed or '无 → 全量'})…")
+                cmd_index(argparse.Namespace(repo_path=str(wt), repo_name=args.name,
+                                             force=False, no_graph=False, seed=seed))
+            except Exception as e:  # noqa: BLE001 —— 索引失败不撤销检出(它已就绪),诚实提示手动补
+                print(f"⚠️ --index 建索引未完成:{e}\n"
+                      f"   检出可用;稍后补跑: uv run rootrecall index {wt} {args.name}", file=sys.stderr)
+            finally:
+                _os.chdir(prev_cwd)
         return 0
 
     if args.repo_cmd == "gc":
@@ -727,6 +754,8 @@ def main(argv: list[str] | None = None) -> int:
     r_co.add_argument("--ref", required=True, help="检出的 ref(分支/tag/commit,如 5.50.61)")
     r_co.add_argument("--bug", default=None, help="关联 bug 标识(gc 报告里给人看)")
     r_co.add_argument("--dest", default=None, help="落点(默认 data/worktrees/<name>)")
+    r_co.add_argument("--index", action="store_true",
+                      help="开仓顺手建索引:播种基线索引后增量建(embedder 不可用则诚实跳过,不挡检出)")
     r_co.set_defaults(func=cmd_repo, repo_cmd="checkout")
     r_gc = sub_repo_sub.add_parser("gc", help="回收过期 ephemeral 仓(级联:worktree+向量索引+结构图+记录;记忆不删)")
     r_gc.add_argument("--max-age-days", type=int, default=14, help="ephemeral 到期天数(默认 14)")

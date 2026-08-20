@@ -93,21 +93,22 @@ _ALL_MCP_TOOLS: frozenset[str] = frozenset({
     "search_codebase", "blast_radius", "call_chain", "cross_version_diff",
     "merge_eval", "when_introduced", "repo_map", "repo_overview",
     "validate_patch", "export_patch", "export_report", "fetch_patch", "ensure_repo",
+    "find_repo",
 })
 
 _MCP_TOOL_PRESETS: dict[str, frozenset[str] | None] = {
-    # bug-RCA 最小集:翻记忆 + 检索定位 + 三个交付硬门,够走完一条 bug-RCA 主线
+    # bug-RCA 最小集:开仓查表 + 翻记忆 + 检索定位 + 三个交付硬门,够走完一条 bug-RCA 主线
     "minimal": frozenset({
-        "memory_recall", "memory_memorize", "memory_dump",
+        "memory_recall", "memory_memorize", "memory_dump", "find_repo",
         "search_codebase", "validate_patch", "export_patch", "export_report",
     }),
-    # 调研集:记忆3 + 代码情报8(onboarding/compare/research 向;不含交付硬门与 PR 抓取)
+    # 调研集:记忆3 + 代码情报8 + find_repo(onboarding/compare/research 向;不含交付硬门与 PR 抓取)
     "research": frozenset({
-        "memory_recall", "memory_memorize", "memory_dump",
+        "memory_recall", "memory_memorize", "memory_dump", "find_repo",
         "search_codebase", "blast_radius", "call_chain", "repo_map", "repo_overview",
         "cross_version_diff", "merge_eval", "when_introduced",
     }),
-    "full": None,  # 全部 16 个(与不设置等价)
+    "full": None,  # 全部 17 个(与不设置等价)
 }
 
 
@@ -215,7 +216,7 @@ def _retrieval_bundle():
 
 
 def build_server(codebase: str | None = None, *, host: str | None = None, port: int | None = None):
-    """构造 FastMCP server,暴露十六个 RootRecall 工具给 coding agent(opencode/codex/claude code)。
+    """构造 FastMCP server,暴露十七个 RootRecall 工具给 coding agent(opencode/codex/claude code)。
 
     codebase 在此解析一次,烘焙进各工具闭包当**默认值**;memory_recall / memory_memorize /
     memory_dump / search_codebase / blast_radius / call_chain / repo_map / cross_version_diff / merge_eval 另接受 per-call `codebase` 参数覆盖此默认(多库:
@@ -224,7 +225,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     host/port:仅 streamable-http transport 用(FastMCP 在构造时吃这俩 → settings → uvicorn 监听;
        `run()` 不接收 host/port)。stdio 模式忽略。不传 → 用 FastMCP 默认(127.0.0.1:8000)。
     ROOTRECALL_MCP_TOOLS 环境变量可门控注册哪些工具(预设 minimal/research/full 或显式短名清单,
-       见 _resolve_mcp_tools);不设置 = 16 个全量注册(向后兼容)。
+       见 _resolve_mcp_tools);不设置 = 17 个全量注册(向后兼容)。
     """
     from mcp.server.fastmcp import FastMCP
 
@@ -1090,6 +1091,87 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             return f"ensure_repo 失败({name_or_url}): {e}"
         tag = "新 clone" if cloned else "命中本地(未 clone)"
         return f"✅ repo_path={path}  ({tag})"
+
+    # ── ⑫ find_repo:注册表模糊查仓(P0 自然语言→自动开仓的第一环)────────────────
+    # 用户话里是「项目+版本」(bluez 5.50.61),工具链要仓/索引 —— 这层解析从「问用户要绝对路径」
+    # 挪进注册表:命中给候选(baseline 优先);没命中给基线清单 + 带安装根、bash 可原样跑的自动开仓命令。
+    @_tool("find_repo")
+    async def find_repo(project: str, version: str | None = None, role: str | None = None) -> str:
+        """Find candidate repos in RootRecall's registry by project (+optional version).
+
+        Structured lookup — parse the user's wording yourself first ("bluez 5.50.61" →
+        project="bluez", version="5.50.61"). Fuzzy-matches registered names / branches /
+        urls (``data/repos.yaml``), baseline first; each candidate lists role / path /
+        index name / bug id / on-disk status. Other tools accept a candidate's NAME
+        directly as repo_path (registry-resolved) — no absolute paths needed.
+        role: optional filter — "baseline" | "ephemeral" | "unmanaged".
+
+        Empty result = that version isn't provisioned yet: the reply lists registered
+        baselines and a ready-to-run auto-provision command (``repo checkout ... --index``:
+        worktree from the baseline mirror + seeded incremental index, registered as
+        ephemeral) — run it via bash instead of asking the user for paths. No baselines
+        either → ask for the git URL and register one (or ensure_repo to clone directly).
+        """
+        from rootrecall.services.repos.registry import RepoRegistry, _install_root
+
+        reg = RepoRegistry()
+        hits = reg.find(project, version=version, role=role)
+        # find() 的语义:精确命中任一条就不再走 loose 兜底;一条不精确则 loose(忽略版本)全上。
+        # 对自动开仓这丢了关键信息 —— 「该版本已开仓」(直接用)vs「只有相近基线」(要开仓)是
+        # 两个结论,这里重分类:exact = 版本真配上;related = 另查一次不带版本的项目候选。
+        if version:
+            v = version.lower()
+
+            def _vmatch(r) -> bool:
+                hay = f"{r.name} {r.branch or ''}".lower()
+                hay_url = (r.url or "").rstrip("/").rsplit("/", 1)[-1].lower().removesuffix(".git")
+                return v in hay or v in hay_url
+
+            exact_hits = [r for r in hits if _vmatch(r)]
+            pool = reg.find(project, role=role)  # 不带版本:把 exact 路径排除掉的相近仓捞回来
+            exact_names = {r.name for r in exact_hits}
+            related = [r for r in pool if r.name not in exact_names]
+        else:
+            exact_hits, related = hits, []
+        desc = (f"project={project!r}"
+                + (f" version={version!r}" if version else "")
+                + (f" role={role!r}" if role else ""))
+
+        def _render(r) -> str:
+            disk = "on-disk" if r.exists_on_disk() else "⚠️ path missing"
+            idx = f"  index={r.index_name}" if r.index_name != r.name else ""
+            br = f"  @{r.branch}" if r.branch else ""
+            bug = f"  bug={r.bug_id}" if r.bug_id else ""
+            return f"- {r.name}  [{r.role}]  {r.path or 'no-path'}{idx}{br}{bug}  ({disk})"
+
+        if exact_hits:
+            out = [f"Matched {len(exact_hits)} repo(s) for {desc} (baseline first):"]
+            out += [_render(r) for r in exact_hits]
+            if related:
+                out.append(f"Related (project matched, version {version} not in them — 开仓前别用错版本):")
+                out += [_render(r) for r in related]
+            out.append("候选的 name 直接当 repo_path / codebase 传给其他工具(注册名可解析,无需绝对路径)。")
+            return "\n".join(out)
+
+        baselines = [r for r in reg.list() if r.role == "baseline"]
+        root = _install_root()
+        if not baselines:
+            return (f"No repo matched {desc}, and no baseline is registered either.\n"
+                    f"Ask the user for the git URL, then register a baseline:\n"
+                    f"  uv run --no-sync --project {root} rootrecall "
+                    f"repo register <名> --url <git地址> --role baseline [--branch <分支>]\n"
+                    f"(只想要一次性样机不走生命周期,可用 ensure_repo 直接 clone。)")
+        tag = version or "<tag或commit>"
+        name = f"{project}-{version}" if version else f"{project}-<版本>"
+        lines = [f"No repo matched {desc}"
+                 + (f"(项目有相近仓,但都没有版本 {version})" if related else "") + ". Registered baselines:"]
+        for r in baselines:
+            lines.append(f"  - {r.name}  branch={r.branch or '-'}  url={r.url or '-'}")
+        lines.append(
+            f"Auto-provision (bash,跑之前把 <…> 占位换成实值): uv run --no-sync --project {root} "
+            f"rootrecall repo checkout {name} --from <基线名> --ref {tag} --bug <bug标识> --index\n"
+            f"(worktree 秒开 + 播种基线索引增量建,一步就绪;登记 ephemeral,分析完 repo gc 回收)")
+        return "\n".join(lines)
 
     return mcp
 

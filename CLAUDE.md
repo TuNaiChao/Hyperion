@@ -37,7 +37,7 @@ RootRecall/
 │   │   ├── code_index/  # ✅ 代码理解(已实现 P1.0–P1.5):parser/chunker/embed/store/retrieval/index/lsp/outline/eval
 │   │   └── memory/      # ✅ 记忆核心(R1 已实现):MemoryService 契约 + native 后端(SQLite+FTS5+向量)+ tools/mcp
 │   ├── workflows/    # ✅ bug_rca(R3.1,降级参考)+ deep_research(R3.2)+ patch_report(P-A 1b);pr_tracker 撤
-│   ├── tools/        # ✅ MCP 工具(mcp_memory,16 个给 coding agent)+ delegate(R2,降级参考)
+│   ├── tools/        # ✅ MCP 工具(mcp_memory,17 个给 coding agent)+ delegate(R2,降级参考)
 │   └── cli.py        # ✅ 入口(models/index/lsp/memory/mcp/bug-rca/research/patch-report)
 ├── config/           # config.yaml(模型/沙箱/记忆/委托)+ opencode_rootrecall.json(opencode agent+MCP)
 ├── docs/             # 模块分析×3 + 参考×4(mcp-tools/configuration/cli/mcp-guide)+ skill-routing-matrix + 踩坑记录(面试版)

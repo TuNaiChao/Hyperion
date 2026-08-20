@@ -193,5 +193,5 @@ patch:
 
 ## 相关文档
 
-- [MCP 工具参考](mcp-tools.md) — 这套配置撑起来的 16 个工具
+- [MCP 工具参考](mcp-tools.md) — 这套配置撑起来的 17 个工具
 - [CLI 参考](cli.md) — 验证配置(`rootrecall models`)与建索引

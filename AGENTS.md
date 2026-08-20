@@ -1,6 +1,6 @@
 # RootRecall 工作须知(默认 agent 的路由指令)
 
-本仓是 RootRecall —— 给系统软件代码库做「带记忆的 bug 根因定位 + 深度调研」的 MCP tool/skill server,向当前会话提供 16 个 `rootrecall_*` MCP 工具和 8 个工作流 skill。
+本仓是 RootRecall —— 给系统软件代码库做「带记忆的 bug 根因定位 + 深度调研」的 MCP tool/skill server,向当前会话提供 17 个 `rootrecall_*` MCP 工具和 8 个工作流 skill。
 
 ## 何时走 RootRecall 工作流(路由表)
 
@@ -23,6 +23,7 @@
 
 - **默认:当前会话直接跑** —— `skill(name)` 载入菜谱后在本会话执行,保持追问连续(用户常连着追问)。
 - **逃生舱:委派 subagent** —— 同名 `rootrecall-*` subagent(各带步数预算、权限禁令、模型配置)供用户 `@` 点名或需要硬门隔离的重活使用;两者菜谱同源,结果一致。
+- **仓库就绪三步,不问路径**:用户话里是「项目+版本」(如 bluez 5.50.61)→ ① `rootrecall_find_repo(project, version)` 查注册表;② 没命中 → 按工具返回的命令 `bash` 自动开仓(`repo checkout <名> --from <基线> --ref <版本> --index`:worktree+播种索引一步就绪,登记 ephemeral);③ 连基线都没有 → 问用户要 git 地址 `repo register --role baseline` 后回②。
 
 ## 公共纪律(所有工作流共享)
 

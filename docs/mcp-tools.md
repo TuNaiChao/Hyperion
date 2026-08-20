@@ -1,4 +1,4 @@
-# MCP 工具参考(16 个)
+# MCP 工具参考(17 个)
 
 > RootRecall 把自己的差异化能力做成 MCP 工具,挂在 server 名 `rootrecall` 下 —— opencode 按 `rootrecall_<工具名>` 调用(如 `rootrecall_search_codebase`)。工具实现在 [mcp_memory.py](../src/rootrecall/tools/mcp_memory.py),配置见[配置参考](configuration.md)。
 >
@@ -46,6 +46,7 @@ server 启动时解析一个**默认 codebase**,顺序:启动参数 `--codebase`
 | [export_report](#export_report) | 硬门 | 把报告落盘成 `.md`(可另蒸馏一份 AGENTS.md) |
 | [fetch_patch](#fetch_patch) | PR 抓取 | PR 链接 → diff + 元数据(GitHub / Gerrit) |
 | [ensure_repo](#ensure_repo) | PR 抓取 | 仓库名/URL → 本地路径,缺则自动 clone |
+| [find_repo](#find_repo) | 开仓 | 「项目+版本」→ 注册表候选仓;没开过仓就给自动开仓命令 |
 
 ## 记忆(3 个)
 
@@ -263,6 +264,23 @@ ensure_repo(name_or_url: str) -> str
 ```
 
 把代码库解析成本地绝对路径:仓库名(查 `config.patch.git.remotes` 的自定义镜像)、git URL、或已有本地路径均可。本地没有则 clone 到 `data/repos/<名>`(幂等,已有即复用)。validate_patch 前仓不在本地,先调它。
+
+## 开仓(1 个)
+
+### find_repo
+
+```python
+find_repo(project: str, version: str | None = None, role: str | None = None) -> str
+```
+
+「项目+版本」→ 注册表(`data/repos.yaml`)候选仓,**候选名可直接当其他工具的 repo_path 用**
+(注册名可解析)。按注册名/分支/url 模糊匹配,baseline 优先;带 `version` 时区分**版本精确命中**
+(该版本已开仓,直接用)与 **Related**(同项目但版本没配上 —— 单列,不冒充命中)。没有精确命中时,
+返回注册的基线清单 + 一条带安装根、bash 可原样跑的自动开仓命令(`repo checkout … --index`:
+worktree + 播种基线索引增量建,一步就绪);连基线都没有则引导向用户要 git 地址注册基线。
+
+**自动开仓链的第一环**:用户问「分析 bluez 5.50.61 根因」,agent 把问话解析成
+`find_repo(project="bluez", version="5.50.61")`,命中即用、没命中照命令开仓,全程不问用户要路径。
 
 ## 共同契约
 

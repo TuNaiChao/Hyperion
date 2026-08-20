@@ -55,7 +55,7 @@ uv run rootrecall repo gc [--dry-run]                 # 回收过期 ephemeral(�
 
 | 环境变量 | 作用 |
 |---|---|
-| `ROOTRECALL_MCP_TOOLS` | 裁剪工具面省上下文:`minimal`(7 个)/ `research` / `full`(16 个,默认)或逗号清单;未注册的工具不进 tools/list |
+| `ROOTRECALL_MCP_TOOLS` | 裁剪工具面省上下文:`minimal`(8 个)/ `research` / `full`(17 个,默认)或逗号清单;未注册的工具不进 tools/list |
 | `ROOTRECALL_CLAUDE_LINK=0` | 跳过 Claude Code 记忆软链(只用 opencode 的机器) |
 
 ## 使用
@@ -79,7 +79,7 @@ opencode 启动位置三选一:**本仓库根**(默认)、**已接线的工作�
 flowchart TB
     AGENT["opencode<br/>(coding agent)"]
     SKILLS["8 个 skill · 标准流程<br/>bug-rca · patch-review · upstream-merge · backport<br/>compare · onboarding · domain-research · memory-health-check"]
-    SERVER["RootRecall MCP server · rootrecall mcp serve<br/>16 个 MCP 工具:记忆 3 · 代码情报 8 · 硬门 3 · PR 抓取 2"]
+    SERVER["RootRecall MCP server · rootrecall mcp serve<br/>17 个 MCP 工具:记忆 3 · 代码情报 8 · 硬门 3 · PR 抓取 2 · 开仓 1"]
 
     subgraph SERVICES["共享服务层"]
         SVC1["code_index + CRG<br/>代码情报"]
@@ -107,9 +107,9 @@ flowchart TB
     class CLI cli
 ```
 
-一个 MCP server、8 个 skill、16 个工具。RootRecall 不替代 opencode,只提供工具与流程。
+一个 MCP server、8 个 skill、17 个工具。RootRecall 不替代 opencode,只提供工具与流程。
 
-## 16 个 MCP 工具
+## 17 个 MCP 工具
 
 **记忆(3 个)**
 
@@ -147,6 +147,12 @@ flowchart TB
 | `rootrecall_fetch_patch` | 抓取 GitHub PR 的 diff + 元数据(标题 / 正文 / 变更文件) |
 | `rootrecall_ensure_repo` | 仓库名 / URL → 本地路径,本地没有则自动 clone |
 
+**开仓(1 个)**
+
+| 工具 | 作用 |
+|---|---|
+| `rootrecall_find_repo` | 「项目+版本」→ 注册表候选仓(名字直接当 repo_path 用);版本未开仓则返回自动开仓命令(worktree + 播种索引一步就绪)—— 自然语言到自动开仓的第一环 |
+
 ## 记忆:带溯源与纠正闭环的知识库
 
 - **四类知识**:`codebase_fact`(代码事实,读码核实)/ `bug_lesson`(bug 教训,真机验证后才记)/ `mental_model`(经验法则,由高频教训巩固升级而来)/ `domain_knowledge`(领域知识,多权威源交叉印证或用户笔记)。
@@ -171,4 +177,4 @@ Python 3.12 · uv 管理依赖 · LangGraph + LangChain · **mcp** SDK(MCP serve
 
 ## 现状
 
-三支柱全部落地:16 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。
+三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。
