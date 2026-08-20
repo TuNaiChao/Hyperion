@@ -1023,6 +1023,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             # git add -A 再 diff --cached:含新增文件(对齐 bug_rca workflow 的 observe 约定)。
             # 副作用:会 stage repo_path 的改动(可 git reset 撤;agent 已在改其工作树,同量级)。
             _git(["add", "-A"])
+            # quilt/dpkg-source 的 .pc/ 是 debian 源码仓工作树的构建产物,不是修复内容 ——
+            # 混进补丁会把 26 行修复膨胀成 30 万行垃圾(bluez v20 e2e 实测),排除之。
+            _git(["reset", "-q", "--", ".pc"])
             rc, diff, err = _git(["diff", "--cached"])
             if rc != 0:
                 return f"git diff 失败: {(err or diff).strip()[-300:]}"

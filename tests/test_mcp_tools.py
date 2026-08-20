@@ -330,6 +330,25 @@ def test_export_patch_writes_file(tmp_path):
     assert "return 1" in content, "diff 没含改动"
 
 
+def test_export_patch_excludes_quilt_pc(tmp_path):
+    """debian/quilt 源码仓:.pc/ 构建产物不进补丁(否则 26 行修复混成 30 万行垃圾)。"""
+    repo = tmp_path / "debian-repo"
+    repo.mkdir()
+    _git_repo(repo)
+    (repo / "f.c").write_text("int main(void){return 1;}\n", encoding="utf-8")      # 真修复
+    junk = repo / ".pc" / "some.patch" / "src"                                       # quilt 构建产物
+    junk.mkdir(parents=True)
+    (junk / "f.c").write_text("quilt artifact\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    mcp = build_server()
+    out = _call(mcp, "export_patch",
+                {"repo_path": str(repo), "out_dir": str(out_dir)})
+    assert "已落盘" in out, out
+    content = (out_dir / "debian-repo.patch").read_text(encoding="utf-8")
+    assert "return 1" in content, "真修复没进补丁"
+    assert ".pc/" not in content, "quilt 构建产物混进了补丁"
+
+
 # ════════════════════════ export_report 工具 ════════════════════════
 
 def test_export_report_empty(tmp_path):
