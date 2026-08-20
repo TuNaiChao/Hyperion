@@ -68,7 +68,7 @@ ask_key "DASHSCOPE_API_KEY" "embedding + reranker(阿里云百炼);https://baili
 # 最小模式提示:没配 embedding key 也能跑 —— 本地模型档(零 key)或纯记忆/结构图用法
 if ! grep -q '^DASHSCOPE_API_KEY=..' .env 2>/dev/null; then
   echo "  ℹ️ 未配 DASHSCOPE_API_KEY —— 检索/索引走不了远端 embedding,两条路:"
-  echo "     a) 零 key 本地档:`uv run uv sync --extra embedding-local` + config.yaml 把"
+  echo '     a) 零 key 本地档:`uv run uv sync --extra embedding-local` + config.yaml 把'
   echo "        embedding.provider 切 sentence_transformers、reranker.provider 设 off"
   echo "        (模型经 hf-mirror 本地下载,索引/检索全功能,数据不出本地)"
   echo "     b) 暂不建索引:记忆(recall/memorize)与仓库管理(repo register/checkout)可用,"
