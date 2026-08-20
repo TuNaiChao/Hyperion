@@ -34,7 +34,8 @@
 | `DEEPSEEK_API_KEY` | LLM(模型工厂主力 provider) | [platform.deepseek.com](https://platform.deepseek.com) | 建议必配(备选 provider 已在 config.yaml 预置,换 `OPENAI_API_KEY` 等即可) |
 | `DASHSCOPE_API_KEY` | embedding + reranker(代码检索) | [bailian.console.aliyun.com](https://bailian.console.aliyun.com) | 可缺 → `uv sync --extra embedding-local` 切本地嵌入,或先跑最小模式 |
 | `GITHUB_TOKEN` | `fetch_patch` / upstream-merge 抓 PR | [github.com/settings/tokens](https://github.com/settings/tokens) | 可缺:公开 PR 匿名可用(限速) |
-| `TAVILY_API_KEY` | domain-research 联网调研 | [tavily.com](https://tavily.com) | 可缺:仅该 skill 降级,其余不受影响 |
+
+(domain-research 的联网调研走 opencode 原生 websearch/webfetch,不需要额外 key。)
 
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall

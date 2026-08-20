@@ -137,3 +137,40 @@ def test_f2_here_marks_bug_dir(tmp_path, monkeypatch):
     assert (bug2 / "opencode.json.bak").exists()
     # 标记文件仍写了(agent 仍能读到默认检索库)。
     assert "wpa-v25" in (bug2 / ".rootrecall.yaml").read_text(encoding="utf-8")
+
+
+def test_f2_global_install_merges_agent_blocks(tmp_path):
+    """第四件套:rootrecall-* agent 块合进全局(姿势① @ 点名的实体);用户的 agent 绝不碰;卸载对称。"""
+    cfg = tmp_path / "opencode-config"
+    root = install_root()
+    cfg.mkdir(parents=True)
+    (cfg / "opencode.json").write_text(json.dumps({
+        "agent": {"my-own-agent": {"description": "用户的", "mode": "primary"}},
+        "mcp": {"other-server": {"type": "remote", "url": "https://x/mcp"}},
+    }), encoding="utf-8")
+
+    r = install_global(config_home=cfg, root=root)
+    assert "已合并" in r["agents"]
+    g = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
+    assert g["agent"]["my-own-agent"]["description"] == "用户的"        # 用户 agent 原样
+    rr_agents = sorted(k for k in g["agent"] if k.startswith("rootrecall-"))
+    assert len(rr_agents) >= 10                                        # 10 个 subagent 到位
+    assert g["mcp"]["other-server"]["url"] == "https://x/mcp"          # mcp 侧不受扰
+
+    # 幂等:重跑集合不变(升级=按模板刷新,不重复堆叠)
+    install_global(config_home=cfg, root=root)
+    g2 = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
+    assert sorted(k for k in g2["agent"] if k.startswith("rootrecall-")) == rr_agents
+
+    # 卸载:只摘 rootrecall-*,用户的 agent 留下(agent 键不空就不删)
+    uninstall_global(config_home=cfg, root=root)
+    g3 = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
+    assert set(g3["agent"]) == {"my-own-agent"}
+    assert g3["mcp"] == {"other-server": {"type": "remote", "url": "https://x/mcp"}}
+
+    # agent 摘空 → 连键一起删
+    (cfg / "opencode.json").write_text(json.dumps(
+        {"agent": {"rootrecall-bug-rca": {"description": "x"}}}), encoding="utf-8")
+    uninstall_global(config_home=cfg, root=root)
+    g4 = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
+    assert "agent" not in g4

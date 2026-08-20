@@ -685,12 +685,13 @@ def cmd_repo(args) -> int:
 
 
 def cmd_install(args) -> int:
-    """opencode 全局注册 / 卸载(F2):三件套装进 ~/.config/opencode,全机一次。
+    """opencode 全局注册 / 卸载(F2):四件套装进 ~/.config/opencode,全机一次。
 
-      rootrecall install --global           装:skills 软链 + mcp.rootrecall + AGENTS.md 路由段
+      rootrecall install --global           装:skills 软链 + mcp.rootrecall + rootrecall-* agent 块 + AGENTS.md 路由段
       rootrecall install --global --uninstall  卸:只摘自己写的东西(别人的配置绝不动)
-    装完之后任意目录 `opencode` 免接线;bug 目录里跑 `rootrecall here` 补默认检索库标记。
-    幂等可重跑(git pull 升级后重跑一次同步路由表)。
+    装完之后任意目录 `opencode` 免接线(@ 点名 rootrecall-* subagent 也可用);bug 目录里跑
+    `rootrecall here` 补默认检索库标记。
+    幂等可重跑(git pull 升级后重跑一次同步路由表/agent 块)。
     """
     from rootrecall.services.install import install_global, uninstall_global
 
@@ -699,6 +700,7 @@ def cmd_install(args) -> int:
         print(f"已卸载全局注册({r['config_home']}):")
         print(f"  skills: 摘除 {len(r['skills_removed'])} 个软链 {r['skills_removed']}")
         print(f"  mcp: {r['mcp']}")
+        print(f"  agents: {r['agents']}")
         print(f"  AGENTS.md: {r['agents_md']}")
         return 0
 
@@ -706,6 +708,7 @@ def cmd_install(args) -> int:
     print(f"✅ 已全局注册({r['config_home']};重跑同步升级,卸载加 --uninstall):")
     print(f"  skills: {len(r['skills'])} 个软链 -> {r['skills']}")
     print(f"  mcp: {r['mcp']}")
+    print(f"  agents: {r['agents']}")
     print(f"  AGENTS.md: {r['agents_md']}")
     print("之后任意目录 `opencode` 免接线直接问;bug 目录可跑 `rootrecall here --codebase <索引名>` 定默认检索库。")
     return 0
@@ -801,7 +804,7 @@ def main(argv: list[str] | None = None) -> int:
     r_sync.add_argument("--no-index", action="store_true", help="跳过索引刷新(没配 embedding key 时)")
     r_sync.set_defaults(func=cmd_repo, repo_cmd="sync")
 
-    sub_install = sub.add_parser("install", help="opencode 全局注册/卸载(skills+mcp+AGENTS.md 三件套,全机一次)")
+    sub_install = sub.add_parser("install", help="opencode 全局注册/卸载(skills+mcp+agent块+AGENTS.md 四件套,全机一次)")
     sub_install.add_argument("--global", dest="global_", action="store_true", help="装进 ~/.config/opencode(唯一模式)")
     sub_install.add_argument("--uninstall", action="store_true", help="卸载全局注册(只摘自己写的)")
     sub_install.set_defaults(func=cmd_install)

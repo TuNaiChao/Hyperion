@@ -61,11 +61,11 @@ RootRecall 不是一个「装好就能用」的 exe,它交给 opencode 的是四
 uv run rootrecall install --global
 ```
 
-一条命令干三件事:8 个 skill 软链进 `~/.config/opencode/skills/`、`mcp.rootrecall`(带 `cwd` 锚)合进全局 `opencode.json`、路由表以**标记段落**写进 `~/.config/opencode/AGENTS.md`。之后 `mkdir 任意bug目录 && cd && opencode`,停在默认界面直接一句话提问,agent 按路由表自动载入 skill —— 「空 bug 目录 + 一句自然语言 → 自动开仓 → 根因 + 补丁」的全链就是在这条路上验证的。
+一条命令干四件事:8 个 skill 软链进 `~/.config/opencode/skills/`、`mcp.rootrecall`(带 `cwd` 锚)合进全局 `opencode.json`、10 个 `rootrecall-*` subagent 定义(「逃生舱」委派的实体,不合并则任意目录 `@` 点名解析不到)同样合进全局 `opencode.json`、路由表以**标记段落**写进 `~/.config/opencode/AGENTS.md`。之后 `mkdir 任意bug目录 && cd && opencode`,停在默认界面直接一句话提问,agent 按路由表自动载入 skill —— 「空 bug 目录 + 一句自然语言 → 自动开仓 → 根因 + 补丁」的全链就是在这条路上验证的。
 
 工程细节:幂等(重跑同步升级,换目录重装会自动把旧安装根的 skill 软链换到新根);`--uninstall` 只摘自己写的,别人的配置绝不动;安装时 shell 里设了 `ROOTRECALL_HOME` 会透传进 mcp 块的 environment。
 
-代价也要讲清:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 17 个工具 schema + 8 个 skill 元数据 + 路由表。两个减负旋钮:`ROOTRECALL_MCP_TOOLS`(预设 `minimal` 8 个 / `research` / `full`,未注册的不进 tools/list,真省上下文);实在介意 AGENTS.md 全局注入的,退姿势 ③。
+代价也要讲清:opencode 的**每一个**会话 —— 哪怕和 RootRecall 毫无关系的项目 —— 都会常驻这 17 个工具 schema + 8 个 skill 元数据 + 10 个 subagent 定义 + 路由表。两个减负旋钮:`ROOTRECALL_MCP_TOOLS`(预设 `minimal` 8 个 / `research` / `full`,未注册的不进 tools/list,真省上下文);实在介意 AGENTS.md 全局注入的,退姿势 ③。
 
 > 决策演化(诚实记录):早期拍板过「按仓接线、不设全局」—— 理由就是上面这笔「过路费」。后来真实用法站在了反面:主场景是「在任何 bug 目录一句话」,每仓接一遍线的摩擦比 schema 常驻更贵,且工具门控把常驻成本压到了可控;F2 落地 `install --global` 后经多轮真机 e2e 反转拍板。代价没消失,只是换来换去选了更值的一边。
 

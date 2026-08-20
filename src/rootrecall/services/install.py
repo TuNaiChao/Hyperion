@@ -12,6 +12,11 @@ docs/rules,2026-08-19 查证),三根线都有全局等价物:
 | <bug目录>/opencode.json     | ~/.config/opencode/opencode.json 的 mcp.rootrecall|
 | <bug目录>/AGENTS.md 路由表  | ~/.config/opencode/AGENTS.md(标记段落,可整段换) |
 
+第四件套(2026-08-20):模板 `config/opencode_rootrecall.json` 的 `agent` 块(10 个
+`rootrecall-*` subagent —— AGENTS.md「逃生舱:委派 subagent」的实体定义)同样合进全局
+opencode.json;不合并的话,姿势①(任意目录提问)下用户按路由表 `@` 点名 subagent 解析不到,
+只有从本仓根启动(姿势②)才存在。
+
 之后 `mkdir 任意bug目录 && cd && opencode` 零接线直接问。`rootrecall here` 再补最后一块:
 在 bug 目录写 `.rootrecall.yaml`(默认检索库标记,agent/人都读得懂)+ 薄项目 opencode.json
 (ROOTRECALL_CODEBASE 按项目覆盖默认索引 —— opencode 配置按项目合并,这里整块写死覆盖最稳)。
@@ -206,29 +211,90 @@ def _remove_routing(cfg_home: Path) -> str:
     return "路由表标记段落已移除(其余内容保留)"
 
 
+# ── ④ agent 块:rootrecall-* subagent 定义合进全局(姿势① @ 点名的实体)────────
+
+
+def _merge_agents(cfg_home: Path, root: Path) -> str:
+    """把模板 config/opencode_rootrecall.json 的 agent 块(10 个 rootrecall-* subagent)
+    合并进全局 opencode.json,返回动作描述。
+
+    纪律与 _merge_mcp 同款:只写自家命名空间(模板列出的 rootrecall-* 键;重跑 = 幂等升级,
+    与 mcp.rootrecall 的覆盖语义一致),用户自己的 agent 键绝不碰;解析失败诚实报错不动文件
+    (同一安装流程里 .bak-rootrecall 已由 mcp 步留底)。
+    """
+    tpl_file = root / "config" / "opencode_rootrecall.json"
+    try:
+        tpl = json.loads(tpl_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return f"⚠️ 模板 {tpl_file} 解析失败({e})—— agent 块未合并"
+    agents = tpl.get("agent") or {}
+    if not agents:
+        return "模板无 agent 块(跳过)"
+
+    cfg_file = cfg_home / "opencode.json"
+    if cfg_file.exists():
+        try:
+            cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            return f"⚠️ 全局 opencode.json 解析失败({e})—— agent 块未合并"
+        if cfg.get("agent") is not None and not isinstance(cfg.get("agent"), dict):
+            return "⚠️ 全局 opencode.json 的 agent 键不是对象 —— 未动,手工合并"
+    else:
+        cfg = {}
+    merged = cfg.setdefault("agent", {})
+    for name, block in agents.items():
+        merged[name] = block
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return f"agent 块已合并({len(agents)} 个 rootrecall-* subagent)"
+
+
+def _unmerge_agents(cfg_home: Path) -> str:
+    """只摘 rootrecall-* 前缀的 agent 键(用户自己的 agent 绝不碰);摘空则连 agent 键一起删。"""
+    cfg_file = cfg_home / "opencode.json"
+    if not cfg_file.exists():
+        return "全局 opencode.json 不存在(没装过)"
+    try:
+        cfg = json.loads(cfg_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return f"⚠️ 解析失败({e})未动"
+    agents = cfg.get("agent")
+    if not isinstance(agents, dict) or not any(k.startswith("rootrecall-") for k in agents):
+        return "agent 里没有 rootrecall-*(没装过)"
+    for k in [k for k in agents if k.startswith("rootrecall-")]:
+        agents.pop(k)
+    if not agents:
+        cfg.pop("agent")
+    cfg_file.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return "rootrecall-* agent 块已移除"
+
+
 # ── 对外:install / uninstall / here ─────────────────────────────────────────
 
 
 def install_global(config_home: Path | None = None, root: Path | None = None) -> dict:
-    """全局注册三件套(skills 软链 / mcp 合并 / AGENTS.md 路由段),幂等可重跑。"""
+    """全局注册四件套(skills 软链 / mcp 合并 / agent 块 / AGENTS.md 路由段),幂等可重跑。"""
     root = root or install_root()
     cfg_home = config_home or opencode_config_home()
     return {
         "config_home": str(cfg_home),
         "skills": _link_skills(cfg_home, root),
         "mcp": _merge_mcp(cfg_home, root),
+        "agents": _merge_agents(cfg_home, root),
         "agents_md": _write_routing(cfg_home, root),
     }
 
 
 def uninstall_global(config_home: Path | None = None, root: Path | None = None) -> dict:
-    """摘除全局注册(只动自己写的东西:指向本安装根的软链 / mcp.rootrecall / 标记段落)。"""
+    """摘除全局注册(只动自己写的东西:指向本安装根的软链 / mcp.rootrecall /
+    rootrecall-* agent 块 / 标记段落)。"""
     root = root or install_root()
     cfg_home = config_home or opencode_config_home()
     return {
         "config_home": str(cfg_home),
         "skills_removed": _unlink_skills(cfg_home, root),
         "mcp": _unmerge_mcp(cfg_home),
+        "agents": _unmerge_agents(cfg_home),
         "agents_md": _remove_routing(cfg_home),
     }
 
