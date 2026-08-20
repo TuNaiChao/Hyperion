@@ -66,16 +66,34 @@ local_directory —— 姿势③在仓里放的 AGENTS.md **软链**指向本仓
 - 缓解:Multica 账号视为全信任边界;敏感场景用 self-host(compose 三件套);或专用 Unix 用户跑 daemon
   (Multica 自己的注释都建议隔离交给部署边界,MUL-5578)。
 
-## 五、真机探针清单(20 分钟,建议顺序)
+## 五、真机探针清单(2026-08-20 已执行,全绿 ✅)
 
-1. **连通**:`multica setup` 后 daemon online、检测到 opencode(桌面 App 里 Refresh 或等探测周期)。
-2. **MCP + data/ 冒烟**(上轮待验证点①,源码已答、跑一遍求安心):issue 让 agent
-   「调 rootrecall_memory_recall 查 bluez SDP,再 memorize 一条 codebase_fact: test-multica-probe,
-   贴两个工具的返回」→ 验证工具注册 + `data/` 写入 + issue 回帖链路;事后 recall 确认条目在。
-3. **一句话开问全链**(待验证点②):bug 目录放问题 txt,issue 一句话 → 根因卡;评论「生成补丁」→
-   `data/bug_rca/` 出 `.patch`。顺带观察:评论是否真的续接了同一 session(看 daemon 日志里的
-   `--session` 参数)、bug 目录任务后是否 round-trip 干净(无残留 AGENTS.md marker 块/`.opencode/`)。
-4. **可选:长任务心跳**:让 RCA 自然跑 30 分钟+,确认无墙钟误杀(runtime_sweeper 只在 daemon 失联才杀)。
+实测环境:本机已有 **self-host 栈**(docker:backend v0.3.34 + pgvector,`~/multica` 的 compose;CLI
+v0.3.34 指向 localhost:8080)——非云版,prompt 全程不出本机。注意 v0.3.34 早于 local_directory 特性,
+探针 3 用「问题描述内联在 issue」替代 bug 目录形态;升级 0.4.x 后可补测 local_directory。
+
+1. ✅ **连通**:`multica daemon start` → runtime online,opencode 被自动探测(顺带探测到 codex/kimi;
+   探测走 `~/.local/bin/opencode` 软链)。
+2. ✅ **MCP + data/ 冒烟**:issue 指令调 `rootrecall_memory_recall` + `memorize` → 两工具返回原文贴
+   回 issue;本地 CLI 复核条目 `c1f4184c` 第一命中(写入真实落库)。
+3. ✅ **一句话开问全链**:RCA 6m13s / 51 工具调用 → 根因卡与 7 月 e2e 金标**逐点吻合**
+   (lib/sdp.c:1261 SEQ32 INT_MAX 溢出);评论「根因已确认。生成对应的补丁。」→ 1m07s / 8 工具调用 →
+   `<ROOTRECALL_HOME>/bug_rca/bluez.patch`(53 行三合一,与金标同款 —— 记忆变现走通远程链路)。
+4. ✅ **用户触发纪律(计划外验证)**:RCA 阶段零落盘(bug_rca/ 目录都不存在);「生成补丁」评论后才
+   export —— SKILL 新措辞在 multica 语境同样生效。
+5. ✅ **评论触发 + session 续接**:后续评论任务日志见 `resume_session=true reuse_workdir=true`,
+   argv 带 `--session ses_…`;opencode 续接失败不可检测的问题未出现。
+
+**真机新发现(已修/已记)**:① daemon 环境缺模型 key —— opencode 全局配置的 apiKey 是
+`{env:UNIONTECH_AI_API_KEY}` 引用,daemon 拉起的 opencode 没这个 env → "Invalid API key";修复用
+`multica agent env set <agent-id> --custom-env-file`(0600 文件,存本机 self-host DB)。这是踩坑#34
+(headless 环境变量)家族的第三个入口(终端手动 → systemd service → multica daemon)。② 交付物路径:
+`data/bug_rca` 在 ROOTRECALL_HOME 设置时 reanchor 成 `<ROOTRECALL_HOME>/bug_rca/`(剥 data/ 前缀,
+registry.py:55-67)。③ v0.3.34 差异:prompt 在 argv 而非 stdin(0.4.x 改 stdin);agent update 不支持
+改 custom-env(要用 `agent env set`)。
+
+遗留:daemon 保持运行(要停:`multica daemon stop`);探针 issue TES-3/TES-4 留档;升 0.4.x 可选
+(只为 local_directory 的 bug 目录形态)。
 
 ## 六、开放问题(不阻塞接入)
 

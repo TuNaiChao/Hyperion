@@ -9,4 +9,6 @@
 - #2925 只读 gitdir = Codex 自带 Landlock 沙箱,与 opencode 无关;Multica 自己零沙箱。
 - **避开**:别把姿势③(wire_opencode)接线的仓交给 Multica —— AGENTS.md 软链会被 marker 块穿透写入本仓根(runtime_config.go 追加语义,MUL-2753)。
 
-待办:20 分钟真机探针(MCP+data/ 冒烟 → 一句话 e2e + 评论「生成补丁」续接验证),见 05 §五。用户侧触发词:「接入 multica」。
+**2026-08-20 探针已跑,全绿**(实测在本机 self-host 栈 v0.3.34,非云版):RCA 根因卡与金标逐点吻合、评论「生成补丁」→ 53 行三合一补丁落 `<ROOTRECALL_HOME>/bug_rca/`、用户触发纪律生效、`--session` 续接实测可见。真机新坑:daemon 缺 `{env:UNIONTECH_AI_API_KEY}` → "Invalid API key",修法 `multica agent env set <id> --custom-env-file`(踩坑#34 家族第三入口:终端→systemd→multica daemon)。daemon 在跑(停:`multica daemon stop`);升 0.4.x 可选(只为 local_directory)。
+
+待办:~无阻塞项;若要 bug 目录形态(local_directory)需升 self-host 栈到 0.4.x。用户侧触发词:「接入 multica」。
