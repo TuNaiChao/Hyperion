@@ -47,6 +47,10 @@ opencode/
 #   git clone https://github.com/TuNaiChao/deepseek-harness.git  (DeepSeek 官方 agent harness,克隆自 fork;
 #   调研 RootRecall 作为其宿主之一的集成方案,见 .claude/memory/dsh-integration-plan.md)
 deepseek-harness/
+#   git clone https://github.com/multica-ai/multica  (Multica:人+agent 团队协作平台;
+#   调研把 RootRecall+opencode 设备纳管为节点的接入方案,见 docs/research/multica/)
+#   注意根锚定 /multica/:无锚点的 multica/ 会连 docs/research/multica/ 一起误伤
+/multica/
 
 # 旧文档归档(docs → docs-bak,2026-08-14):调研/设计/已完成/archive 旧树整体挪到 docs-bak,
 # 新 docs/ 待重组。docs-bak 作只读归档排除出版本库;旧路径链接(CLAUDE.md / .claude/memory/)等
