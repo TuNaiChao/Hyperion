@@ -208,9 +208,11 @@ def _retrieval_bundle():
 
     cfg = get_app_config()
     embedder = create_embedder(cfg.code_index.embedding)
+    from rootrecall.services.repos.registry import reanchor_data_path
+
     vs_cfg = getattr(cfg.code_index, "vector_store", None)
     vs_path = getattr(vs_cfg, "path", "data/code_index") if vs_cfg else "data/code_index"
-    store = LanceDBStore(vs_path)
+    store = LanceDBStore(reanchor_data_path(vs_path))
     reranker = create_reranker(getattr(cfg.code_index, "reranker", None))
     return embedder, store, reranker
 
@@ -980,7 +982,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                     "或被 .gitignore 忽略。export_patch 不写空补丁 —— 回去确认你真的改对了文件。")
 
         repo_name = repo.name
-        out = Path(out_dir)
+        from rootrecall.services.repos.registry import reanchor_data_path
+
+        out = reanchor_data_path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         patch_path = out / f"{repo_name}.patch"
         patch_path.write_text(diff, encoding="utf-8")
@@ -1027,7 +1031,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         # 空路径兜底 "report",绝不因 repo_path 小瑕疵挡住报告上盘(交付物宁可落盘)。
         name = Path(repo_path).name if repo_path and repo_path.strip() else ""
         repo_name = name or "report"
-        out = Path(out_dir)
+        from rootrecall.services.repos.registry import reanchor_data_path
+
+        out = reanchor_data_path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
         report_path = out / f"{repo_name}-rca.md"
         report_path.write_text(content, encoding="utf-8")

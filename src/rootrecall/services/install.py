@@ -49,12 +49,19 @@ def opencode_config_home() -> Path:
 
 def mcp_server_block(root: Path | None = None) -> dict:
     """全局注册写的 mcp.rootrecall 块 —— 与 config/opencode_rootrecall.json 同形,cwd 焊绝对路径
-    (MCP 进程锚回安装根:uv 找得到 .venv、data/ 不漂;见 wire_opencode.sh 门3 同理)。"""
+    (MCP 进程锚回安装根:uv 找得到 .venv、data/ 不漂;见 wire_opencode.sh 门3 同理)。
+    装机时 shell 里设了 ROOTRECALL_HOME → 透传给 MCP 子进程(opencode 拉起时是干净 env,
+    不透传则 server 看不到迁家配置)。"""
+    import os
+
+    env = {"PYTHONUNBUFFERED": "1"}
+    if home := (os.environ.get("ROOTRECALL_HOME") or "").strip():
+        env["ROOTRECALL_HOME"] = home
     return {
         "type": "local",
         "command": ["uv", "run", "--no-sync", "rootrecall", "mcp", "serve"],
         "cwd": str(root or install_root()),
-        "environment": {"PYTHONUNBUFFERED": "1"},
+        "environment": env,
         "enabled": True,
         "timeout": 120000,
     }

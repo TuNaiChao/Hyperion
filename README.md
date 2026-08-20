@@ -56,6 +56,7 @@ uv run rootrecall repo gc [--dry-run]                 # 回收过期 ephemeral(�
 | 环境变量 | 作用 |
 |---|---|
 | `ROOTRECALL_MCP_TOOLS` | 裁剪工具面省上下文:`minimal`(8 个)/ `research` / `full`(17 个,默认)或逗号清单;未注册的工具不进 tools/list |
+| `ROOTRECALL_HOME` | 数据落点整体迁出安装根(如 `~/.local/share/rootrecall`):索引/记忆/镜像/注册表/报告全跟走,`git pull` 升级不碰数据;不设 = 现状不变。详见 [configuration.md](docs/configuration.md) |
 | `ROOTRECALL_CLAUDE_LINK=0` | 跳过 Claude Code 记忆软链(只用 opencode 的机器) |
 
 ## 使用

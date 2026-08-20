@@ -78,9 +78,12 @@ class NativeMemoryService(MemoryService):
 
     @classmethod
     def from_config(cls, cfg: AppConfig, **host_hooks: Any) -> NativeMemoryService:
+        from rootrecall.services.repos.registry import reanchor_data_path
+
         mcfg = cfg.memory
         ncfg = mcfg.native
-        store = MemoryStore(mcfg.store_path, auto_index=ncfg.auto_index, ann_threshold=ncfg.ann_threshold)
+        store = MemoryStore(reanchor_data_path(mcfg.store_path),
+                            auto_index=ncfg.auto_index, ann_threshold=ncfg.ann_threshold)
 
         # embedder / reranker / code_bundle 都复用 code_index(embed/rerank=off 则不用)
         embedder = reranker = code_bundle = None

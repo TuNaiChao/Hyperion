@@ -21,15 +21,15 @@ from pathlib import Path
 
 
 def mirrors_root() -> Path:
-    from rootrecall.services.repos.registry import _install_root
+    from rootrecall.services.repos.registry import data_root
 
-    return _install_root() / "data" / "mirrors"
+    return data_root() / "mirrors"
 
 
 def worktrees_root() -> Path:
-    from rootrecall.services.repos.registry import _install_root
+    from rootrecall.services.repos.registry import data_root
 
-    return _install_root() / "data" / "worktrees"
+    return data_root() / "worktrees"
 
 
 def _git(args: list[str], *, cwd: Path | None = None, timeout: int = 600) -> subprocess.CompletedProcess:
@@ -191,10 +191,10 @@ def sync_repo(
     # 增量刷新索引(检索跟代码同步;embedder None = 调用方明确不要 embed,跳过并注明)。
     if refresh_index and work is not None and embedder is not None:
         from rootrecall.services.code_index.index import build_index
-        from rootrecall.services.repos.registry import _install_root
+        from rootrecall.services.repos.registry import data_root
 
         stats = build_index(work, rec.index_name, embedder,
-                            code_index_dir or _install_root() / "data" / "code_index")
+                            code_index_dir or data_root() / "code_index")
         out["index"] = {"mode": stats.get("mode"), "indexed": stats.get("indexed")}
     elif refresh_index and work is not None:
         out["index"] = "skipped(未提供 embedder;CLI --no-index 或 key 缺失时如此)"
@@ -251,9 +251,9 @@ def _write_sync_report(rec, fork_rec, result: dict, *, reports_dir: Path | None)
     """三态分析报告落 markdown:data/upstream_reports/<基线名>/<时间戳>.md。"""
     import datetime
 
-    from rootrecall.services.repos.registry import _install_root
+    from rootrecall.services.repos.registry import data_root
 
-    root = reports_dir or _install_root() / "data" / "upstream_reports"
+    root = reports_dir or data_root() / "upstream_reports"
     ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     d = root / rec.name
     d.mkdir(parents=True, exist_ok=True)

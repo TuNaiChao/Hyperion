@@ -40,7 +40,9 @@ def ensure_repo(name_or_path: str, *, cfg: AppConfig | None = None) -> tuple[Pat
     """
     cfg = cfg or get_app_config()
     git_cfg = cfg.patch.git
-    clone_dir = Path(git_cfg.clone_dir)
+    from rootrecall.services.repos.registry import reanchor_data_path
+
+    clone_dir = reanchor_data_path(git_cfg.clone_dir)
 
     # 1. 显式本地路径直接命中 —— 但只认「路径样」输入(绝对路径或含分隔符);
     #    光秃秃的名字(如 "src"/"wpa")不当本地路径,否则碰巧跟 cwd 下同名目录撞车

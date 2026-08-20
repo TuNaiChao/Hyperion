@@ -65,6 +65,16 @@ echo "[2/6] .env 密钥(必填 2 个;其余按需 key 见 .env.example 注释,�
 ask_key "DEEPSEEK_API_KEY"  "所有 LLM 角色(deepseek-v4-pro / v4-flash);https://platform.deepseek.com"
 ask_key "DASHSCOPE_API_KEY" "embedding + reranker(阿里云百炼);https://bailian.console.aliyun.com"
 
+# 最小模式提示:没配 embedding key 也能跑 —— 本地模型档(零 key)或纯记忆/结构图用法
+if ! grep -q '^DASHSCOPE_API_KEY=..' .env 2>/dev/null; then
+  echo "  ℹ️ 未配 DASHSCOPE_API_KEY —— 检索/索引走不了远端 embedding,两条路:"
+  echo "     a) 零 key 本地档:`uv run uv sync --extra embedding-local` + config.yaml 把"
+  echo "        embedding.provider 切 sentence_transformers、reranker.provider 设 off"
+  echo "        (模型经 hf-mirror 本地下载,索引/检索全功能,数据不出本地)"
+  echo "     b) 暂不建索引:记忆(recall/memorize)与仓库管理(repo register/checkout)可用,"
+  echo "        检索类工具(search_codebase 等)等补 key 再建 —— 详见 docs/configuration.md「最小模式」"
+fi
+
 # ── [3/6] 验证配置 + 模型工厂加载(models 只查非空,不打印 key 值)────────
 echo "[3/6] 验证模型配置"
 uv run rootrecall models

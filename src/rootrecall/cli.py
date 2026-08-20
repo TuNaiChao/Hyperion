@@ -71,7 +71,10 @@ def cmd_index(args) -> int:
         print(f"错误:路径不存在: {repo_path}", file=sys.stderr)
         return 1
     repo_name = args.repo_name or repo_path.resolve().name
-    vs_path = getattr(getattr(cfg.code_index, "vector_store", None), "path", "data/code_index")
+    from rootrecall.services.repos.registry import reanchor_data_path
+
+    vs_path = reanchor_data_path(
+        getattr(getattr(cfg.code_index, "vector_store", None), "path", "data/code_index"))
 
     # ── 0)播种(F5):小版本索引从同线基线索引拷贝起步,增量只重嵌差异文件 ──────
     # 场景:v20 的 5.50.61 出 bug,索引名 bluez-v20-5.50.61;它和基线 bluez-v20 绝大多数
@@ -79,8 +82,8 @@ def cmd_index(args) -> int:
     # (远端 embedding 按 token 计费,这条能省下 95%+ 的费用和时间)。幂等:目标已存在不拷。
     if args.seed:
         seed_vec, target_vec = Path(vs_path) / args.seed, Path(vs_path) / repo_name
-        seed_sg = Path("data/structgraph") / args.seed
-        target_sg = Path("data/structgraph") / repo_name
+        seed_sg = reanchor_data_path("data/structgraph") / args.seed
+        target_sg = reanchor_data_path("data/structgraph") / repo_name
         if target_vec.exists():
             print(f"播种跳过:{target_vec} 已存在(--seed 只在目标索引不存在时拷贝)。")
         elif seed_vec.exists():
@@ -93,7 +96,15 @@ def cmd_index(args) -> int:
             print(f"已播种结构图:{args.seed} → {repo_name}(增量刷新只重解析改动文件)。")
 
     # ── 1)向量索引(search_codebase 用)──────────────────────────────────
-    embedder = create_embedder(cfg.code_index.embedding)
+    try:
+        embedder = create_embedder(cfg.code_index.embedding)
+    except ValueError as e:  # 零 key(远端档没配 api_key)→ 给最小模式指路,不甩栈
+        print(f"错误:{e}\n"
+              f"  零 key 最小模式:config.yaml 把 embedding.provider 切 sentence_transformers\n"
+              f"  (先 `uv run uv sync --extra embedding-local`,模型走 hf-mirror 本地下载),\n"
+              f"  并把 reranker.provider 设 off;或 .env 配上远端 key。详见 docs/configuration.md「最小模式」。",
+              file=sys.stderr)
+        return 2
     stats = build_index(repo_path, repo_name, embedder, vs_path, force=args.force)
     n = stats.get("indexed", stats.get("total_chunks", "?"))
     print(f"向量索引完成 [{stats.get('mode')}]:{repo_name}  {n} chunk  "
@@ -107,14 +118,15 @@ def cmd_index(args) -> int:
 
     from rootrecall.services.code_index.code_graph import CodeGraph  # CRG 可选 extra,放函数内 lazy import
 
-    graph_dir = Path("data/structgraph") / repo_name
+    graph_dir = reanchor_data_path("data/structgraph") / repo_name
     db_path = graph_dir / "graph.db"
     if db_path.exists() and not args.force:
         # 图已建 → 增量刷新(而非旧版的整个跳过:图会静默陈旧,--force 才重建太钝)。
         # 向量索引上面本就按 manifest 增量;这里补齐结构图的增量路:只重解析
         # built_head 快照以来改动 + 未跟踪新增的文件,社区按需重检测,拿不准自动退全量。
         try:
-            _g, summary = CodeGraph.update(repo_root=str(repo_path), repo_name=repo_name)
+            _g, summary = CodeGraph.update(repo_root=str(repo_path), repo_name=repo_name,
+                                           base_dir=str(graph_dir.parent))
             mode = summary.get("mode")
             if mode == "incremental":
                 print(f"结构图已增量刷新:{db_path}"
@@ -137,7 +149,8 @@ def cmd_index(args) -> int:
         shutil.rmtree(graph_dir)  # --force 清旧图,免 stale 节点混进新图
     print(f"结构图建图中(CRG tree-sitter 解析全仓,大仓需几分钟):{repo_path} …")
     try:
-        CodeGraph.build(repo_root=str(repo_path), repo_name=repo_name)
+        CodeGraph.build(repo_root=str(repo_path), repo_name=repo_name,
+                        base_dir=str(graph_dir.parent))
         print(f"结构图建好:{db_path}(blast_radius / call_chain / repo_map 可用)。")
     except ImportError as e:  # CRG(code-review-graph extra)没装 → 提示装,不挡向量索引
         print(f"结构图跳过:CRG 未装({e})。装它:`uv sync --extra code-review-graph`。\n"
@@ -553,19 +566,20 @@ def cmd_repo(args) -> int:
         print(f"   已登记 ephemeral(role=ephemeral, from={args.from_repo}"
               f"{f', bug={args.bug}' if args.bug else ''}){tail}")
         if args.index:
-            # 自动开仓收尾一步:播种基线索引后增量建(P0)。cmd_index 的 data/ 落点跟 cwd ——
-            # agent 常在 bug 目录里跑这条命令,chdir 锚回安装根再建,完事恢复。
+            # 自动开仓收尾一步:播种基线索引后增量建(P0)。路径经 reanchor(ROOTRECALL_HOME
+            # 设置时 data/ 相对路径改锚新家;未设 = 现状)。cmd_index 其余相对落点已同款处理,
+            # chdir 锚安装根保留作兜底(agent 常在 bug 目录里跑这条命令)。
             import os as _os
 
-            from rootrecall.services.repos.registry import _install_root
+            from rootrecall.services.repos.registry import _install_root, reanchor_data_path
 
-            root = _install_root()
-            vs_root = Path(getattr(getattr(get_app_config().code_index, "vector_store", None),
-                                   "path", "data/code_index"))
-            seed = base.index_name if (root / vs_root / base.index_name).exists() else None
+            vs_root = reanchor_data_path(
+                getattr(getattr(get_app_config().code_index, "vector_store", None),
+                        "path", "data/code_index"))
+            seed = base.index_name if (vs_root / base.index_name).exists() else None
             prev_cwd = _os.getcwd()
             try:
-                _os.chdir(root)
+                _os.chdir(_install_root())
                 print(f"— --index:建索引 {args.name}(seed={seed or '无 → 全量'})…")
                 cmd_index(argparse.Namespace(repo_path=str(wt), repo_name=args.name,
                                              force=False, no_graph=False, seed=seed))

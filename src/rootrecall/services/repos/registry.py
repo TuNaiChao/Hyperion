@@ -33,20 +33,44 @@ ROLE_EPHEMERAL = "ephemeral"
 ROLE_UNMANAGED = "unmanaged"
 _ROLES = (ROLE_BASELINE, ROLE_EPHEMERAL, ROLE_UNMANAGED)
 
-# 注册表落点:env 覆盖 > <安装根>/data/repos.yaml。锚到安装根(与 data/ 其余同源),
+# 注册表落点:env 覆盖 > data 根下 repos.yaml。锚到安装根(与 data/ 其余同源),
 # 不随调用方 cwd 漂(MCP server 虽 chdir 到根,CLI 可能从任意目录调)。
 _ENV_REGISTRY = "ROOTRECALL_REPOS_FILE"
+
+# data 落点根:env 覆盖 > <安装根>/data。设 ROOTRECALL_HOME 可把全部数据(注册表/镜像/
+# worktree/索引/结构图/记忆/报告)迁出仓库克隆 —— git pull 升级不碰数据,多任务并行也不挤。
+_ENV_DATA_HOME = "ROOTRECALL_HOME"
+
+
+def data_root() -> Path:
+    """data 落点根:``ROOTRECALL_HOME``(非空)优先,否则 ``<安装根>/data``。
+
+    单一真相 —— registry / mirror / resolver / memory / 检索 / 交付物全部经它取 data 子目录,
+    测试 monkeypatch 本模块 ``_install_root`` 即可整体改锚(未设 env 时回落走它)。
+    """
+    p = (os.environ.get(_ENV_DATA_HOME) or "").strip()
+    return Path(p).expanduser() if p else _install_root() / "data"
+
+
+def reanchor_data_path(p: str | Path) -> Path:
+    """config/默认参数里 ``data/`` 前缀的**相对**路径,在 ROOTRECALL_HOME 设置时改锚到新家
+    (去掉 ``data/`` 段,如 ``data/memory`` → ``$HOME/memory``);其余一律原样 —— **env 未设时
+    零行为变化**(这是向后兼容的关键:不设就完全等于现状,老接线/老测试不受扰)。
+
+    绝对路径 / 不带 ``data/`` 前缀的相对路径(用户显式自定)不搬,尊重用户选择。
+    """
+    s = str(p)
+    if not (os.environ.get(_ENV_DATA_HOME) or "").strip():
+        return Path(p)
+    if Path(s).is_absolute() or not s.startswith("data/"):
+        return Path(p)
+    return data_root() / s[len("data/"):]
 
 
 def registry_path() -> Path:
     if p := os.environ.get(_ENV_REGISTRY):
         return Path(p).expanduser()
-    here = Path(__file__).resolve()
-    for parent in [here, *here.parents]:
-        candidate = parent / "data" / "repos.yaml"
-        if (parent / "pyproject.toml").exists() or candidate.parent.exists():
-            return candidate
-    return Path.cwd() / "data" / "repos.yaml"
+    return data_root() / "repos.yaml"
 
 
 @dataclass
@@ -249,11 +273,11 @@ def _install_root() -> Path:
 
 
 def _default_index_dir() -> Path:
-    return _install_root() / "data" / "code_index"
+    return data_root() / "code_index"
 
 
 def _default_clone_dir() -> Path:
-    return _install_root() / "data" / "repos"
+    return data_root() / "repos"
 
 
 def _today() -> str:
@@ -293,7 +317,7 @@ def gc_ephemeral(
     reg = registry or RepoRegistry()
     today = today or _today()
     idx_root = Path(code_index_dir) if code_index_dir else _default_index_dir()
-    sg_root = Path(structgraph_dir) if structgraph_dir else _install_root() / "data" / "structgraph"
+    sg_root = Path(structgraph_dir) if structgraph_dir else data_root() / "structgraph"
 
     def _age_days(rec: RepoRecord) -> int | None:
         if not rec.created_at:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 import yaml
@@ -115,8 +116,15 @@ def test_resolve_prefers_registry_over_others(tmp_path):
     assert source == "registry[unmanaged]"
 
 
-def test_resolve_falls_back_to_manifest_and_clone_dir(tmp_path):
-    """注册表没有时:索引清单 repo_path(F1 起记录)→ data/repos 老落点,逐级兜底。"""
+def test_resolve_falls_back_to_manifest_and_clone_dir(tmp_path, monkeypatch):
+    """注册表没有时:索引清单 repo_path(F1 起记录)→ data/repos 老落点,逐级兜底。
+
+    必须把 _install_root 锚到 tmp:第二次调用没传 code_index_dir,manifest 兜底走
+    _default_index_dir() —— 不锚会撞进真实 data/code_index(真实 wpa manifest 已记
+    repo_path,撞上即返回真仓,踩坑#24 同类:真实数据变化 → 测试隐含假设失效)。"""
+    import rootrecall.services.repos.registry as reg_mod
+
+    monkeypatch.setattr(reg_mod, "_install_root", lambda: tmp_path / "install")
     idx_root = tmp_path / "code_index"
     src = tmp_path / "real_src"
     src.mkdir()
@@ -170,3 +178,63 @@ def test_ensure_repo_registers_after_clone(tmp_path, monkeypatch):
     # 第二次:走注册表命中(不重 clone),仍是幂等。
     _, cloned2 = ensure_repo("myrepo", cfg=cfg)
     assert cloned2 is False
+
+
+# ════════════════════ ROOTRECALL_HOME:data 根迁出(P1 部署轻量化)════════════════════
+
+def test_data_root_env_first_and_fallback(tmp_path, monkeypatch):
+    """data_root:env(非空)优先;空串视为未设 → 回落 <安装根>/data(monkeypatch 可改锚)。"""
+    import rootrecall.services.repos.registry as reg_mod
+
+    monkeypatch.delenv("ROOTRECALL_HOME", raising=False)
+    monkeypatch.setattr(reg_mod, "_install_root", lambda: tmp_path / "install")
+    assert reg_mod.data_root() == tmp_path / "install" / "data"  # 未设 → 安装根回落
+
+    monkeypatch.setenv("ROOTRECALL_HOME", str(tmp_path / "home"))
+    assert reg_mod.data_root() == tmp_path / "home"               # env 优先
+
+    monkeypatch.setenv("ROOTRECALL_HOME", "   ")                  # 空白 = 未设
+    assert reg_mod.data_root() == tmp_path / "install" / "data"
+
+
+def test_reanchor_data_path_zero_behavior_without_env(tmp_path, monkeypatch):
+    """reanchor 的向后兼容硬约束:env 未设时一律原样(相对串保持相对,不绝对化、不搬)。"""
+    monkeypatch.delenv("ROOTRECALL_HOME", raising=False)
+    from rootrecall.services.repos.registry import reanchor_data_path
+
+    assert reanchor_data_path("data/memory") == Path("data/memory")
+    assert reanchor_data_path("/abs/data/x") == Path("/abs/data/x")
+    assert reanchor_data_path("mydir/x") == Path("mydir/x")
+
+
+def test_reanchor_data_path_moves_data_prefix(tmp_path, monkeypatch):
+    """env 设了:仅「data/ 前缀的相对路径」去 data/ 段锚到新家;绝对/其他相对不动(尊重用户选择)。"""
+    monkeypatch.setenv("ROOTRECALL_HOME", str(tmp_path / "home"))
+    from rootrecall.services.repos.registry import reanchor_data_path
+
+    assert reanchor_data_path("data/memory") == tmp_path / "home" / "memory"
+    assert reanchor_data_path("data/bug_rca") == tmp_path / "home" / "bug_rca"
+    assert reanchor_data_path("/abs/data/memory") == Path("/abs/data/memory")  # 绝对不搬
+    assert reanchor_data_path("mydata/x") == Path("mydata/x")                  # 非 data/ 前缀不搬
+
+
+def test_registry_path_follows_data_root(tmp_path, monkeypatch):
+    """注册表默认落点跟 data 根走(env REPOS_FILE 仍最高优先)。"""
+    import rootrecall.services.repos.registry as reg_mod
+
+    monkeypatch.delenv("ROOTRECALL_REPOS_FILE", raising=False)
+    monkeypatch.setenv("ROOTRECALL_HOME", str(tmp_path / "home"))
+    assert reg_mod.registry_path() == tmp_path / "home" / "repos.yaml"
+
+    monkeypatch.setenv("ROOTRECALL_REPOS_FILE", str(tmp_path / "explicit.yaml"))
+    assert reg_mod.registry_path() == tmp_path / "explicit.yaml"
+
+
+def test_mcp_server_block_passes_home(monkeypatch):
+    """install 的 mcp 块:装机 shell 设了 ROOTRECALL_HOME → 透传给 MCP 子进程(opencode 干净 env)。"""
+    from rootrecall.services.install import mcp_server_block
+
+    monkeypatch.delenv("ROOTRECALL_HOME", raising=False)
+    assert "ROOTRECALL_HOME" not in mcp_server_block()["environment"]
+    monkeypatch.setenv("ROOTRECALL_HOME", "/srv/rr-data")
+    assert mcp_server_block()["environment"]["ROOTRECALL_HOME"] == "/srv/rr-data"
