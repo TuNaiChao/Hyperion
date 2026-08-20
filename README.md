@@ -39,7 +39,7 @@ uv run rootrecall install --global   # (推荐)注册进 ~/.config/opencode:任�
 # ── opencode 接线(二选一)──────────────────────────────────────────────
 uv run rootrecall install --global   # 全机一次:skills 软链 + MCP 注册 + AGENTS.md 路由段
                                      # 之后任意目录 `opencode` 直接用;卸载加 --uninstall
-bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>   # 项目级接线(不想全局时)
+bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>   # 项目级备选(不想全局注入 AGENTS.md / 无权写 ~/.config 时;同款还有 rootrecall here)
 uv run rootrecall here --codebase <索引名>                   # bug 目录轻标记(配合全局注册)
 
 # ── 建索引:检索类工具(search / blast_radius / call_chain…)需要 ──────────

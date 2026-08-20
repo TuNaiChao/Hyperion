@@ -230,6 +230,7 @@ class RecallHit(BaseModel):
     superseded_by: str | None = None  # 非空 = 这是被取代的旧版本(R3.5+ 仍可召回作参考;手动 invalidate 走 invalid_at 不在此列)
     corrected_by: str | None = None  # 非空 = 这条被另一条纠正了(检索降权;仍可见作参考,不同于 superseded_by)
     item_id: str | None = None  # 命中的 KI id(memory 路;code/structural 路为 None)
+    tags: list[str] = Field(default_factory=list)  # 透传 KI 标签(渲染「未真机验证」等纪律标记用)
     # code/structural 路的定位字段(memory 路用 evidence)
     file: str | None = None
     line_start: int | None = None
@@ -254,4 +255,8 @@ class RecallHit(BaseModel):
         # memory 路带 item_id 时输出(截断 8 位)—— 纠正链要用:memory_memorize(corrects=[...]) 要传
         # 「在 recall 输出里看到的 id」。code/structural 路 item_id=None,不渲染(避免 id=None 噪声)。
         kid = f"  id={self.item_id[:8]}" if self.item_id else ""
-        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}{corrected}{kid}".rstrip()
+        # 验证纪律标记(P2-1):apply-only 记的 bug_lesson 带 unverified 标 —— 召回时显式亮出来,
+        # 后续会话拿先验前先知道「这条没过真机」;真机确认后重提同补丁(verification=real_machine)
+        # 换掉标记。位置学 corrected:跟在结论后面,不进 summary 污染内容键。
+        unv = "  (未真机验证)" if "unverified" in self.tags else ""
+        return f"- {tag}{self.summary}{loc}{conf}{dt}{old}{corrected}{unv}{kid}".rstrip()

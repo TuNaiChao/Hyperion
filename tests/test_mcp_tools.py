@@ -965,3 +965,74 @@ def test_find_repo_miss_no_baseline_asks_for_url():
     out = _call(mcp, "find_repo", {"project": "bluez"})
     assert "No repo matched" in out and "--role baseline" in out and "git URL" in out
     assert "repo checkout" not in out  # 没基线时开仓命令无从执行,不该给
+
+
+# ════════════════════ verification 纪律硬化(P2-1)════════════════════
+
+def test_memory_memorize_verification_apply_only(monkeypatch):
+    """verification=apply_only → KI 带 unverified 标 + 置信封顶 0.5(先验不冒充结论)。"""
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    _call(mcp, "memory_memorize", {
+        "kind": "bug_lesson", "summary": "probe apply-only",
+        "fix_patch": "diff --git a/x b/x\n", "verification": "apply_only", "confidence": 0.95})
+    ki = fake.memorize_items[-1]
+    assert "unverified" in ki.tags
+    assert ki.confidence == 0.5, "apply-only 置信必须封顶 0.5,给了 0.95 也要压下来"
+
+
+def test_memory_memorize_verification_real_machine(monkeypatch):
+    """verification=real_machine → verified_real_machine 标;显式带进来的 unverified 被摘掉(升级路径)。"""
+    fake = _FakeMemSvc()
+    monkeypatch.setattr("rootrecall.services.memory.get_memory_service", lambda: fake)
+    mcp = build_server()
+    _call(mcp, "memory_memorize", {
+        "kind": "bug_lesson", "summary": "probe real-machine",
+        "fix_patch": "diff --git a/x b/x\n", "verification": "real_machine",
+        "tags": ["patch_insight", "unverified"]})
+    ki = fake.memorize_items[-1]
+    assert "verified_real_machine" in ki.tags and "unverified" not in ki.tags
+
+
+def test_recall_hit_renders_unverified_marker():
+    """RecallHit 渲染:unverified 标 → 「(未真机验证)」显式可见;无标不渲染(零噪声)。"""
+    from rootrecall.services.memory.schema import RecallHit
+
+    h = RecallHit(summary="某 bug 教训", score=1.0, tags=["patch_insight", "unverified"])
+    assert "(未真机验证)" in h.render()
+    h2 = RecallHit(summary="某 bug 教训", score=1.0, tags=["verified_real_machine"])
+    assert "未真机验证" not in h2.render()
+
+
+# ════════════════════ 交付物按 bug_id 归档(P2-2)════════════════════
+
+def test_export_patch_archives_by_bug_id(tmp_path, monkeypatch):
+    """注册了 bug_id 的 ephemeral → 补丁双写:平铺「最新一份」不变 + <bug_id>/ 归档副本。"""
+    monkeypatch.chdir(tmp_path)  # data/bug_rca 相对落点进 tmp
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_repo(repo)
+    (repo / "f.c").write_text("int main(void){return 1;}\n", encoding="utf-8")  # 制造非空 diff
+    from rootrecall.services.repos.registry import RepoRegistry
+
+    RepoRegistry().register("buggy-1.0", path=str(repo), role="ephemeral", bug_id="B-42")
+    mcp = build_server()
+    out = _call(mcp, "export_patch", {"repo_path": "buggy-1.0"})
+    assert "归档" in out and "B-42" in out, out
+    assert (tmp_path / "data" / "bug_rca" / "buggy-1.0.patch").exists()      # 平铺最新
+    assert (tmp_path / "data" / "bug_rca" / "B-42" / "buggy-1.0.patch").exists()  # 按 bug 归档
+
+
+def test_export_patch_without_bug_id_skips_archive(tmp_path, monkeypatch):
+    """记录没有 bug_id(或压根没注册)→ 只写平铺,不归档、不报错。"""
+    monkeypatch.chdir(tmp_path)
+    repo = tmp_path / "repo2"
+    repo.mkdir()
+    _git_repo(repo)
+    (repo / "f.c").write_text("int main(void){return 2;}\n", encoding="utf-8")
+    mcp = build_server()
+    out = _call(mcp, "export_patch", {"repo_path": str(repo)})
+    assert "归档" not in out
+    assert (tmp_path / "data" / "bug_rca" / "repo2.patch").exists()
+    assert not (tmp_path / "data" / "bug_rca" / "B-42").exists()

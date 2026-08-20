@@ -112,6 +112,35 @@ _MCP_TOOL_PRESETS: dict[str, frozenset[str] | None] = {
 }
 
 
+
+def _archive_bug_copy(path: Path, name_or_path: str) -> str | None:
+    """交付物按 bug_id 归档(P2-2):gc 回收 ephemeral 仓后,补丁/报告仍可按 bug 追溯。
+
+    name_or_path 是注册名或注册记录的路径,对应记录带 bug_id → 在 <平铺目录>/<bug_id>/ 再写
+    一份(同 bug 重跑覆盖;平铺「最新一份」约定不变)。查不到 bug_id / 注册表不可用 → 静默
+    跳过(返回 None)—— 归档是增强,绝不挡交付物落盘。
+    """
+    import shutil
+
+    try:
+        from rootrecall.services.repos.registry import RepoRegistry
+
+        reg = RepoRegistry()
+        rec = reg.get(name_or_path)
+        if rec is None and ("/" in name_or_path):
+            rp = Path(name_or_path).resolve()
+            rec = next((r for r in reg.list() if r.path and Path(r.path).resolve() == rp), None)
+        if rec is None or not rec.bug_id:
+            return None
+        d = path.parent / rec.bug_id
+        d.mkdir(parents=True, exist_ok=True)
+        dst = d / path.name
+        shutil.copyfile(path, dst)
+        return str(dst)
+    except Exception:  # noqa: BLE001 —— 归档失败不影响主交付
+        return None
+
+
 def _resolve_mcp_tools() -> frozenset[str] | None:
     """解析 ROOTRECALL_MCP_TOOLS 门控:返回 None = 全量注册(未设置/空串/full);否则 = 允许集。
 
@@ -309,6 +338,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
                               commit_sha: str | None = None,
                               tags: list[str] | None = None,
                               corrects: list[str] | None = None,
+                              verification: Literal["apply_only", "real_machine"] | None = None,
                               kind_detail: Literal["module", "symbol", "architecture", "domain"] | None = None,
                               confidence: float | None = None,
                               source_url: str | None = None,
@@ -348,6 +378,15 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
               (append-only preserved for audit) but get a ``corrected_by`` backlink and are demoted
               at retrieval time (recall scores them 0.3× lower). Pass the IDs you saw in
               ``memory_recall`` or ``memory_dump`` output. Leave empty for ordinary facts/lessons.
+        verification (bug_lesson only, 2026-08-20 纪律硬化): declare the evidence level of this lesson.
+              ``"apply_only"`` = patch applies cleanly but NOT yet confirmed on a real machine →
+              the item is tagged ``unverified`` (recall renders ``(未真机验证)``) and confidence
+              capped at 0.5. ``"real_machine"`` = user confirmed on a real machine → tagged
+              ``verified_real_machine``. Re-memorizing the SAME patch with real_machine merges
+              (content-addressed id) and replaces the tags — the upgrade path: record early with
+              apply_only, upgrade after user confirmation. Omit = legacy behavior (no marker).
+              Structural rule instead of "don't write until verified": an apply-only lesson honestly
+              labeled beats a lost lesson — recall-first consumers see the caveat and weigh it.
         codebase: override which codebase's memory to write into (default = this server's codebase).
               Pass when the lesson belongs to a different repo than the server's default; the item is
               scoped (id namespaced + filtered) by this codebase, so it won't pollute others.
@@ -383,6 +422,18 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             ev_list.append(Evidence(file=ef, line=el, snippet=str(e.get("snippet") or "")))
         if file and (file, line) not in seen_loc:
             ev_list.append(Evidence(file=file, line=line))
+
+        # 验证纪律(P2-1,结构化而非禁令):apply-only 的 bug_lesson 打 unverified 标 + 置信封顶
+        # 0.5;真机确认后同补丁重提 real_machine(同 id 合并,新条 tags 替换旧的)即升级。
+        tags = list(dict.fromkeys(tags or []))
+        if verification == "apply_only":
+            if "unverified" not in tags:
+                tags.append("unverified")
+            confidence = min(confidence, 0.5) if confidence is not None else 0.5
+        elif verification == "real_machine":
+            tags = [t for t in tags if t != "unverified"]
+            if "verified_real_machine" not in tags:
+                tags.append("verified_real_machine")
 
         item = KnowledgeItem(
             id=kid,
@@ -952,6 +1003,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         import subprocess
         from pathlib import Path
 
+        raw_repo_arg = repo_path  # 归档按 bug_id 要用「名字/原始路径」查注册表(解析前留底)
         repo_path = _resolve_repo_path_arg(repo_path)
         repo = Path(repo_path)
         if not repo.is_dir():
@@ -981,7 +1033,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             return ("❌ 空 diff:git 看不到你的改动。可能改错了树(repo_path 指错)、改动没保存、"
                     "或被 .gitignore 忽略。export_patch 不写空补丁 —— 回去确认你真的改对了文件。")
 
-        repo_name = repo.name
+        # 名字输入用注册名、路径输入用目录名(前者对齐注册/索引/gc 命名,bug_id 归档可追溯)
+        repo_name = raw_repo_arg if "/" not in raw_repo_arg else repo.name
         from rootrecall.services.repos.registry import reanchor_data_path
 
         out = reanchor_data_path(out_dir)
@@ -989,7 +1042,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         patch_path = out / f"{repo_name}.patch"
         patch_path.write_text(diff, encoding="utf-8")
         n = len(diff.splitlines())
-        return f"✅ 已落盘\npath={patch_path}\nlines={n}  (unified diff;apply 验证见 validate_patch)"
+        archived = _archive_bug_copy(patch_path, raw_repo_arg)
+        return (f"✅ 已落盘\npath={patch_path}\nlines={n}  (unified diff;apply 验证见 validate_patch)"
+                + (f"\n归档:{archived}(按 bug_id,gc 回收仓后仍可追溯)" if archived else ""))
 
     # ── ⑨ export_report:把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘)────
     # 跟 export_patch 对称:补丁内容是 git 生成的(工具自己 diff),报告内容是 agent 生成的(传 content)。
@@ -1037,8 +1092,11 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         out.mkdir(parents=True, exist_ok=True)
         report_path = out / f"{repo_name}-rca.md"
         report_path.write_text(content, encoding="utf-8")
+        archived = _archive_bug_copy(report_path, repo_path)
         n = len(content.splitlines())
         msg = f"✅ 已落盘\npath={report_path}\nlines={n}  (markdown 报告)"
+        if archived:
+            msg += f"\n归档:{archived}(按 bug_id,gc 回收仓后仍可追溯)"
         # AGENTS.md 产出(#5,2026-08-17):报告同源数据蒸馏成「给 agent 看的 README」写进仓根。
         # 默认关 —— 不问自写入用户仓违背最小惊讶;skill 按用户显式要求才传 agents_md=True。
         # 不覆盖已有内容:仓里已有 AGENTS.md(手写或别的工具产)→ 拒写 + 提示,保护用户文件。

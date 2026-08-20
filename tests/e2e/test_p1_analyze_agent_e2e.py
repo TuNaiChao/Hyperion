@@ -126,3 +126,25 @@ def test_analyze_agent_requires_analyze(env):
     with contextlib.redirect_stderr(io.StringIO()):
         assert cli_main(["repo", "sync", "up-v20", "--no-index", "--analyze-agent"]) == 2
         assert cli_main(["repo", "sync", "up-v20", "--no-index", "--ingest-report"]) == 2
+
+
+def test_sync_report_groups_packaging_commits(tmp_path):
+    """debian/ 打包 commit 单独分组(源码修复不被 uncertain 海淹没);混合型(源码+debian)不算打包。"""
+    from rootrecall.services.repos.mirror import _write_sync_report
+    from rootrecall.services.repos.registry import RepoRecord
+
+    result = {"upstream_range": "a..b", "fork_ref": "HEAD", "summary": {"total": 3},
+              "commits": [
+                  {"sha": "1" * 40, "subject": "src fix", "state": "recommend_merge",
+                   "touched_files": ["src/a.c"]},
+                  {"sha": "2" * 40, "subject": "pkg only", "state": "uncertain",
+                   "touched_files": ["debian/changelog", "debian/patches/x.patch"]},
+                  {"sha": "3" * 40, "subject": "mixed fix", "state": "conflict",
+                   "touched_files": ["src/b.c", "debian/changelog"]},
+              ]}
+    p = _write_sync_report(RepoRecord(name="b"), RepoRecord(name="f"), result,
+                           reports_dir=tmp_path)
+    body = p.read_text(encoding="utf-8")
+    head, _, tail = body.partition("打包层 commit")
+    assert "src fix" in head and "mixed fix" in head      # 源码组含混合型
+    assert "pkg only" in tail and "src fix" not in tail   # 纯打包单列

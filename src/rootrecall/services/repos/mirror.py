@@ -294,12 +294,34 @@ def _write_sync_report(rec, fork_rec, result: dict, *, reports_dir: Path | None)
         "| commit | 三态 | 触及文件 |",
         "|---|---|---|",
     ]
-    for c in result.get("commits", []):
+
+    def _row(c: dict) -> str:
         sha = (c.get("sha") or c.get("commit") or "")[:10]
         subject = (c.get("subject") or "").replace("|", "\\|")
         state = c.get("state") or c.get("tri_state") or "?"
         files = ", ".join((c.get("touched_files") or [])[:5]) or "-"
-        lines.append(f"| `{sha}` {subject} | {state} | {files} |")
+        return f"| `{sha}` {subject} | {state} | {files} |"
+
+    # debian/ 打包类单独分组(2026-08-20,agent 复核的 meta 建议):发行版线的 sync 常混着
+    # quilt 打包 commit(只动 debian/patches、changelog),它们对源码 fork 的三态几乎全是
+    # uncertain —— 不分组会把真正的源码修复(尤其安全修复)淹没在全量人工复核里。
+    def _is_packaging(c: dict) -> bool:
+        files = c.get("touched_files") or []
+        return bool(files) and all(f.startswith("debian/") for f in files)
+
+    commits = result.get("commits", [])
+    src_rows = [_row(c) for c in commits if not _is_packaging(c)]
+    pkg_rows = [_row(c) for c in commits if _is_packaging(c)]
+    lines += src_rows
+    if pkg_rows:
+        lines += [
+            "",
+            "## 打包层 commit(只动 debian/,源码 fork 侧通常无从套用,复核优先级低)",
+            "",
+            "| commit | 三态 | 触及文件 |",
+            "|---|---|---|",
+            *pkg_rows,
+        ]
     if result.get("note"):
         lines += ["", f"注:{result['note']}"]
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
