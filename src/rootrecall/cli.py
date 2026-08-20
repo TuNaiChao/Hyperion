@@ -627,6 +627,12 @@ def cmd_repo(args) -> int:
         if not names:
             print("(没有 baseline 注册仓可同步;先 repo register <名> --url <地址> --role baseline)")
             return 0
+        if args.analyze_agent and not args.analyze:
+            print("错误:--analyze-agent 要与 --analyze <FORK名> 同用(它复核的就是三态报告)。", file=sys.stderr)
+            return 2
+        if args.ingest_report and not args.analyze:
+            print("错误:--ingest-report 要与 --analyze <FORK名> 同用(入记忆的就是三态报告)。", file=sys.stderr)
+            return 2
 
         embedder = None
         if not args.no_index:
@@ -639,8 +645,9 @@ def cmd_repo(args) -> int:
         rc = 0
         for n in names:
             try:
-                r = sync_repo(n, analyze_fork=args.analyze, refresh_index=not args.no_index,
-                              embedder=embedder, registry=reg)
+                r = sync_repo(n, analyze_fork=args.analyze, analyze_agent=args.analyze_agent,
+                              ingest_report=args.ingest_report,
+                              refresh_index=not args.no_index, embedder=embedder, registry=reg)
             except Exception as e:  # noqa: BLE001 —— 单仓失败不挡其余仓
                 print(f"❌ {n}: {e}", file=sys.stderr)
                 rc = 1
@@ -667,6 +674,10 @@ def cmd_repo(args) -> int:
                     print(f"    📊 三态分析:{a['range']} → total={s.get('total', 0)} "
                           f"already_fixed={s.get('already_fixed', 0)} recommend_merge={s.get('recommend_merge', 0)} "
                           f"conflict={s.get('conflict', 0)}  报告:{a['report']}")
+                    if a.get("agent_review"):
+                        print(f"    🤖 agent 复核:{a['agent_review']}")
+                    if a.get("ingest"):
+                        print(f"    🧠 报告入记忆:{a['ingest']}")
         return rc
 
     print(f"(未知 repo 子命令: {args.repo_cmd})", file=sys.stderr)
@@ -781,6 +792,12 @@ def main(argv: list[str] | None = None) -> int:
     r_sync.add_argument("names", nargs="*", help="要同步的基线名(缺省=全部 baseline)")
     r_sync.add_argument("--analyze", default=None, metavar="FORK名",
                         help="对哪个注册仓做上游三态分析(如 --analyze bluez-v20;fork 须有本地检出)")
+    r_sync.add_argument("--analyze-agent", action="store_true",
+                        help="三态报告后再跑 headless opencode 复核「该不该合」并追加进报告"
+                             "(需与 --analyze 同用;opencode 不在/失败诚实退纯三态)")
+    r_sync.add_argument("--ingest-report", action="store_true",
+                        help="把三态报告(含 agent 复核)摄取进记忆库,recall 可带出「上次评估为什么没合」"
+                             "(需与 --analyze 同用;codebase 取项目名,如 bluez-v20 → bluez)")
     r_sync.add_argument("--no-index", action="store_true", help="跳过索引刷新(没配 embedding key 时)")
     r_sync.set_defaults(func=cmd_repo, repo_cmd="sync")
 

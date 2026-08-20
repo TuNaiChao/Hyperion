@@ -1,0 +1,8 @@
+[Unit]
+Description=RootRecall repo gc(回收过期 ephemeral 检出,级联清索引/结构图/记录;记忆与 baseline 不碰)
+
+[Service]
+Type=oneshot
+# 14 天到期的 ephemeral 自动回收;孤儿索引只报告不删(要删手动加 --prune-orphans)
+WorkingDirectory=%h/Desktop/Agent/RootRecall
+ExecStart=/usr/bin/env uv run --no-sync rootrecall repo gc

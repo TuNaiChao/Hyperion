@@ -75,7 +75,9 @@ uv run rootrecall repo checkout bluez-v20-5.50.61 --from bluez-v20 --ref 5.50.61
 #             基线没建过索引则诚实走全量;embedder 不可用跳过建索引但不挡检出
 
 # 基线同步(幂等,给定时器反复跑):fetch→ff→增量刷索引→(可选)上游三态分析报告
-uv run rootrecall repo sync [基线名...] [--analyze <发行版仓名>] [--no-index]
+uv run rootrecall repo sync [基线名...] [--analyze <发行版仓名>] [--analyze-agent] [--ingest-report] [--no-index]
+#    --analyze-agent:三态报告后 headless opencode 复核「该不该合」追加进报告(不在/失败诚实退纯三态)
+#    --ingest-report:报告摄取进记忆(codebase=项目名),recall 能带出「上次评估为什么没合」
 
 # 回收过期 ephemeral(级联:worktree+向量索引+结构图+记录;记忆不删;baseline 不碰)
 uv run rootrecall repo gc [--dry-run] [--max-age-days 14] [--name <名>] [--prune-orphans]

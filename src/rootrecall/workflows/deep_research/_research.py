@@ -169,9 +169,11 @@ def _build_research_tools(repo_root: str, codebase: str) -> list:
         """
         cfg = get_app_config()
         embedder = create_embedder(cfg.code_index.embedding)
+        from rootrecall.services.repos.registry import reanchor_data_path
+
         vs_cfg = getattr(cfg.code_index, "vector_store", None)
         vs_path = getattr(vs_cfg, "path", "data/code_index") if vs_cfg else "data/code_index"
-        store = LanceDBStore(vs_path)
+        store = LanceDBStore(reanchor_data_path(vs_path))
         reranker = create_reranker(getattr(cfg.code_index, "reranker", None))
         res = retrieve(query, codebase, embedder, store, reranker, top_k=top_k)
         out: list[str] = []

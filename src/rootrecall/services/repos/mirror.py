@@ -122,6 +122,8 @@ def sync_repo(
     name: str,
     *,
     analyze_fork: str | None = None,
+    analyze_agent: bool = False,
+    ingest_report: bool = False,
     refresh_index: bool = True,
     embedder=None,
     registry=None,
@@ -205,6 +207,23 @@ def sync_repo(
             rec, fork_name=analyze_fork, registry=reg,
             base_sha=(rec.synced_sha or out.get("old_head") or out.get("new_head")),
             reports_dir=reports_dir, max_commits=max_commits)
+        # --analyze-agent:纯三态之后追加 headless opencode 的「该不该合」相关性复核
+        # (patch-id/merge-tree 只答能不能合,fork 真需不需要要读代码 —— agent 的活)。
+        if analyze_agent:
+            a = out["analysis"]
+            fork_rec = reg.get(analyze_fork) if isinstance(a, dict) else None
+            if isinstance(a, dict) and a.get("report") and fork_rec and fork_rec.path:
+                a["agent_review"] = _agent_review_report(
+                    Path(a["report"]), baseline=rec.name,
+                    fork=analyze_fork, fork_path=Path(fork_rec.path))
+            else:
+                out["analysis"]["agent_review"] = "skipped(三态分析未产出报告或 fork 无检出)"
+        # --ingest-report:报告(含 agent 复核)摄取进记忆,recall 能带出「上次为什么没合」。
+        # codebase 用项目名(记忆约定:不带版本线;bluez-v20 → bluez,名字里没有 -v<版> 就原样)。
+        if ingest_report and isinstance(out.get("analysis"), dict) and out["analysis"].get("report"):
+            project = rec.name.rsplit("-v", 1)[0] if "-v" in rec.name else rec.name
+            out["analysis"]["ingest"] = _ingest_report_to_memory(
+                Path(out["analysis"]["report"]), codebase=project)
 
     import datetime
 
@@ -285,3 +304,64 @@ def _write_sync_report(rec, fork_rec, result: dict, *, reports_dir: Path | None)
         lines += ["", f"注:{result['note']}"]
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return p
+
+
+def _agent_review_report(report_path: Path, *, baseline: str, fork: str,
+                         fork_path: Path, timeout: int = 900) -> str:
+    """headless opencode 复核 sync 报告(upstream-merge 的「该不该合」语义判断),结论追加进报告。
+
+    纯三态(patch-id / merge-tree)只答「能不能合」,答不了「fork 真需不需要」—— 那要读 fork
+    代码,归 agent。这里把报告交给 headless opencode 复核,回复原样追加(标明来源与时间)。
+    诚实降级三档:opencode 不在 PATH / 超时 / 非零退出或空输出 → 报告保持纯三态,返回 skip
+    说明(sync 不因此失败;env 里的 LLM key 由调用方 CLI 进程带下,子进程继承 os.environ)。
+    """
+    import datetime
+    import shutil as _shutil
+    import subprocess as _sp
+
+    from rootrecall.services.repos.registry import _install_root
+
+    exe = _shutil.which("opencode")
+    if exe is None:
+        return "skipped(opencode 不在 PATH;报告保持纯三态,该不该合由人复核)"
+    prompt = (
+        f"你是 upstream-merge 复核员,只读不改代码。读报告 {report_path}"
+        f"(基线 {baseline} 新进上游 commit 的三态评估;fork={fork},检出在 {fork_path})。\n"
+        f"对报告里每个判为 recommend_merge 的 commit:用 bash `git -C {fork_path} show <sha>` 读改动"
+        f"与 fork 侧上下文,判断 fork 是否真需要它(fork 有没有该 bug / 功能的代码上下文)。\n"
+        f"输出一张 markdown 表:| sha | subject | 结论(该合/不该合/存疑) | 一句话理由 |,"
+        f"表后给一段总体建议。控制在 10 次工具调用内;你的回复会被原样追加进报告。"
+    )
+    try:
+        r = _sp.run([exe, "run", prompt], cwd=str(_install_root()),
+                    capture_output=True, text=True, timeout=timeout)
+    except _sp.TimeoutExpired:
+        return f"skipped(opencode 超时 >{timeout}s;报告保持纯三态)"
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or not out:
+        tail = ((r.stderr or "") + (r.stdout or "")).strip()[-200:]
+        return f"skipped(opencode rc={r.returncode}{'; ' + tail if tail else ''};报告保持纯三态)"
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    old = report_path.read_text(encoding="utf-8")
+    report_path.write_text(f"{old}\n\n---\n\n## Agent 复核(--analyze-agent,{ts})\n\n{out}\n",
+                           encoding="utf-8")
+    return f"已追加 agent 复核({len(out)} 字符)→ {report_path}"
+
+
+def _ingest_report_to_memory(report_path: Path, *, codebase: str) -> str:
+    """把 sync 报告摄取进记忆库(codebase=项目名,recall-first 让「上次为什么没合」可召回)。
+
+    report 路每块走 LLM 抽取(memorize_report)—— 调用方在配好 LLM key 的 CLI 进程里;
+    失败不挡 sync,返回 skip 说明。
+    """
+    import asyncio
+
+    from rootrecall.services.memory.ingest import ingest_document
+    from rootrecall.services.memory.schema import Scope
+
+    try:
+        stats = asyncio.run(ingest_document(
+            report_path, scope=Scope(owner="default", codebase=codebase), repo=codebase))
+        return (f"已入记忆({stats.get('route')} 路,{stats.get('wrote', 0)} 条,scope={codebase})")
+    except Exception as e:  # noqa: BLE001 —— 记忆摄取失败不挡 sync,诚实注明
+        return f"skipped(ingest 失败:{e})"

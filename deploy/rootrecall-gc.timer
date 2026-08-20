@@ -1,0 +1,9 @@
+[Unit]
+Description=RootRecall repo gc 每周一早上跑一次
+
+[Timer]
+OnCalendar=Mon *-*-* 08:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

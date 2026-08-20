@@ -44,9 +44,11 @@ def _code_index_bundle(cfg: AppConfig) -> tuple[Any, Any, Any] | None:
         from rootrecall.services.code_index.store import LanceDBStore
 
         embedder = create_embedder(cfg.code_index.embedding)
+        from rootrecall.services.repos.registry import reanchor_data_path
+
         vs = getattr(cfg.code_index, "vector_store", None)
         vs_path = getattr(vs, "path", "data/code_index") if vs else "data/code_index"
-        store = LanceDBStore(vs_path)
+        store = LanceDBStore(reanchor_data_path(vs_path))
         reranker = create_reranker(getattr(cfg.code_index, "reranker", None))
         return (embedder, store, reranker)
     except Exception as e:  # noqa: BLE001 - code_index 没配好不阻断 memory(只少 code 路)
