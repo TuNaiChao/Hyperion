@@ -43,11 +43,11 @@ skill(`.claude/skills/bug-rca/SKILL.md`)不是分步流水线,是教 agent **按
 
 ### 补丁 ↔ 验证循环(修复)
 
-`edit` 改码 → `validate_patch` 验 apply(硬门)→ `export_patch` 落盘 → 没修对就再来一轮。**每出一版补丁就落盘一版**——步数将尽时优先把当前版落盘交人,别烂在锅里。
+`edit` 改码 → `validate_patch` 验 apply(硬门)→ 没修对就再来一轮。循环里只有改和验,**没有落盘** —— 落盘是用户触发的交付:用户说「生成补丁」「拿去真机验证」了才 `export_patch`,中间版不自动落(2026-08-19 对齐:交付物由用户开口触发,工具不是流水线步骤)。步数将尽时改动就留在工作区,回复里说清改了什么、提示用户可说「生成补丁」,别擅自落盘也别烂在锅里。
 
 ### 收尾(报告落盘 + 教训分级入册)
 
-补丁过 `validate_patch` 并 `export_patch` 落盘后:`export_report` 出报告,`memorize`(kind=bug_lesson,`verification: apply_only`)早记教训 —— 自动带 `unverified` 标、置信封顶 0.5。**人停在哪儿**:export 之后 —— agent 把推理链和补丁摆好,真机验证是人拍板;验证通过后同补丁重提一次 `real_machine`,条目原地升级。
+补丁经用户触发 `export_patch` 落盘后:`export_report` 出报告(同样等用户开口要报告才调),`memorize`(kind=bug_lesson,`verification: apply_only`)早记教训 —— 自动带 `unverified` 标、置信封顶 0.5。**人停在哪儿**:export 由用户触发,agent 把推理链和补丁摆好,真机验证是人拍板;验证通过后同补丁重提一次 `real_machine`,条目原地升级。
 
 ### 证伪纪律(对抗误诊,从真踩坑提炼)
 

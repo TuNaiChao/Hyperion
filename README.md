@@ -138,8 +138,8 @@ flowchart TB
 | 工具 | 作用 |
 |---|---|
 | `rootrecall_validate_patch` | 补丁能否干净 apply(`git apply --check`,执行硬门) |
-| `rootrecall_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门;空 diff 报错;quilt 仓的 `.pc/` 构建产物自动排除;检出带 bug 号时另归档一份到 `<bug号>/`) |
-| `rootrecall_export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门;同款 bug 号归档;可附带蒸馏一份 AGENTS.md) |
+| `rootrecall_export_patch` | 把补丁落盘成 `data/bug_rca/<repo>.patch`(交付硬门,**用户开口才调**——迭代中间版不自动落;空 diff 报错;quilt 仓的 `.pc/` 构建产物自动排除;检出带 bug 号时另归档一份到 `<bug号>/`) |
+| `rootrecall_export_report` | 把分析报告落盘成 `data/bug_rca/<repo>-rca.md`(交付硬门,**用户开口才调**;同款 bug 号归档;可附带蒸馏一份 AGENTS.md) |
 
 **PR 抓取(2 个)**
 

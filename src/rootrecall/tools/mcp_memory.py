@@ -977,6 +977,8 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ⑦ export_patch:把补丁落盘成 .patch 文件(交付硬门 —— 聊天回复不算交付)────────
     # bug-RCA 跑完,agent 的改动若只在聊天里 = 没交付。这步把 git diff 写成磁盘文件,且自检
+    # 触发时机是**用户开口**(要补丁/要去真机验)—— 迭代中间版不自动落盘(2026-08-19 措辞对齐:
+    # 交付由用户触发,工具不是流水线步骤;落盘纪律靠 docstring + SKILL 双处声明)。
     # 非空(治"agent 改错树 / 假装改完"——纯 bash `git diff > file` 会静默吞掉空 diff,2026 调研:
     # deer-flow 用结构化 present_files tool + 事后交付验证,正是治这个)。格式 unified diff(git diff),
     # 对齐整条管线(validate 用 git apply / ingest 解析 unified diff / report 渲染 ```diff);不污染 repo
@@ -986,10 +988,12 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     # 反向 --check 才证必要);那是 validate_patch(第⑥步,对干净树)的活。export 只保证"有非空 diff 落盘"。
     @_tool("export_patch")
     async def export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str:
-        """Finalize your fix as an on-disk .patch file — a bug-RCA run is NOT complete until the
-        patch is on disk (chat is not a deliverable).
+        """Finalize your fix as an on-disk .patch file — USER-TRIGGERED deliverable, not an iteration step.
 
-        Captures ALL your uncommitted changes in repo_path (``git add -A && git diff --cached``,
+        Call it ONLY when the user asks for the patch ("生成补丁" / wants to take it to a real
+        machine for testing) — do NOT auto-export intermediate versions while iterating; chat-level
+        validate feedback is enough mid-loop. Captures ALL your uncommitted changes in repo_path
+        (``git add -A && git diff --cached``,
         including new files), writes the unified diff to ``<out_dir>/<repo-name>.patch``, and REFUSES
         to write an empty diff — catches "edited the wrong tree / changes not saved / gitignored",
         failures a bare ``git diff > file`` silently swallows. Run ``validate_patch`` first to confirm
@@ -1051,6 +1055,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
 
     # ── ⑨ export_report:把分析报告落盘成 .md 文件(交付硬门 —— 报告跟补丁一样要上盘)────
     # 跟 export_patch 对称:补丁内容是 git 生成的(工具自己 diff),报告内容是 agent 生成的(传 content)。
+    # 触发时机同 export_patch:用户开口要报告才调,迭代中不自动写(见第⑦步注释)。
     # bug-RCA 跑完,agent 若只在聊天里吐报告 = 没交付(跟"只在聊天里说改好了"同理)。这步把报告写成磁盘文件,
     # 自检非空(治"agent 假装写报告 / 传空串糊弄")。落 data/bug_rca/<repo>-rca.md(对齐 orchestrator 的
     # render_report 约定;同仓重跑覆盖,历史在记忆库)。报告是**最终交付物**,排在 memorize 之后写 ——
@@ -1058,8 +1063,9 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
     @_tool("export_report")
     async def export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca",
                             agents_md: bool = False) -> str:
-        """Finalize your analysis report as an on-disk .md file — a bug-RCA run is NOT complete until
-        the report is on disk (same deliverable bar as the patch; chat is not a deliverable).
+        """Finalize your analysis report as an on-disk .md file — USER-TRIGGERED deliverable (same
+        bar as the patch; call it when the user asks for the report, typically after user-confirmed
+        real-machine verification — do NOT auto-write it mid-iteration).
 
         Writes your markdown report to ``<out_dir>/<repo-name>-rca.md`` and REFUSES empty/trivial
         content — catches "forgot to write a report / passed a placeholder". Write the patch first

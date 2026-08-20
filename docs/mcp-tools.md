@@ -42,8 +42,8 @@ server 启动时解析一个**默认 codebase**,顺序:启动参数 `--codebase`
 | [merge_eval](#merge_eval) | 代码情报 🔀 | 上游 commit 逐个三态判定:已修 / 建议合 / 冲突 |
 | [when_introduced](#when_introduced) | 代码情报 | 一段缺陷逻辑是哪个 commit 引入的(纯 git) |
 | [validate_patch](#validate_patch) | 硬门 | 补丁能否干净 apply(零 LLM 的执行关卡) |
-| [export_patch](#export_patch) | 硬门 | 把改动落盘成 `.patch`(空 diff 拒写) |
-| [export_report](#export_report) | 硬门 | 把报告落盘成 `.md`(可另蒸馏一份 AGENTS.md) |
+| [export_patch](#export_patch) | 硬门 | 把改动落盘成 `.patch`(用户开口才调;空 diff 拒写) |
+| [export_report](#export_report) | 硬门 | 把报告落盘成 `.md`(用户开口才调;可另蒸馏一份 AGENTS.md) |
 | [fetch_patch](#fetch_patch) | PR 抓取 | PR 链接 → diff + 元数据(GitHub / Gerrit) |
 | [ensure_repo](#ensure_repo) | PR 抓取 | 仓库名/URL → 本地路径,缺则自动 clone |
 | [find_repo](#find_repo) | 开仓 | 「项目+版本」→ 注册表候选仓;没开过仓就给自动开仓命令 |
@@ -234,7 +234,7 @@ validate_patch(patch: str, repo_path: str) -> str
 export_patch(repo_path: str, out_dir: str = "data/bug_rca") -> str
 ```
 
-收集 repo_path 里**全部未提交改动**(`git add -A && git diff --cached`,含新增文件),写 `<out_dir>/<仓库名>.patch`。**空 diff 拒写** —— 治「改错树 / 没保存 / 被 gitignore」这类静默失败。两个顺手活:debian 源码仓的 quilt 构建产物 `.pc/` 自动排除(否则几行修复会混进几十万行垃圾);该检出在注册表里带 bug 号时,同款补丁**另归档一份**到 `<out_dir>/<bug号>/`(`repo gc` 回收 ephemeral 后交付物仍可按 bug 追溯)。副作用:会 stage 改动(可 `git reset` 撤)。apply 验证不在这做(对已改过的树正向 check 必失败),先过 validate_patch。
+何时调:**用户开口**(「生成补丁」/ 要拿去真机验证)才调,迭代中间版不自动落盘 —— 循环里 `edit` + `validate_patch` 就够,落盘是交付动作不是迭代步骤。收集 repo_path 里**全部未提交改动**(`git add -A && git diff --cached`,含新增文件),写 `<out_dir>/<仓库名>.patch`。**空 diff 拒写** —— 治「改错树 / 没保存 / 被 gitignore」这类静默失败。两个顺手活:debian 源码仓的 quilt 构建产物 `.pc/` 自动排除(否则几行修复会混进几十万行垃圾);该检出在注册表里带 bug 号时,同款补丁**另归档一份**到 `<out_dir>/<bug号>/`(`repo gc` 回收 ephemeral 后交付物仍可按 bug 追溯)。副作用:会 stage 改动(可 `git reset` 撤)。apply 验证不在这做(对已改过的树正向 check 必失败),先过 validate_patch。
 
 ### export_report
 
@@ -247,7 +247,7 @@ export_report(content: str, repo_path: str, out_dir: str = "data/bug_rca", agent
 | `content` | 完整 markdown 报告(根因 + 证据 + 补丁要点 + validate 结果 + patch 路径 + memorize id) |
 | `agents_md` | 额外把报告蒸馏成 `<repo_path>/AGENTS.md`(「给 agent 看的 README」,opencode / claude code / cursor 原生读取)。**默认关** —— 不问不写进使用者的仓;仓里已有 AGENTS.md 时拒写不覆盖 |
 
-空 / 空白内容拒写。同 export_patch:检出带 bug 号时按 `<bug号>/` 双写归档。建议顺序:export_patch → memory_memorize → export_report(报告引用前两步的路径与 id,闭环才完整)。
+空 / 空白内容拒写。何时调同 export_patch:**用户开口要报告才调**(通常在真机验证通过后,迭代中不自动写)。检出带 bug 号时按 `<bug号>/` 双写归档。建议顺序:export_patch → memory_memorize → export_report(报告引用前两步的路径与 id,闭环才完整)。
 
 ## PR 抓取(2 个)
 

@@ -26,8 +26,8 @@ allowed-tools:
 根因很少一次猜中,补丁很少一次到位。按循环做,不要按固定顺序走:
 
 - **假设 ↔ 证伪循环**:用 `memory_recall` / `search_codebase` 取证,大日志用 grep/awk 按时间窗切(别一次读全量);每轮主动证伪当前根因;经住证伪才定论。
-- **补丁 ↔ 验证循环**:`edit` → `validate_patch`(能否干净 apply)→ `export_patch`(落盘)→ 验证(人/真机)→ 没修对就再 `edit` 再 `export`。每出一版补丁就落盘一版。
-- **验证后才沉淀,或诚实标注后早记**:补丁 apply 通过即可先记 `memorize(kind=bug_lesson, ..., verification="apply_only")` —— 工具会打「未真机验证」标(recall 里显式可见)+ 置信封顶 0.5,先验不冒充结论。**用户真机验证通过后**,对同一补丁再 `memorize(..., verification="real_machine")` 一次(同补丁幂等合并,标记升级)。没标注的未验证结论直接 memorize = 把没坐实的根因冒充已验教训,禁止。`export_report` 仍建议验证后出终版。
+- **补丁 ↔ 验证循环**:`edit` → `validate_patch`(能否干净 apply)→ 没修对就再 `edit`。循环里只有改和验,**没有落盘** —— 落盘是用户触发的:等用户说「生成补丁」「拿去真机验证」了,才调 `export_patch`;中间版不自动落。
+- **验证后才沉淀,或诚实标注后早记**:补丁 apply 通过即可先记 `memorize(kind=bug_lesson, ..., verification="apply_only")` —— 工具会打「未真机验证」标(recall 里显式可见)+ 置信封顶 0.5,先验不冒充结论。**用户真机验证通过后**,对同一补丁再 `memorize(..., verification="real_machine")` 一次(同补丁幂等合并,标记升级)。没标注的未验证结论直接 memorize = 把没坐实的根因冒充已验教训,禁止。`export_report` 终版同样等用户开口要报告再调。
 
 ## 仓库就绪(别问用户要路径)
 
@@ -47,9 +47,9 @@ allowed-tools:
 | `rootrecall_blast_radius(files)` | 改之前——看连带波及谁 | 图驱动;图没建会提示 |
 | `rootrecall_when_introduced(repo_path, symbol=\|file+line)` | 候选难分胜负时——「这段缺陷逻辑哪个 commit 带进来的」 | 纯 git 候选表(时间倒序+added/removed);引入 commit 通常是最老 added>0/removed==0 那条,中间成对的多是重构搬移;哪条真引入语义裁决(git show 逐条读);引入 commit 的 message/diff 常直接暴露根因意图——假设循环的辅助证据,不是硬门 |
 | `rootrecall_validate_patch(patch, repo_path)` | 每版补丁都调 | 只验 **apply,不验修对** |
-| `rootrecall_export_patch(repo_path)` | 每出一版补丁就调 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证 |
+| `rootrecall_export_patch(repo_path)` | 用户开口才调——说「生成补丁」「拿去真机验证」时 | 落 `data/bug_rca/<repo>.patch`,供人/真机验证;迭代中间版不自动落盘 |
 | `rootrecall_memory_memorize(...)` | apply 过即可记(带 `verification="apply_only"`);真机验证后重提 `verification="real_machine"` 升级 | kind=bug_lesson;`codebase` 传项目名(不带版本号,教训跨版本共享) |
-| `rootrecall_export_report(content, repo_path)` | 验证通过后才调 | 最终报告落 `data/bug_rca/<repo>-rca.md` |
+| `rootrecall_export_report(content, repo_path)` | 验证通过、用户说「生成报告」才调 | 最终报告落 `data/bug_rca/<repo>-rca.md` |
 
 ## 硬约束
 
@@ -74,6 +74,7 @@ allowed-tools:
 - 强行一次走完固定流程——迭代。
 - 把 `validate_patch` 通过当"修对"——只查 apply。
 - 未验证就 `memorize`。
+- 用户没要就擅自 `export_patch` / `export_report` —— 落盘是用户触发的交付,不是迭代步骤。
 - 抓最响的日志行当根因,不查它之前的现象。
 - 只立一个候选就闷头修——先列 2-3 个候选淘汰。
 - 候选定稿前跳过 `memory_recall` 定向复核。
