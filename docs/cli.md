@@ -2,35 +2,64 @@
 
 > 入口:`uv run rootrecall <子命令>`(脚本定义见 [cli.py](../src/rootrecall/cli.py))。启动时先把 `.env` 读入环境变量,再解析 config.yaml 里的 `$VAR`。
 >
-> 按用途分两档:**日常档**(models / index / lsp / memory / mcp)是 skill + MCP 主线的配套;**参考档**(bug-rca / research / patch-report)是早期自跑编排器,降级留作参考 —— 主线用法见 [README](../README.md)。
+> 按用途分两档(2026-08-21 CLI 瘦身):**日常档**(`baseline` / `here` / `install`)是 `--help` 里仅有的可见命令,覆盖「建基线→取版本→同步→bug 目录问话」全流程;**进阶档**(`index` / `repo` / `memory` / `mcp` / `models` / `lsp`)隐藏不删 —— `repo sync`/`repo gc` 被 systemd 定时任务调用、`mcp serve` 由 opencode 拉起、`memory`/`lsp` 供排障,命令本身照常可用,只是不再出现在 `--help`。早期自跑编排器(`bug-rca` / `research` / `patch-report` CLI)已移除(workflow 模块留仓内作参考),主线一律走 skill + MCP 工具。
 
 ## 子命令一览
 
 | 命令 | 档 | 作用 |
 |---|---|---|
-| [`models`](#models) | 日常 | 列出配置的模型 + 角色路由(验证配置) |
-| [`index`](#index) | 日常 | 给仓库建索引(向量 + 结构图,一次到位;`--seed` 播种增量) |
-| [`repo`](#repo) | 日常 | 仓库注册表与生命周期:ls / register / resolve / checkout / sync / gc |
-| [`install`](#install--here) | 日常 | opencode 全局注册/卸载(任意目录免接线) |
-| [`here`](#install--here) | 日常 | bug/工作目录轻标记(`.rootrecall.yaml` + 项目 opencode.json) |
-| [`lsp`](#lsp) | 日常 | L2 精确导航(clangd)自检 / 冒烟 |
-| [`memory`](#memory) | 日常 | 记忆管理:recall / add / ingest / list / consolidate / invalidate |
-| [`mcp serve`](#mcp-serve) | 日常 | 启动 MCP server(17 个工具的入口) |
-| [`bug-rca`](#bug-rca) | 参考 | bug 根因定位编排器(降级参考) |
-| [`research`](#research) | 参考 | 深度调研编排器(降级参考) |
-| [`patch-report`](#patch-report) | 参考 | 批量 PR 聚合报告(降级参考) |
+| [`baseline`](#baseline) | **日常** | 基线一条龙:add 登记+建索引 / sync 同步+增量 / checkout 取版本 / ls |
+| [`here`](#install--here) | **日常** | bug/工作目录轻标记(`.rootrecall.yaml` + 项目 opencode.json) |
+| [`install`](#install--here) | **日常** | opencode 全局注册/卸载(任意目录免接线) |
+| [`index`](#index) | 进阶 | 给仓库建索引(向量 + 结构图;`--seed` 播种增量)—— `baseline add` 的底层 |
+| [`repo`](#repo) | 进阶 | 仓库注册表与生命周期:ls / register / resolve / checkout / sync / gc —— `baseline` 家族的底层 |
+| [`memory`](#memory) | 进阶 | 记忆管理:recall / add / ingest / list / consolidate / invalidate |
+| [`mcp serve`](#mcp-serve) | 进阶 | 启动 MCP server(17 个工具的入口) |
+| [`models`](#models) | 进阶 | 列出配置的模型 + 角色路由(验证配置) |
+| [`lsp`](#lsp) | 进阶 | L2 精确导航(clangd)自检 / 冒烟 |
 
-## models
+## baseline
 
-验证配置 + 模型工厂加载,列出模型与角色路由。**配置改完先跑它**,能列出来说明 key 与反射加载都通。
+代码仓基线一条龙 —— 日常唯一高频入口。前提:quickstart 已建**代码仓总目录**(env `ROOTRECALL_CODEBASES`,默认 `~/codebases`),要建基线的源码仓都 git clone 进去。
 
 ```bash
-uv run rootrecall models
+# 建基线:一条命令 = 登记(role=baseline,git url/branch 自动读)+ 建索引(向量+结构图)
+uv run rootrecall baseline add ~/codebases/v20/bluez       # → 基线 bluez-v20
+uv run rootrecall baseline add ~/codebases/v25/bluez       # → 基线 bluez-v25
+uv run rootrecall baseline add ~/codebases/upstream/bluez  # → 基线 bluez-upstream
+uv run rootrecall baseline add ~/codebases/systemd         # → 基线 systemd
+#   默认名 = 相对总目录的路径**倒序**连 '-'(v20/bluez → bluez-v20;直接子目录 systemd → systemd)
+#   --name 覆盖;--force 全量重建;--no-graph 只建向量索引(快);重跑 = upsert + 增量刷新(幂等)
+#   非 git 仓拒绝(基线的 checkout/sync 都依赖 git);没 remote 也登记,但 sync 不可用(提示补 url)
+
+# 同步:fetch→ff→增量刷索引→(可选)上游三态分析报告;缺省=全部基线(幂等,给定时器反复跑)
+uv run rootrecall baseline sync [基线名...] [--analyze <发行版仓名>] [--analyze-agent] [--ingest-report] [--no-index]
+
+# 取指定版本:worktree 秒开(共享对象库)+ 播种基线索引增量建,登记 ephemeral(不脏基线)
+uv run rootrecall baseline checkout <新名> --from <基线名> --ref <tag/分支/commit> [--bug <bug号>] [--index]
+uv run rootrecall baseline checkout bluez-v20-5.50.58 --from bluez-v20 --ref 5.50.58-deepin1 --bug 001 --index
+
+uv run rootrecall baseline ls      # 全机资产一览(基线/检出/未管理)
 ```
 
-## index
+| 角色 | 语义 |
+|---|---|
+| `baseline` | 共享基线(bluez 上游 / uos v20 线…):永久保留,`sync` 定时更新;首个 bare 镜像落 `data/mirrors/` |
+| `ephemeral` | 某 bug 的一次性检出(`data/worktrees/`):到期 `repo gc` 级联回收,可点名强删 |
+| `unmanaged` | `ensure_repo` 顺手 clone 的样机 / 手动 index 未声明角色的仓:gc 不碰 |
 
-给代码仓建索引 —— 检索类工具(search_codebase / blast_radius / call_chain / repo_map / repo_overview)的前置。
+`sync --analyze` 的三态报告(已修/建议合/冲突)是纯 git 确定性事实(patch-id + merge-tree,零 LLM),
+落 `data/upstream_reports/<基线名>/<时间戳>-sync.md`;「该不该真合」走 upstream-merge skill 复核。
+定时部署样例(systemd user timer / cron,调的是底层 `repo sync`/`repo gc`)见 [deploy/](../deploy/README.md)。
+
+> **自然语言 → 自动开仓**:手动 checkout 之外,在 opencode 里说「bluez **5.50.58-deepin1** 的 XX 问题」,
+> `find_repo` MCP 工具按「项目+版本」查注册表;版本没有精确命中时返回基线清单 + 一条带安装根、bash 可
+> 原样跑的 `baseline checkout … --index` 命令 —— agent 照跑即开仓建索引,全程不问用户要路径
+> (bug-rca/backport SKILL 已接此路径)。
+
+## index(进阶)
+
+给代码仓建索引 —— 检索类工具(search_codebase / blast_radius / call_chain / repo_map / repo_overview)的前置;日常直接用 `baseline add`(内部就是它)。
 
 ```bash
 uv run rootrecall index <repo_path> [repo_name] [--force] [--seed <基线索引名>] [--no-graph]
@@ -55,9 +84,9 @@ uv run rootrecall index ~/src/wpa_supplicant wpa_supplicant
 # 索引完成:向量 N chunk + 结构图 M 节点
 ```
 
-## repo
+## repo(进阶)
 
-仓库注册表(`data/repos.yaml`,可用 `ROOTRECALL_HOME` 整体迁出安装根,见[配置参考](configuration.md)「数据落点」)与生命周期管理 —— 把「索引名↔仓库路径↔角色↔bug 关联」串成一条链。
+仓库注册表(`data/repos.yaml`,可用 `ROOTRECALL_HOME` 整体迁出安装根,见[配置参考](configuration.md)「数据落点」)与生命周期管理 —— 把「索引名↔仓库路径↔角色↔bug 关联」串成一条链。日常操作走 [`baseline`](#baseline) 家族(add/sync/checkout/ls 就是这里的换名转发);这里列底层全量能力:
 注册表同时是 MCP 工具 `repo_path` 参数的反查源(注册表 → 索引清单 repo_path → data/repos 逐级),
 `validate_patch` / `when_introduced` / `cross_version_diff` / `merge_eval` / `export_patch` 都能**直接传注册名**。
 
@@ -89,15 +118,9 @@ uv run rootrecall repo gc [--dry-run] [--max-age-days 14] [--name <名>] [--prun
 | `ephemeral` | 某 bug 的一次性检出(`data/worktrees/`):到期 `gc` 级联回收,可点名强删 |
 | `unmanaged` | `ensure_repo` 顺手 clone 的样机 / 手动 index 未声明角色的仓:gc 不碰 |
 
-`sync --analyze` 的三态报告(已修/建议合/冲突)是纯 git 确定性事实(patch-id + merge-tree,零 LLM),
-落 `data/upstream_reports/<基线名>/<时间戳>-sync.md`;「该不该真合」走 upstream-merge skill 复核。
-定时部署样例(systemd user timer / cron)见 [deploy/](../deploy/README.md)。
+`sync --analyze` 的三态报告与 systemd 样例说明见 [`baseline`](#baseline) 段(同一能力,不再重复)。
 
-> **自然语言 → 自动开仓**:`find_repo` MCP 工具(17 号)按「项目+版本」查注册表;版本没有精确
-> 命中时返回基线清单 + 一条带安装根、bash 可原样跑的 `repo checkout … --index` 命令 —— agent
-> 照跑即开仓建索引,全程不问用户要路径(bug-rca/backport SKILL 已接此路径)。
-
-## install / here
+## install / here(日常)
 
 opencode 接线的两条路,取代「每个 bug 目录跑一次 wire 脚本」:
 
@@ -113,7 +136,15 @@ MCP 走全局 opencode.json 的 `cwd` 锚回本仓、路由表走 `~/.config/ope
 注意:全局 AGENTS.md 会注入本机所有 opencode 会话(路由表自带条件判据,对无关项目只多占少量
 system prompt);介意就用项目级 [wire_opencode.sh](../scripts/wire_opencode.sh)。
 
-## lsp
+## models(进阶)
+
+验证配置 + 模型工厂加载,列出模型与角色路由。**配置改完先跑它**,能列出来说明 key 与反射加载都通。
+
+```bash
+uv run rootrecall models
+```
+
+## lsp(进阶)
 
 L2 精确导航(clangd via multilspy)的自检与冒烟。前提:仓库根有 `compile_commands.json`。
 
@@ -122,7 +153,7 @@ uv run rootrecall lsp health [repo_root]                  # clangd + compile_com
 uv run rootrecall lsp refs <file> <line> <col> [repo_root] # 打一次引用查找(1-based 行列)
 ```
 
-## memory
+## memory(进阶)
 
 记忆库的命令行管理(与 MCP 的 memory_* 工具操作同一个库)。
 
@@ -165,7 +196,7 @@ uv run rootrecall memory invalidate <id> [--reason "..."] [--repo X]     # 失�
 
 `consolidate` 给 `--repo-path` 才做「补丁已合入上游」检测(要跑 git 对账)。
 
-## mcp serve
+## mcp serve(进阶)
 
 启动 MCP server —— 17 个工具的入口,详见 [MCP 工具参考](mcp-tools.md)。
 
@@ -179,33 +210,8 @@ uv run rootrecall mcp serve [--codebase X] [--transport stdio|http] [--host H] [
 | `--transport` | `stdio`(默认,推荐)| `http`(warm 长进程) |
 | `--host` / `--port` | http 模式绑定(默认 `127.0.0.1:8765`) |
 
-## bug-rca(降级参考)
-
-早期自跑编排器;主线是 opencode + `bug-rca` skill + MCP 工具。命令保留可跑,用于对照。
-
-```bash
-uv run rootrecall bug-rca --repo <path> --trigger "<线索>" [--log <日志文件>]
-```
-
-`--trigger` 与 `--log` 至少给一个。
-
-## research(降级参考)
-
-代码仓深度调研编排器,产架构 / 模块报告 + codebase_fact 记忆;主线是 `compare` / `onboarding` skill。
-
-```bash
-uv run rootrecall research --repo <path> --codebase <name> [--owner default]
-```
-
-## patch-report(降级参考)
-
-一组 PR → 抓取 → 逐个分析 → 跨 PR 聚合报告;主线是 `patch-review` / `upstream-merge` skill。
-
-```bash
-uv run rootrecall patch-report --prs <url...> --repo <path> --codebase <name> [--concurrency 3]
-```
-
-`--prs` 支持 GitHub 与 Gerrit 链接(Gerrit 需配鉴权环境变量,见[配置参考](configuration.md)密钥速查)。
+> 早期自跑编排器 `bug-rca` / `research` / `patch-report` CLI 已移除(2026-08-21 CLI 瘦身);workflow
+> 模块仍在仓内(`src/rootrecall/workflows/`)可 import 参考,主线一律走 skill + MCP 工具。
 
 ## 相关文档
 

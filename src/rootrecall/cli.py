@@ -1,14 +1,16 @@
 """RootRecall CLI 入口(`uv run rootrecall ...`)。
 
-子命令:
-  rootrecall models                列出 config.yaml 中配置的模型
-  rootrecall run "问题"            跑一次 demo agent(P0)
-  rootrecall index <path> [name]   为一个代码仓库建/更新向量索引(P1)
-  rootrecall tools [--group X]     列出已加载的 agent 工具(验证声明式加载)
-  rootrecall lsp health|refs ...   L2 精确导航(clangd)自检 / 冒烟(P1.5)
-  rootrecall memory recall|add|ingest|list|consolidate|invalidate ...   记忆核心(R1)+ 文档摄取(R3.4)
-  rootrecall mcp serve             MCP server(把记忆暴露给 delegate,R1)
-  rootrecall bug-rca --repo X --trigger "..."   bug 根因定位 workflow(R2 ★MVP)
+日常面(--help 可见,2026-08-21 瘦身后):
+  rootrecall baseline add <路径>   一条命令建基线:登记(role=baseline,git url/branch 自动读)+ 建索引
+  rootrecall baseline sync [名…]  基线同步:fetch→ff→增量刷索引(缺省=全部基线)
+  rootrecall baseline checkout …  从基线取指定版本的一次性检出(worktree,登记 ephemeral)
+  rootrecall baseline ls          列出全部受管仓
+  rootrecall here [--codebase X]  bug/工作目录轻标记(默认检索库)
+  rootrecall install --global     opencode 全局注册四件套(全机一次)
+
+进阶面(隐藏但可用,自动化/排障用,全量参考见 docs/cli.md):
+  index / repo … / memory … / mcp serve / models / lsp
+  (systemd 定时任务调 repo sync、opencode 拉起 mcp serve、排障用 memory/lsp —— 只藏不删。)
 """
 
 
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -397,85 +400,6 @@ def cmd_mcp(args) -> int:
     return 0
 
 
-def cmd_bug_rca(args) -> int:
-    """bug-RCA workflow(R3.1 ★MVP):输入 repo + trigger(和/或 log)→ 报告 + 补丁。
-
-      rootrecall bug-rca --repo <path> --trigger "<线索>" [--log <日志文件>]
-    六步:ingest→recall_lessons→[delegate_localize_loop(opencode 自定位 + MCP 工具)]→assemble_repair
-         →[delegate_repair_loop]→report+memorize。真调 opencode(delegate),较慢(数分钟)。
-
-    ⚠️ post-pivot(2026-08-06)参考路径:bug-RCA 主路径已改成 opencode + bug-rca skill +
-    RootRecall MCP 工具(见 docs/设计/harness-pivot-design.md)。本命令保留向后兼容,仍可用。
-    """
-    import asyncio
-
-    from rootrecall.workflows.bug_rca.graph import run
-
-    print("⚠️ 提示:bug-RCA 主路径已转向 opencode + bug-rca skill + RootRecall MCP 工具"
-          "(tool+skill server / 领域 harness)。本 orchestrator 命令保留向后兼容,仍可跑。"
-          "见 docs/设计/harness-pivot-design.md。", file=sys.stderr)
-
-    if not args.trigger and not args.log:
-        print("错误:至少给 --trigger(线索)或 --log(日志文件)之一。", file=sys.stderr)
-        return 2
-    try:
-        final = asyncio.run(run(args.repo, args.trigger, log_path=args.log))
-    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
-        print(f"bug-RCA 运行出错:{e}", file=sys.stderr)
-        return 1
-    print(f"报告:{final.get('report_path', '-')}")
-    print(f"补丁:{final.get('patch_path', '-')}")
-    print(f"验证:{final.get('verified', False)}")
-    return 0
-
-
-def cmd_research(args) -> int:
-    """deep_research workflow(R3.2 P1):输入 repo → 架构/模块调研报告 + CodebaseFact 入记忆。
-
-      rootrecall research --repo <path> --codebase <name> [--owner <owner>]
-    六步:ingest→index(code_index + CRG)→plan(社区)→research(每模块 ReAct 子 agent)
-         →report(§5 + Verifier)→memorize(CodebaseFact)。真调模型建子 agent,较慢(数分钟)。
-    """
-    import asyncio
-
-    from rootrecall.workflows.deep_research.graph import run
-
-    try:
-        final = asyncio.run(run(args.repo, codebase=args.codebase, owner=args.owner))
-    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
-        print(f"deep_research 运行出错:{e}", file=sys.stderr)
-        return 1
-    print(f"报告:{final.get('report_path', '-')}")
-    print(f"CodebaseFact 入记忆:{final.get('facts_memorized', 0)} 条")
-    return 0
-
-
-def cmd_patch_report(args) -> int:
-    """patch_report workflow(P-A 1b):一组 PR → fetch → 逐 PR 分析 → 跨 PR 聚合 → cited 报告。
-
-      rootrecall patch-report --prs <url...> --repo <path> --codebase <name> [--concurrency 3]
-    ingest→fetch_prs→analyze(validate+CRG risk+cited-reporter)→aggregate(分桶+LLM 综合)
-         →report(cited+Verifier)→memorize(codebase_fact)。
-    诚实:CRG 图需先 `rootrecall index` 建;GitHub 匿名限速(建议配 GITHUB_TOKEN)。
-    """
-    import asyncio
-
-    from rootrecall.workflows.patch_report.graph import run
-
-    try:
-        final = asyncio.run(run(args.prs, repo=args.repo, codebase=args.codebase,
-                                owner=getattr(args, "owner", "default"),
-                                concurrency=getattr(args, "concurrency", 3)))
-    except Exception as e:  # noqa: BLE001 - CLI 顶层兜底
-        print(f"patch_report 运行出错:{e}", file=sys.stderr)
-        return 1
-    print(f"报告:{final.get('report_path', '-')}")
-    agg = (final.get("aggregate") or {}).get("stats") or {}
-    print(f"PRs:{agg.get('total_prs', 0)} · high_security={agg.get('high_security_count', 0)} · "
-          f"CodebaseFact 入记忆:{final.get('facts_memorized', 0)} 条")
-    return 0
-
-
 def cmd_repo(args) -> int:
     """仓库注册表子命令(F1 repo registry):ls / register / rm / resolve / checkout / gc / sync。
 
@@ -499,7 +423,7 @@ def cmd_repo(args) -> int:
     if args.repo_cmd == "ls":
         recs = reg.list()
         if not recs:
-            print("(注册表为空 —— rootrecall repo register <名> --path <路径> 登记,或 ensure_repo/index 自动登记)")
+            print("(注册表为空 —— rootrecall baseline add <代码仓路径> 一条命令建基线,或 ensure_repo/index 自动登记)")
             return 0
         print(f"{'名字':24} {'角色':11} {'路径':36} 索引/分支/bug")
         for r in recs:
@@ -684,6 +608,111 @@ def cmd_repo(args) -> int:
     return 1
 
 
+def _git_out(repo: Path, *git_args: str) -> str | None:
+    """在 repo 里跑一条 git 命令,成功返回 stdout(去尾换行),失败/没装 git 返回 None。"""
+    import subprocess
+
+    try:
+        r = subprocess.run(["git", "-C", str(repo), *git_args],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _baseline_default_name(path: Path) -> tuple[str, str | None]:
+    """基线默认名 = 相对总目录(ROOTRECALL_CODEBASES,quickstart 建,默认 ~/codebases)的
+    路径**倒序**连 '-':v20/bluez → bluez-v20、upstream/bluez → bluez-upstream、systemd → systemd。
+
+    不在总目录下 → 退回目录名,并带提示(建议 --name 或挪进总目录);路径就是总目录本身 → 空名 + 错误说明。
+    """
+    import os
+
+    root = Path(os.environ.get("ROOTRECALL_CODEBASES") or Path.home() / "codebases").resolve()
+    p = path.resolve()
+    try:
+        rel = p.relative_to(root)
+    except ValueError:
+        return p.name, f"路径不在总目录({root})下,默认名只取末级目录名;建议 --name 显式给,或把仓挪进总目录"
+    parts = rel.parts
+    if not parts:
+        return "", f"路径就是总目录本身({root});要指向里面的具体代码仓"
+    return "-".join(reversed(parts)), None
+
+
+def cmd_baseline_add(args) -> int:
+    """一条命令建基线:登记(role=baseline,url/branch 从 git 自动读)+ 建索引(向量+结构图)。
+
+      rootrecall baseline add ~/codebases/v20/bluez    → 基线名 bluez-v20
+      rootrecall baseline add ~/codebases/v25/bluez    → 基线名 bluez-v25
+      rootrecall baseline add ~/codebases/systemd      → 基线名 systemd
+    默认名规则见 _baseline_default_name;--name 覆盖。基线必须是 git 仓(取版本 checkout /
+    同步 sync 都依赖 git 对象库与 remote)。幂等:重跑 = upsert 登记 + 索引增量刷新。
+    """
+    import os as _os
+
+    from rootrecall.services.repos.registry import RepoRegistry, _install_root
+
+    p = Path(args.path).expanduser()
+    if not p.is_dir():
+        print(f"错误:目录不存在:{p}", file=sys.stderr)
+        return 1
+    if _git_out(p, "rev-parse", "--is-inside-work-tree") is None:
+        print(f"错误:{p} 不是 git 仓 —— 基线需要 git(取版本 checkout / 同步 sync 都依赖它)。\n"
+              f"  先把源码 git clone 进总目录再 add;只想建索引不进基线体系,用进阶命令: "
+              f"rootrecall index <路径> <索引名>(见 docs/cli.md)", file=sys.stderr)
+        return 2
+
+    name, warn = _baseline_default_name(p)
+    if args.name:
+        name, warn = args.name, None
+    if not name:
+        print(f"错误:{warn}", file=sys.stderr)
+        return 2
+
+    # git 元数据自动读:remote(origin 优先,退第一个)/ 当前分支(detached 时退 tag/短 sha)
+    url = _git_out(p, "remote", "get-url", "origin")
+    if url is None:
+        first = _git_out(p, "remote")
+        if first:
+            url = _git_out(p, "remote", "get-url", first.splitlines()[0])
+    branch = _git_out(p, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch == "HEAD":  # detached:精确 tag 优先,退短 sha
+        branch = _git_out(p, "describe", "--tags", "--exact-match", "HEAD") \
+            or _git_out(p, "rev-parse", "--short", "HEAD")
+
+    reg = RepoRegistry()
+    existing = reg.get(name)
+    reg.register(name, path=str(p.resolve()), url=url, role="baseline",
+                 branch=branch, codebase=name)
+    print(f"✅ 基线登记:{name}  role=baseline{'(已存在,upsert 增量刷新)' if existing else ''}"
+          f"  path={p.resolve()}")
+    print(f"   url={url or '-'}  branch={branch or '-'}")
+    if url is None:
+        print("   ⚠️ 没检测到 git remote —— baseline sync 将不可用;补:rootrecall repo register "
+              f"{name} --url <git地址>(upsert,其余字段不动)", file=sys.stderr)
+    if warn:
+        print(f"   ⚠️ {warn}")
+    print("— 建索引(向量+结构图,大仓分钟级)…")
+    # 与 repo checkout --index 同款守卫:调用方可能在任意 cwd(如 agent 在 bug 目录跑),
+    # 把相对 data/ 落点锚回安装根(ROOTRECALL_HOME 设了时 reanchor 已给绝对路径,chdir 无副作用)。
+    prev_cwd = _os.getcwd()
+    try:
+        _os.chdir(_install_root())
+        rc = cmd_index(argparse.Namespace(repo_path=str(p), repo_name=name,
+                                          force=args.force, no_graph=args.no_graph, seed=None))
+    finally:
+        _os.chdir(prev_cwd)
+    if rc == 0:
+        print(f"基线就绪。之后:`baseline sync` 同步最新+增量刷索引;"
+              f"`baseline checkout <新名> --from {name} --ref <tag> --bug <bug号> --index` 取指定版本;"
+              f"任意 bug 目录 `opencode` 直接问(项目+版本会自动从基线开检出)。")
+    else:
+        print(f"⚠️ 登记已完成,但索引未建成(rc={rc};多半是缺 embedding key)——补 key 后重跑"
+              f" `baseline add {p}` 同名增量补建,登记不会重复。", file=sys.stderr)
+    return rc
+
+
 def cmd_install(args) -> int:
     """opencode 全局注册 / 卸载(F2):四件套装进 ~/.config/opencode,全机一次。
 
@@ -737,13 +766,59 @@ def main(argv: list[str] | None = None) -> int:
     # 把 .env 读进环境变量;必须在任何 config/$VAR 解析之前
     load_dotenv()
 
-    parser = argparse.ArgumentParser(prog="rootrecall", description="RootRecall agent")
+    parser = argparse.ArgumentParser(
+        prog="rootrecall",
+        description="RootRecall —— 代码仓基线一条龙(baseline)+ bug 目录标记(here)+ opencode 接线(install);"
+                    "进阶命令隐藏不删(repo/memory/index/mcp/models/lsp),全量参考 docs/cli.md")
     sub = parser.add_subparsers(dest="cmd")
 
-    sub_models = sub.add_parser("models", help="列出 config.yaml 中配置的模型")
+    # ── 日常面:baseline 家族(用户唯一高频入口,2026-08-21 CLI 瘦身)────────────
+    sub_base = sub.add_parser("baseline", help="代码仓基线一条龙:add 登记+建索引 / sync 同步 / checkout 取版本 / ls")
+    sub_base_sub = sub_base.add_subparsers(dest="baseline_cmd", required=True)
+    b_add = sub_base_sub.add_parser("add", help="一条命令:登记基线(role=baseline,git url/branch 自动读)+ 建索引")
+    b_add.add_argument("path", help="代码仓路径(如 ~/codebases/v20/bluez → 基线 bluez-v20)")
+    b_add.add_argument("--name", default=None,
+                       help="基线名(默认=相对总目录 ROOTRECALL_CODEBASES 的路径倒序连 '-';systemd → systemd)")
+    b_add.add_argument("--force", action="store_true", help="索引强制全量重建")
+    b_add.add_argument("--no-graph", action="store_true", help="只建向量索引,不建结构图(快)")
+    b_add.set_defaults(func=cmd_baseline_add)
+    b_sync = sub_base_sub.add_parser("sync", help="基线同步:fetch→ff→增量刷索引→(可选)上游三态报告;缺省=全部基线")
+    b_sync.add_argument("names", nargs="*", help="要同步的基线名(缺省=全部 baseline)")
+    b_sync.add_argument("--analyze", default=None, metavar="FORK名",
+                        help="对哪个注册仓做上游三态分析(如 --analyze bluez-v20;fork 须有本地检出)")
+    b_sync.add_argument("--analyze-agent", action="store_true",
+                        help="三态报告后再跑 headless opencode 复核「该不该合」并追加进报告(需与 --analyze 同用)")
+    b_sync.add_argument("--ingest-report", action="store_true",
+                        help="把三态报告摄取进记忆库(需与 --analyze 同用)")
+    b_sync.add_argument("--no-index", action="store_true", help="跳过索引刷新(没配 embedding key 时)")
+    b_sync.set_defaults(func=cmd_repo, repo_cmd="sync")
+    b_co = sub_base_sub.add_parser("checkout", help="从基线取指定版本的一次性检出(worktree 秒开,登记 ephemeral)")
+    b_co.add_argument("name", help="检出注册名(=索引名,如 bluez-v20-5.50.61)")
+    b_co.add_argument("--from", dest="from_repo", required=True, help="基线注册名(baseline add 登记的)")
+    b_co.add_argument("--ref", required=True, help="检出的 ref(分支/tag/commit,如 5.50.61-deepin1)")
+    b_co.add_argument("--bug", default=None, help="关联 bug 标识(gc 报告里给人看)")
+    b_co.add_argument("--dest", default=None, help="落点(默认 data/worktrees/<name>)")
+    b_co.add_argument("--index", action="store_true",
+                      help="开仓顺手建索引:播种基线索引后增量建(embedder 不可用则诚实跳过,不挡检出)")
+    b_co.set_defaults(func=cmd_repo, repo_cmd="checkout")
+    b_ls = sub_base_sub.add_parser("ls", help="列出全部受管仓(基线/检出/未管理)")
+    b_ls.set_defaults(func=cmd_repo, repo_cmd="ls")
+
+    # ── 日常面:here / install ────────────────────────────────────────────────
+    sub_install = sub.add_parser("install", help="opencode 全局注册/卸载(skills+mcp+agent块+AGENTS.md 四件套,全机一次)")
+    sub_install.add_argument("--global", dest="global_", action="store_true", help="装进 ~/.config/opencode(唯一模式)")
+    sub_install.add_argument("--uninstall", action="store_true", help="卸载全局注册(只摘自己写的)")
+    sub_install.set_defaults(func=cmd_install)
+
+    sub_here = sub.add_parser("here", help="在当前 bug/工作目录做轻量标记(.rootrecall.yaml + 项目 opencode.json)")
+    sub_here.add_argument("--codebase", default=None, help="该目录会话的默认检索索引名(免每次显式传)")
+    sub_here.set_defaults(func=cmd_here)
+
+    # ── 进阶面:不进 --help 展示但完全可用(自动化/排障;systemd 调 repo sync、opencode 拉起 mcp serve)──
+    sub_models = sub.add_parser("models", help="[进阶] 列出 config.yaml 中配置的模型")
     sub_models.set_defaults(func=cmd_models)
 
-    sub_index = sub.add_parser("index", help="为仓库建索引(向量索引 + 结构图,一次到位)")
+    sub_index = sub.add_parser("index", help="[进阶] 为仓库建索引(向量索引 + 结构图,一次到位)")
     sub_index.add_argument("repo_path", help="仓库根目录路径")
     sub_index.add_argument("repo_name", nargs="?", default=None,
                            help="索引名(默认取目录名;须与 code_index.repo 一致)")
@@ -754,7 +829,7 @@ def main(argv: list[str] | None = None) -> int:
                            help="只建向量索引,不建结构图(快;blast_radius/call_chain/repo_map 将不可用)")
     sub_index.set_defaults(func=cmd_index)
 
-    sub_repo = sub.add_parser("repo", help="仓库注册表(data/repos.yaml):ls/register/rm/resolve + checkout/gc/sync")
+    sub_repo = sub.add_parser("repo", help="[进阶] 仓库注册表:ls/register/rm/resolve + checkout/gc/sync")
     sub_repo_sub = sub_repo.add_subparsers(dest="repo_cmd", required=True)
     r_ls = sub_repo_sub.add_parser("ls", help="列出全部受管仓(角色/路径/索引名)")
     r_ls.set_defaults(func=cmd_repo, repo_cmd="ls")
@@ -804,16 +879,7 @@ def main(argv: list[str] | None = None) -> int:
     r_sync.add_argument("--no-index", action="store_true", help="跳过索引刷新(没配 embedding key 时)")
     r_sync.set_defaults(func=cmd_repo, repo_cmd="sync")
 
-    sub_install = sub.add_parser("install", help="opencode 全局注册/卸载(skills+mcp+agent块+AGENTS.md 四件套,全机一次)")
-    sub_install.add_argument("--global", dest="global_", action="store_true", help="装进 ~/.config/opencode(唯一模式)")
-    sub_install.add_argument("--uninstall", action="store_true", help="卸载全局注册(只摘自己写的)")
-    sub_install.set_defaults(func=cmd_install)
-
-    sub_here = sub.add_parser("here", help="在当前 bug/工作目录做轻量标记(.rootrecall.yaml + 项目 opencode.json)")
-    sub_here.add_argument("--codebase", default=None, help="该目录会话的默认检索索引名(免每次显式传)")
-    sub_here.set_defaults(func=cmd_here)
-
-    sub_lsp = sub.add_parser("lsp", help="L2 精确导航(clangd):health 自检 / refs 冒烟")
+    sub_lsp = sub.add_parser("lsp", help="[进阶] L2 精确导航(clangd):health 自检 / refs 冒烟")
     sub_lsp_sub = sub_lsp.add_subparsers(dest="lsp_cmd", required=True)
     sub_lsp_health = sub_lsp_sub.add_parser("health", help="检测 clangd + compile_commands 是否就位")
     sub_lsp_health.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
@@ -824,7 +890,7 @@ def main(argv: list[str] | None = None) -> int:
     sub_lsp_refs.add_argument("repo_root", nargs="?", default=None, help="仓库根(默认 workspace)")
     sub_lsp.set_defaults(func=cmd_lsp)
 
-    sub_memory = sub.add_parser("memory", help="记忆核心:recall/add/ingest/list/consolidate/invalidate")
+    sub_memory = sub.add_parser("memory", help="[进阶] 记忆核心:recall/add/ingest/list/consolidate/invalidate")
     sub_memory_sub = sub_memory.add_subparsers(dest="memory_cmd", required=True)
     m_recall = sub_memory_sub.add_parser("recall", help="翻记忆(多路召回)")
     m_recall.add_argument("query", help="自然语言查询")
@@ -862,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
     m_inv.add_argument("--repo", default=None)
     sub_memory.set_defaults(func=cmd_memory)
 
-    sub_mcp = sub.add_parser("mcp", help="MCP server(把 RootRecall 能力做成工具给 coding agent 调)")
+    sub_mcp = sub.add_parser("mcp", help="[进阶] MCP server(把 RootRecall 能力做成工具给 coding agent 调)")
     sub_mcp_sub = sub_mcp.add_subparsers(dest="mcp_cmd", required=True)
     mcp_serve = sub_mcp_sub.add_parser("serve", help="启动 MCP server(stdio 默认;--transport http 起 warm 长进程)")
     mcp_serve.add_argument("--codebase", default=None, help="查哪个代码库的索引/记忆(= 建索引时的 name);默认 config.code_index.repo")
@@ -871,26 +937,11 @@ def main(argv: list[str] | None = None) -> int:
     mcp_serve.add_argument("--port", type=int, default=None, help="http 端口(默认 8765;config.mcp.port)")
     sub_mcp.set_defaults(func=cmd_mcp)
 
-    sub_bug = sub.add_parser("bug-rca", help="bug 根因定位 workflow(★MVP,委托 opencode)")
-    sub_bug.add_argument("--repo", required=True, help="仓库根目录")
-    sub_bug.add_argument("--trigger", default=None, help="bug 线索(日志摘要/问题描述/漏洞关键句);纯日志驱动可省")
-    sub_bug.add_argument("--log", default=None, help="原始日志文件路径(交给 opencode 用 grep/awk 按时间窗切)")
-    sub_bug.set_defaults(func=cmd_bug_rca)
-
-    sub_res = sub.add_parser("research", help="代码仓深度调研 workflow(P1,产架构/模块报告 + CodebaseFact)")
-    sub_res.add_argument("--repo", required=True, help="仓库根目录")
-    sub_res.add_argument("--codebase", required=True, help="仓库名(= 建索引 name;CRG db / 记忆 scope.codebase 用)")
-    sub_res.add_argument("--owner", default="default", help="记忆 scope.owner(默认 default;多用户 R4)")
-    sub_res.set_defaults(func=cmd_research)
-
-    sub_pr = sub.add_parser("patch-report", help="P-A 1b 批量 PR 聚合报告(一组 PR → 跨 PR 质量/安全/功能报告)")
-    sub_pr.add_argument("--prs", required=True, nargs="+",
-                        help="PR URL 列表(GitHub github.com/.../pull/N;Gerrit 同接口)")
-    sub_pr.add_argument("--repo", required=True, help="代码仓根(CRG 图 + validate_patch 用;需先 rootrecall index)")
-    sub_pr.add_argument("--codebase", required=True, help="仓库名(CRG db / 记忆 scope.codebase)")
-    sub_pr.add_argument("--owner", default="default", help="记忆 scope.owner(默认 default)")
-    sub_pr.add_argument("--concurrency", type=int, default=3, help="并发抓取/分析(默认 3,GitHub 限速友好)")
-    sub_pr.set_defaults(func=cmd_patch_report)
+    # 进阶命令不进展示:argparse 的 help=SUPPRESS 对子命令在 py3.12 会打出字面量、usage 仍列
+    # 全名,故注册完后手动从选择列表摘掉(命令本身保留 —— systemd 调 repo sync、opencode 拉起 mcp serve)。
+    _visible = ("baseline", "install", "here")
+    sub._choices_actions = [a for a in sub._choices_actions if a.dest in _visible]
+    sub.metavar = "{" + ",".join(_visible) + "}"
 
     args = parser.parse_args(argv)
     if getattr(args, "func", None):

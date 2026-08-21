@@ -13,15 +13,15 @@ cd "$REPO"
 FORCE=0
 if [ "${1:-}" = "--force" ]; then FORCE=1; fi
 
-# ── [1/6] 系统工具 + Python 依赖 + 记忆软链 ─────────────────────────────
+# ── [1/7] 系统工具 + Python 依赖 + 记忆软链 ─────────────────────────────
 # fresh clone 没有 .venv → 跑完整 setup.sh;本机已装过 → 跳过(重装用 --force)。
 if [ "$FORCE" -eq 1 ] || [ ! -d .venv ]; then
   bash scripts/setup.sh
 else
-  echo "[1/6] 依赖已就绪(.venv 存在),跳过安装;重装: bash scripts/quickstart.sh --force"
+  echo "[1/7] 依赖已就绪(.venv 存在),跳过安装;重装: bash scripts/quickstart.sh --force"
 fi
 
-# ── [2/6] .env 密钥(必填 2 个;已配的保留现值,只问缺的)────────────────
+# ── [2/7] .env 密钥(必填 2 个;已配的保留现值,只问缺的)────────────────
 [ -f .env ] || cp .env.example .env
 
 # 读 .env 里某个 key 的值(仅内部用,不回显)
@@ -61,7 +61,7 @@ ask_key() {
   done
 }
 
-echo "[2/6] .env 密钥(必填 2 个;其余按需 key 见 .env.example 注释,稍后手动补)"
+echo "[2/7] .env 密钥(必填 2 个;其余按需 key 见 .env.example 注释,稍后手动补)"
 ask_key "DEEPSEEK_API_KEY"  "所有 LLM 角色(deepseek-v4-pro / v4-flash);https://platform.deepseek.com"
 ask_key "DASHSCOPE_API_KEY" "embedding + reranker(阿里云百炼);https://bailian.console.aliyun.com"
 
@@ -75,13 +75,13 @@ if ! grep -q '^DASHSCOPE_API_KEY=..' .env 2>/dev/null; then
   echo "        检索类工具(search_codebase 等)等补 key 再建 —— 详见 docs/configuration.md「最小模式」"
 fi
 
-# ── [3/6] 验证配置 + 模型工厂加载(models 只查非空,不打印 key 值)────────
-echo "[3/6] 验证模型配置"
+# ── [3/7] 验证配置 + 模型工厂加载(models 只查非空,不打印 key 值)────────
+echo "[3/7] 验证模型配置"
 uv run rootrecall models
 
-# ── [4/6] (可选)给目标代码库建索引 ─────────────────────────────────────
+# ── [4/7] (可选)给目标代码库建索引 ─────────────────────────────────────
 # 检索类工具(search_codebase / blast_radius / call_chain…)需要索引;记忆类不需要。
-echo "[4/6] 建索引(可选)"
+echo "[4/7] 建索引(可选)"
 printf '要现在给某个代码库建索引吗?输入仓库绝对路径(留空跳过,之后随时: uv run rootrecall index <仓库路径> <索引名>):'
 read -r repo_path || repo_path=""
 if [ -n "$repo_path" ]; then
@@ -101,8 +101,23 @@ else
   echo "  跳过(检索类工具用前再建: uv run rootrecall index <仓库路径> <索引名>)"
 fi
 
-# ── [5/6] (可选)给 bug/工作仓接线:接完能在那个仓里直接启动 opencode ──────
-echo "[5/6] opencode 接线(推荐全局一次,免每目录接线)"
+# ── [5/7] 代码仓总目录(基线的家)────────────────────────────────────────
+# 所有要建基线的代码仓都 clone 进这一个目录;baseline add 按目录结构自动命名
+# (v20/bluez → bluez-v20、upstream/bluez → bluez-upstream、systemd → systemd)。
+printf '代码仓总目录(回车默认 ~/codebases,已存在则复用):'
+read -r cb_root || cb_root=""
+cb_root=${cb_root/#\~/$HOME}
+cb_root=${cb_root:-$HOME/codebases}
+mkdir -p "$cb_root"
+env_set "ROOTRECALL_CODEBASES" "$cb_root"
+echo "  ✅ 总目录就绪:$cb_root(已写入 .env:ROOTRECALL_CODEBASES)"
+echo "  下一步 —— 把源码 clone 进去后,每仓一条命令建基线(登记+建索引):"
+echo "    uv run rootrecall baseline add $cb_root/v20/bluez     # → 基线 bluez-v20"
+echo "    uv run rootrecall baseline add $cb_root/v25/bluez     # → 基线 bluez-v25"
+echo "    uv run rootrecall baseline add $cb_root/systemd       # → 基线 systemd"
+
+# ── [6/7] (可选)给 bug/工作仓接线:接完能在那个仓里直接启动 opencode ──────
+echo "[6/7] opencode 接线(推荐全局一次,免每目录接线)"
 printf '要把 RootRecall 全局注册进 opencode 吗(装一次,之后任意目录 opencode 直接用)?[Y/n] '
 read -r ans_global || ans_global=""
 if [ "$ans_global" != "n" ]; then
@@ -121,8 +136,8 @@ else
   echo "  跳过(全局注册已够用;单个 bug 目录要定默认检索库时: cd <目录> && uv run rootrecall here --codebase <索引名>)"
 fi
 
-# ── [6/6] opencode 接线自检 + 启动指引 ──────────────────────────────────
-echo "[6/6] opencode 接线自检"
+# ── [7/7] opencode 接线自检 + 启动指引 ──────────────────────────────────
+echo "[7/7] opencode 接线自检"
 ok=1
 if command -v opencode >/dev/null 2>&1; then
   echo "  ✅ opencode 已安装: $(command -v opencode)"
@@ -153,8 +168,9 @@ if [ "$ok" -eq 1 ]; then
   echo "   数据落点:默认仓内 $REPO/data/;要迁出(放 ~/.local/share、换盘)→ 设 ROOTRECALL_HOME"
   echo "   后重跑 install --global 生效,已有数据 mv 过去即可 —— 详见 docs/configuration.md"
   echo "   「数据落点与 ROOTRECALL_HOME」"
-  echo "   试用示例:「为什么 wpa 的 P2P 会话会泄漏?」(bug-rca)/"
-  echo "             「这个仓库整体架构怎么组织?」(onboarding)"
+echo "   试用示例:「为什么 wpa 的 P2P 会话会泄漏?」(bug-rca)/"
+echo "             「这个仓库整体架构怎么组织?」(onboarding)"
+echo "   基线管理:baseline ls 看基线 / baseline sync 同步+增量索引 / baseline checkout 取指定版本"
 else
   echo "⚠️ 上方有 ⚠️ 项未就绪 —— 按提示处理即可,其余步骤已完成无需重跑。"
 fi

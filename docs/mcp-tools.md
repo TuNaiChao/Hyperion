@@ -278,8 +278,9 @@ find_repo(project: str, version: str | None = None, role: str | None = None) -> 
 「项目+版本」→ 注册表(`data/repos.yaml`)候选仓,**候选名可直接当其他工具的 repo_path 用**
 (注册名可解析)。按注册名/分支/url 模糊匹配,baseline 优先;带 `version` 时区分**版本精确命中**
 (该版本已开仓,直接用)与 **Related**(同项目但版本没配上 —— 单列,不冒充命中)。没有精确命中时,
-返回注册的基线清单 + 一条带安装根、bash 可原样跑的自动开仓命令(`repo checkout … --index`:
-worktree + 播种基线索引增量建,一步就绪);连基线都没有则引导向用户要 git 地址注册基线。
+返回注册的基线清单 + 一条带安装根、bash 可原样跑的自动开仓命令(`baseline checkout … --index`:
+worktree + 播种基线索引增量建,一步就绪);连基线都没有则引导:向用户要 git 地址、clone 进代码仓总目录后
+`baseline add` 建基线。
 
 **自动开仓链的第一环**:用户问「分析 bluez 5.50.61 根因」,agent 把问话解析成
 `find_repo(project="bluez", version="5.50.61")`,命中即用、没命中照命令开仓,全程不问用户要路径。

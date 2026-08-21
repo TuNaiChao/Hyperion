@@ -39,41 +39,42 @@
 
 ```bash
 git clone https://github.com/TuNaiChao/RootRecall.git && cd RootRecall
-bash scripts/quickstart.sh    # 依赖 + .env 密钥 + 模型验证 + 接线自检(幂等,可重跑)
+bash scripts/quickstart.sh    # 依赖 + .env 密钥 + 模型验证 + 代码仓总目录 + 接线自检(幂等,可重跑)
 uv run rootrecall install --global   # (推荐)注册进 ~/.config/opencode:任意目录 opencode 免接线
 ```
 
-日常命令(quickstart 之外):
+日常命令(quickstart 之外,`--help` 只列这些;进阶命令隐藏不删,全量见 [cli.md](docs/cli.md)):
 
 ```bash
-# ── opencode 接线(二选一)──────────────────────────────────────────────
-uv run rootrecall install --global   # 全机一次:skills 软链 + MCP 注册 + AGENTS.md 路由段
-                                     # 之后任意目录 `opencode` 直接用;卸载加 --uninstall
-bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>   # 项目级备选(不想全局注入 AGENTS.md / 无权写 ~/.config 时;同款还有 rootrecall here)
-uv run rootrecall here --codebase <索引名>                   # bug 目录轻标记(配合全局注册)
+# ── 基线一条龙:把源码 git clone 进总目录(quickstart 建,默认 ~/codebases)后,每仓一条 ──
+uv run rootrecall baseline add ~/codebases/v20/bluez      # 登记 baseline(git url/branch 自动读)+ 建索引
+                                                           # 默认名=路径倒序连 '-':v20/bluez→bluez-v20;systemd→systemd
+uv run rootrecall baseline add ~/codebases/v25/bluez      # → bluez-v25(upstream/bluez 同理)
+uv run rootrecall baseline ls                             # 看全部基线/检出
+uv run rootrecall baseline sync                           # 同步全部基线:fetch→ff→增量刷索引(缺省=全部;systemd 样例见 deploy/)
+uv run rootrecall baseline checkout bug-001 --from bluez-v20 --ref 5.50.58-deepin1 --bug 001 --index
+                                                           # 秒取指定版本检出(worktree+播种索引,登记 ephemeral;不脏基线)
 
-# ── 建索引:检索类工具(search / blast_radius / call_chain…)需要 ──────────
-uv run rootrecall index <源码路径> <索引名>            # 索引名按「项目-版本线」取,如 wpa-v25
-uv run rootrecall index <路径> <新版本名> --seed <基线索引名>   # 小版本播种:拷贝基线再增量,只重嵌差异
-
-# ── 代码库生命周期(baseline 永久+定时同步 / ephemeral 一次性+gc 回收)────
-uv run rootrecall repo register <名> --url <git地址> --role baseline --branch <分支>
-uv run rootrecall repo checkout <新名> --from <基线名> --ref <tag/分支> --bug <bug号>  # 秒开一次性检出(worktree)
-uv run rootrecall repo sync [--analyze <发行版仓名>]   # fetch→ff→增量刷索引→上游三态分析报告(零 LLM)
-uv run rootrecall repo gc [--dry-run]                 # 回收过期 ephemeral(级联:worktree+索引+结构图;记忆不删)
+# ── opencode 接线(全局一次 + bug 目录标记)───────────────────────────────
+uv run rootrecall install --global   # 全机一次:skills 软链 + MCP 注册 + agent 块 + AGENTS.md 路由段
+uv run rootrecall here --codebase <索引名>   # bug 目录轻标记(默认检索库);之后该目录 `opencode` 直接问
+bash scripts/wire_opencode.sh <工作仓> --codebase <索引名>   # 项目级备选(不想全局注入 / 无权写 ~/.config)
 ```
+
+bug 定位时不用手动 checkout:在 opencode 里说「bluez **5.50.58-deepin1** 的 XX 问题」,agent 会 `find_repo` 查注册表、未命中自动跑上面的 baseline checkout 开检出仓再分析。
 
 | 环境变量 | 作用 |
 |---|---|
 | `ROOTRECALL_MCP_TOOLS` | 裁剪工具面省上下文:`minimal`(8 个)/ `research` / `full`(17 个,默认)或逗号清单;未注册的工具不进 tools/list |
 | `ROOTRECALL_HOME` | 数据落点整体迁出安装根(如 `~/.local/share/rootrecall`):索引/记忆/镜像/注册表/报告全跟走,`git pull` 升级不碰数据;不设 = 现状不变。详见 [configuration.md](docs/configuration.md) |
+| `ROOTRECALL_CODEBASES` | 代码仓总目录(quickstart 建,默认 `~/codebases`):`baseline add` 按其下相对路径自动命名 |
 | `ROOTRECALL_CLAUDE_LINK=0` | 跳过 Claude Code 记忆软链(只用 opencode 的机器) |
 
 ## 使用
 
 opencode 启动位置三选一:**本仓库根**(默认)、**已接线的工作仓**(wire_opencode.sh / `rootrecall here`)、**任意目录**(`install --global` 注册后免接线);停在默认界面直接提问即可,agent 读 [AGENTS.md](AGENTS.md) 路由表自动载入对应 skill(`rootrecall-*` 模式已撤出 Tab 切换列表,改为 subagent 供 `@` 点名或硬门隔离时委派)。全局注册把 skills 软链进 `~/.config/opencode/skills/`、MCP 写进 `~/.config/opencode/opencode.json`(cwd 锚回本仓)、路由表以标记段落进 `~/.config/opencode/AGENTS.md`——卸载 `install --global --uninstall` 只摘自己写的。项目级接线时 `.claude/skills`/`AGENTS.md` 软链供项目级发现,生成的 `opencode.json` 经 `mcp.rootrecall.cwd` 把 MCP 进程锚回本仓,`.venv` / `data/` / `.env` 照旧解析。
 
-**仓库注册表**(`data/repos.yaml`,由 `repo register/checkout/ensure_repo` 自动维护)把「索引名↔仓库路径↔角色↔生命周期」串起来:检索/记忆类工具与 `validate_patch` 等的 `repo_path` 参数现在**直接吃注册名**(注册表→索引清单→data/repos 逐级反查),compare/bug-rca 等不再问你要绝对路径;`repo ls` 一眼看全机资产,baseline(共享基线,`repo sync` 定时更新,systemd timer 样例见 [deploy/](deploy/))与 ephemeral(一次性 bug 检出,`repo gc --dry-run` 先看后删)各安其位。
+**仓库注册表**(`data/repos.yaml`,由 `baseline add/checkout`、`ensure_repo` 自动维护)把「索引名↔仓库路径↔角色↔生命周期」串起来:检索/记忆类工具与 `validate_patch` 等的 `repo_path` 参数现在**直接吃注册名**(注册表→索引清单→data/repos 逐级反查),compare/bug-rca 等不再问你要绝对路径;`baseline ls` 一眼看全机资产,baseline(共享基线,`baseline sync` 定时更新,systemd timer 样例见 [deploy/](deploy/))与 ephemeral(一次性 bug 检出,`repo gc --dry-run` 先看后删)各安其位。
 
 试用(默认界面直接问,自动路由):
 
@@ -82,7 +83,7 @@ opencode 启动位置三选一:**本仓库根**(默认)、**已接线的工作�
 
 多仓库:检索 / 记忆类工具均接受 per-call `codebase` 参数,建多个索引即可切换;记忆全局共享,按 codebase 标签隔离。命名约定:索引名用「项目-版本线」(`wpa-v25`),记忆标签用项目名(`wpa`)—— 教训跨版本共享,防版本孤岛。
 
-更新:`git pull` 后重跑 quickstart(幂等);目标仓打进补丁后重跑同一条 `index` 命令刷新索引 —— 向量与结构图均增量更新,`--force` 才全量重建。
+更新:`git pull` 后重跑 quickstart(幂等);基线仓打进补丁/上游有新提交后跑 `baseline sync`(或对检出重跑 `baseline add` 同名增量刷)—— 向量与结构图均增量更新,`--force` 才全量重建。
 
 ## 架构
 
@@ -190,4 +191,4 @@ Python 3.12 · uv 管理依赖 · LangGraph + LangChain · **mcp** SDK(MCP serve
 
 ## 现状
 
-三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);部署侧 quickstart 经干净机演练(零 key / 全功能两轮),systemd 定时同步(sync 每日 + gc 每周一)样例见 [deploy/](deploy/) 且已真机上线;[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)降级留作参考,主线走 skill + 工具。全量 pytest 绿。验证体系全部使用**私有真机金标**(自建 bug + 上游修复逐点对照),不经公开基准 —— 避开基准记忆污染(SOTA 模型只看 issue 文本即可 76% 命中出错文件,The SWE-Bench Illusion, arXiv:2506.12286),证据链的可信度以此为本。
+三支柱全部落地:17 个 MCP 工具、8 个 skill 均经 opencode 真机 e2e 验证(含 wpa / bluez / sdp 真仓真数据);部署侧 quickstart 经干净机演练(零 key / 全功能两轮),systemd 定时同步(sync 每日 + gc 每周一)样例见 [deploy/](deploy/) 且已真机上线;[example/](example/) 留有 demo1 / demo2 金标准(输入 wpa 漏洞报告 + 日志 → 补丁 + 报告)。早期的 orchestrator 型 workflow(`bug-rca` / `research` / `patch-report` CLI)已被 skill + 工具路线取代并从 CLI 移除(workflow 模块留仓内作参考);CLI 日常面收敛为 `baseline` 命令族,进阶命令隐藏不删。全量 pytest 绿(362)。验证体系全部使用**私有真机金标**(自建 bug + 上游修复逐点对照),不经公开基准 —— 避开基准记忆污染(SOTA 模型只看 issue 文本即可 76% 命中出错文件,The SWE-Bench Illusion, arXiv:2506.12286),证据链的可信度以此为本。

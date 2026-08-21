@@ -31,7 +31,7 @@ allowed-tools:
 
 ## 运行模式
 
-0. **仓库就绪(别问路径)**:v25/v20 没有现成检出/索引 → `rootrecall_find_repo(project=<项目>, version=<版本>)`;没命中按其返回的**自动开仓命令**跑(bash):`repo checkout <项目>-<版本> --from <基线> --ref <版本> --index` —— worktree+播种索引一步就绪(同 bug-rca SKILL「仓库就绪」)。连基线都没有才问用户要 git 地址。
+0. **仓库就绪(别问路径)**:v25/v20 没有现成检出/索引 → `rootrecall_find_repo(project=<项目>, version=<版本>)`;没命中按其返回的**自动开仓命令**跑(bash):`baseline checkout <项目>-<版本> --from <基线> --ref <版本> --index` —— worktree+播种索引一步就绪(同 bug-rca SKILL「仓库就绪」)。连基线都没有才问用户要 git 地址。
 1. **拿 v25 fix**:补丁文件用 `read` 读完整原文;源码树 commit 用 `bash git -C <v25_repo> show <sha>`;debian quilt 补丁常在 `debian/patches/<name>.patch`,用 `bash git -C <v25_repo> show <sha>:debian/patches/<name>.patch`(或直接 `read` 该文件)。
 2. **理解 fix**:这个修复改了哪个函数、堵的是什么漏洞、**fix-point**(加了什么检查 / 释放了什么资源 / 拦了什么路径)。这是后面判 v20 和做适配的基准,先用你自己的话讲清楚。
 3. **判 v20 有无此 bug【硬门 · 核心】** —— 用 `grep` 在 v20 仓找目标函数名(或 `search_codebase(codebase=<v20索引>)` 语义定位)→ `read` v20 里这个函数的完整函数体 → **对照 v25 fix-point 语义判断:v20 有没有同一个漏洞?** 三种结论:

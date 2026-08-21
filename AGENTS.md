@@ -23,7 +23,7 @@
 
 - **默认:当前会话直接跑** —— `skill(name)` 载入菜谱后在本会话执行,保持追问连续(用户常连着追问)。
 - **逃生舱:委派 subagent** —— 同名 `rootrecall-*` subagent(各带步数预算、权限禁令、模型配置)供用户 `@` 点名或需要硬门隔离的重活使用;两者菜谱同源,结果一致。
-- **仓库就绪三步,不问路径**:用户话里是「项目+版本」(如 bluez 5.50.61)→ ① `rootrecall_find_repo(project, version)` 查注册表;② 没命中 → 按工具返回的命令 `bash` 自动开仓(`repo checkout <名> --from <基线> --ref <版本> --index`:worktree+播种索引一步就绪,登记 ephemeral);③ 连基线都没有 → 问用户要 git 地址 `repo register --role baseline` 后回②。
+- **仓库就绪三步,不问路径**:用户话里是「项目+版本」(如 bluez 5.50.61)→ ① `rootrecall_find_repo(project, version)` 查注册表;② 没命中 → 按工具返回的命令 `bash` 自动开仓(`baseline checkout <名> --from <基线> --ref <版本> --index`:worktree+播种索引一步就绪,登记 ephemeral);③ 连基线都没有 → 问用户要 git 地址,clone 进代码仓总目录后 `baseline add <路径>` 建基线,回②。
 
 ## 公共纪律(所有工作流共享)
 

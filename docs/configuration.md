@@ -194,6 +194,8 @@ export ROOTRECALL_HOME=~/.local/share/rootrecall   # 例:迁出仓库克隆
   config/默认参数里 `data/` 前缀的相对路径(`data/memory`、`data/code_index`…)自动改锚为
   `$ROOTRECALL_HOME/<去掉 data/ 段>`。绝对路径与其它相对路径**不搬**(尊重用户显式配置)。
 - **`ROOTRECALL_REPOS_FILE` 仍最高优先**(只挪注册表一个文件的场合用它)。
+- **`ROOTRECALL_CODEBASES`**(quickstart 建并写入):代码仓总目录(默认 `~/codebases`),
+  只影响 `baseline add` 的默认命名(相对路径倒序连 `-`),与数据落点无关。
 - **不设 = 零行为变化**(完全等于现状;这是兼容硬约束,老接线/老数据不受扰)。
 - **MCP 侧要看得见**:opencode 拉起 MCP server 时是干净 env —— 迁家后在安装根重跑
   `rootrecall install --global`,安装时 shell 里设了 `ROOTRECALL_HOME` 会自动透传进
@@ -210,7 +212,7 @@ embedding 只有两档 provider(见 §code_index),**没有「纯 BM25 检索」�
 |---|---|---|
 | 全功能(默认) | `.env` 配 `DASHSCOPE_API_KEY` | 全部 17 个工具 |
 | **零 key 本地档** | `uv run uv sync --extra embedding-local` + config.yaml `embedding.provider: sentence_transformers`、`reranker.provider: off` | 全部 17 个工具(模型经 hf-mirror 本地下载,数据不出本地;embedding 质量低于远端档) |
-| 零 key 零本地模型 | 不配 | 记忆(recall/memorize/dump,FTS 路可用)+ 仓库管理(repo register/checkout/sync/gc)+ `fetch_patch`/`ensure_repo`;**检索类(search_codebase / blast_radius / call_chain / repo_map / repo_overview)不可用**(`rootrecall index` 前置 embedder,零 key 直接报错并指路) |
+| 零 key 零本地模型 | 不配 | 记忆(recall/memorize/dump,FTS 路可用)+ 仓库管理(baseline add/checkout/sync、repo gc)+ `fetch_patch`/`ensure_repo`;**检索类(search_codebase / blast_radius / call_chain / repo_map / repo_overview)不可用**(`baseline add`/`rootrecall index` 前置 embedder,零 key 直接报错并指路) |
 
 quickstart 检测到未配 `DASHSCOPE_API_KEY` 会打印上面 a/b 两条路的提示;`rootrecall index`
 在零 key 时也会给同款指路(不甩栈)。

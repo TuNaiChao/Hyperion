@@ -974,16 +974,16 @@ def test_find_repo_miss_with_baseline_gives_provision_command():
     mcp = build_server()
     out = _call(mcp, "find_repo", {"project": "bluez", "version": "5.50.61"})
     assert "No repo matched" in out and "bluez-v20" in out
-    assert "repo checkout" in out and "--index" in out and "--ref 5.50.61" in out
+    assert "baseline checkout" in out and "--index" in out and "--ref 5.50.61" in out
     assert "project" in out  # 命令带 --project <安装根>,bash 可原样跑
 
 
 def test_find_repo_miss_no_baseline_asks_for_url():
-    """连基线都没有 → 引导要 git 地址注册基线(或 ensure_repo),不给无法执行的命令。"""
+    """连基线都没有 → 引导要 git 地址、clone 进总目录后 baseline add(或 ensure_repo),不给无法执行的命令。"""
     mcp = build_server()
     out = _call(mcp, "find_repo", {"project": "bluez"})
-    assert "No repo matched" in out and "--role baseline" in out and "git URL" in out
-    assert "repo checkout" not in out  # 没基线时开仓命令无从执行,不该给
+    assert "No repo matched" in out and "baseline add" in out and "git URL" in out
+    assert "baseline checkout" not in out  # 没基线时开仓命令无从执行,不该给
 
 
 # ════════════════════ verification 纪律硬化(P2-1)════════════════════

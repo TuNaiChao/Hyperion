@@ -118,7 +118,7 @@ def test_p0_autoprovision_e2e(env):
     mcp = build_server()
     out = _call_tool(mcp, "find_repo", {"project": "demo", "version": "5.50.61"})
     assert "No repo matched" in out and "- demo" in out and "branch=main" in out
-    assert "repo checkout demo-5.50.61" in out and "--ref 5.50.61" in out
+    assert "baseline checkout demo-5.50.61" in out and "--ref 5.50.61" in out
     assert "--index" in out and str(tmp) in out  # 命令带 --project <安装根>,bash 可直接跑
 
     # ── ③ 按命令自动开仓:worktree + 播种增量索引一步就绪 ──────────────────

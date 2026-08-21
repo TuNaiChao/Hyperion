@@ -1180,10 +1180,10 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         role: optional filter — "baseline" | "ephemeral" | "unmanaged".
 
         Empty result = that version isn't provisioned yet: the reply lists registered
-        baselines and a ready-to-run auto-provision command (``repo checkout ... --index``:
+        baselines and a ready-to-run auto-provision command (``baseline checkout ... --index``:
         worktree from the baseline mirror + seeded incremental index, registered as
         ephemeral) — run it via bash instead of asking the user for paths. No baselines
-        either → ask for the git URL and register one (or ensure_repo to clone directly).
+        either → ask for the git URL, clone it under the codebases root and ``baseline add``.
         """
         from rootrecall.services.repos.registry import RepoRegistry, _install_root
 
@@ -1230,10 +1230,11 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
         root = _install_root()
         if not baselines:
             return (f"No repo matched {desc}, and no baseline is registered either.\n"
-                    f"Ask the user for the git URL, then register a baseline:\n"
-                    f"  uv run --no-sync --project {root} rootrecall "
-                    f"repo register <名> --url <git地址> --role baseline [--branch <分支>]\n"
-                    f"(只想要一次性样机不走生命周期,可用 ensure_repo 直接 clone。)")
+                    f"Ask the user for the git URL, clone it under the codebases root"
+                    f"(env ROOTRECALL_CODEBASES, default ~/codebases), then one command:\n"
+                    f"  uv run --no-sync --project {root} rootrecall baseline add <clone路径>\n"
+                    f"(登记基线 + 建索引一条龙;默认名=相对总目录路径倒序连 '-',如 v20/bluez → bluez-v20。\n"
+                    f"只想要一次性样机不走生命周期,可用 ensure_repo 直接 clone。)")
         tag = version or "<tag或commit>"
         name = f"{project}-{version}" if version else f"{project}-<版本>"
         lines = [f"No repo matched {desc}"
@@ -1242,7 +1243,7 @@ def build_server(codebase: str | None = None, *, host: str | None = None, port: 
             lines.append(f"  - {r.name}  branch={r.branch or '-'}  url={r.url or '-'}")
         lines.append(
             f"Auto-provision (bash,跑之前把 <…> 占位换成实值): uv run --no-sync --project {root} "
-            f"rootrecall repo checkout {name} --from <基线名> --ref {tag} --bug <bug标识> --index\n"
+            f"rootrecall baseline checkout {name} --from <基线名> --ref {tag} --bug <bug标识> --index\n"
             f"(worktree 秒开 + 播种基线索引增量建,一步就绪;登记 ephemeral,分析完 repo gc 回收)")
         return "\n".join(lines)
 
